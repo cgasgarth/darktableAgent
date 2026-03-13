@@ -84,6 +84,15 @@ gboolean dt_agent_catalog_supports_mode(const dt_agent_action_descriptor_t *desc
   }
 }
 
+double dt_agent_catalog_clamp_number(const dt_agent_action_descriptor_t *descriptor,
+                                     double requested_number)
+{
+  if(!descriptor)
+    return requested_number;
+
+  return CLAMP(requested_number, descriptor->min_number, descriptor->max_number);
+}
+
 gboolean dt_agent_catalog_read_current_number(const dt_agent_action_descriptor_t *descriptor,
                                               double *out_number,
                                               GError **error)
@@ -120,8 +129,9 @@ gboolean dt_agent_catalog_write_number(const dt_agent_action_descriptor_t *descr
     return FALSE;
   }
 
+  const double clamped_number = dt_agent_catalog_clamp_number(descriptor, requested_number);
   const float applied
-    = dt_action_process(descriptor->action_path, 0, NULL, "set", (float)requested_number);
+    = dt_action_process(descriptor->action_path, 0, NULL, "set", (float)clamped_number);
   if(DT_ACTION_IS_INVALID(applied))
   {
     g_set_error(error, _agent_catalog_error_quark(), DT_AGENT_CATALOG_ERROR_INVALID,

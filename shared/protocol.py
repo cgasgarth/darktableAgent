@@ -217,6 +217,75 @@ def build_mock_response_catalog(request: RequestEnvelope) -> dict[str, ResponseE
         error=None,
     )
 
+    exposure_set = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text="Mock agent: setting exposure to exactly +1.25 EV.",
+        ),
+        operations=[
+            Operation(
+                operationId="op-exposure-set-1.25",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/exposure",
+                ),
+                value=OperationValue(mode="set", number=1.25),
+            )
+        ],
+        error=None,
+    )
+
+    exposure_clamp_max = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text="Mock agent: pushing exposure above the supported range to test max clamping.",
+        ),
+        operations=[
+            Operation(
+                operationId="op-exposure-clamp-max",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/exposure",
+                ),
+                value=OperationValue(mode="set", number=99.0),
+            )
+        ],
+        error=None,
+    )
+
+    exposure_clamp_min = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text="Mock agent: pushing exposure below the supported range to test min clamping.",
+        ),
+        operations=[
+            Operation(
+                operationId="op-exposure-clamp-min",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/exposure",
+                ),
+                value=OperationValue(mode="set", number=-99.0),
+            )
+        ],
+        error=None,
+    )
+
     unsupported_action = ResponseEnvelope(
         requestId=request.requestId,
         conversationId=request.conversationId,
@@ -278,6 +347,9 @@ def build_mock_response_catalog(request: RequestEnvelope) -> dict[str, ResponseE
         DEFAULT_MOCK_RESPONSE_ID: exposure_up,
         "exposure-minus-0.7": exposure_down,
         "exposure-sequence-plus-0.7": exposure_sequence,
+        "exposure-set-1.25": exposure_set,
+        "exposure-clamp-max": exposure_clamp_max,
+        "exposure-clamp-min": exposure_clamp_min,
         "unsupported-action": unsupported_action,
         "status-summary": status_summary,
         "chat-echo": chat_echo,

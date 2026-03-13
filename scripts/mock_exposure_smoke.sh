@@ -148,6 +148,19 @@ if mock_response_id in expected_deltas:
             f"(before={exposure_before}, after={exposure_after})"
         )
 
+expected_finals = {
+    "exposure-set-1.25": 1.25,
+    "exposure-clamp-max": 18.0,
+    "exposure-clamp-min": -18.0,
+}
+if mock_response_id in expected_finals:
+    expected_final = expected_finals[mock_response_id]
+    if abs(exposure_after - expected_final) > 0.05:
+        raise SystemExit(
+            f"Expected final exposure {expected_final}, got {exposure_after} "
+            f"(before={exposure_before}, after={exposure_after})"
+        )
+
 blocked_expectations = {
     "unsupported-action": 1,
 }

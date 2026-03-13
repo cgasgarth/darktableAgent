@@ -149,6 +149,46 @@ async def test_chat_preserves_multi_operation_order(api_client: AsyncClient) -> 
 
 
 @pytest.mark.anyio
+async def test_chat_supports_absolute_exposure_set(api_client: AsyncClient) -> None:
+    response = await api_client.post(
+        "/v1/chat",
+        json={
+            "schemaVersion": "2.0",
+            "requestId": "req-set",
+            "conversationId": "conv-set",
+            "message": {"role": "user", "text": "Set exposure"},
+            "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
+            "imageState": _sample_image_state(),
+            "mockResponseId": "exposure-set-1.25",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operations"][0]["value"] == {"mode": "set", "number": 1.25}
+
+
+@pytest.mark.anyio
+async def test_chat_supports_exposure_clamp_fixtures(api_client: AsyncClient) -> None:
+    response = await api_client.post(
+        "/v1/chat",
+        json={
+            "schemaVersion": "2.0",
+            "requestId": "req-clamp-max",
+            "conversationId": "conv-clamp-max",
+            "message": {"role": "user", "text": "Clamp max"},
+            "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
+            "imageState": _sample_image_state(),
+            "mockResponseId": "exposure-clamp-max",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operations"][0]["value"] == {"mode": "set", "number": 99.0}
+
+
+@pytest.mark.anyio
 async def test_chat_supports_blocked_operation_fixture(api_client: AsyncClient) -> None:
     response = await api_client.post(
         "/v1/chat",

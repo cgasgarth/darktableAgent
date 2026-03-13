@@ -141,6 +141,47 @@ def test_build_mock_response_supports_ordered_exposure_sequence() -> None:
     assert sum(operation.value.number for operation in response.operations) == 0.7
 
 
+def test_build_mock_response_supports_absolute_exposure_set() -> None:
+    request = RequestEnvelope.model_validate(
+        {
+            "schemaVersion": "2.0",
+            "requestId": "req-set",
+            "conversationId": "conv-set",
+            "message": {"role": "user", "text": "Set exposure"},
+            "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "imageState": _sample_image_state(),
+            "mockResponseId": "exposure-set-1.25",
+        }
+    )
+
+    response = build_mock_response(request)
+
+    assert response.operations[0].value.mode == "set"
+    assert response.operations[0].value.number == 1.25
+
+
+def test_build_mock_response_supports_exposure_clamp_fixtures() -> None:
+    request = RequestEnvelope.model_validate(
+        {
+            "schemaVersion": "2.0",
+            "requestId": "req-clamp",
+            "conversationId": "conv-clamp",
+            "message": {"role": "user", "text": "Clamp exposure"},
+            "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "imageState": _sample_image_state(),
+            "mockResponseId": "exposure-clamp-max",
+        }
+    )
+
+    max_response = build_mock_response(request)
+    min_response = build_mock_response(
+        request.model_copy(update={"mockResponseId": "exposure-clamp-min"})
+    )
+
+    assert max_response.operations[0].value.number == 99.0
+    assert min_response.operations[0].value.number == -99.0
+
+
 def test_build_mock_response_supports_blocked_operation_fixture() -> None:
     request = RequestEnvelope.model_validate(
         {

@@ -42,6 +42,8 @@ const dt_agent_action_descriptor_t *dt_agent_catalog_descriptors(guint *count);
 
 gboolean dt_agent_catalog_supports_mode(const dt_agent_action_descriptor_t *descriptor,
                                         dt_agent_value_mode_t mode);
+double dt_agent_catalog_clamp_number(const dt_agent_action_descriptor_t *descriptor,
+                                     double requested_number);
 gboolean dt_agent_catalog_read_current_number(const dt_agent_action_descriptor_t *descriptor,
                                               double *out_number,
                                               GError **error);

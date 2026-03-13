@@ -75,7 +75,7 @@ through its action system.
 - `imageState.metadata`: required object with current image metadata
 - `imageState.controls`: required array of readable agent control values
 - `imageState.history`: required array of applied history items up to `historyPosition`
-- `mockResponseId`: `"chat-echo"`, `"exposure-plus-0.7"`, `"exposure-minus-0.7"`, `"exposure-sequence-plus-0.7"`, `"unsupported-action"`, `"status-summary"`, or `null`
+- `mockResponseId`: `"chat-echo"`, `"exposure-plus-0.7"`, `"exposure-minus-0.7"`, `"exposure-sequence-plus-0.7"`, `"exposure-set-1.25"`, `"exposure-clamp-max"`, `"exposure-clamp-min"`, `"unsupported-action"`, `"status-summary"`, or `null`
 
 `null` currently defaults to the exposure-increase mock so every darktable chat
 submission exercises the same edit path.
@@ -150,6 +150,9 @@ special-casing exposure forever.
 - `mockResponseId == "exposure-plus-0.7"`: one planned `set-float` delta operation for `+0.7`
 - `mockResponseId == "exposure-minus-0.7"`: one planned `set-float` delta operation for `-0.7`
 - `mockResponseId == "exposure-sequence-plus-0.7"`: two ordered planned `set-float` delta operations for `+0.2` then `+0.5`
+- `mockResponseId == "exposure-set-1.25"`: one planned `set-float` absolute set operation to `1.25`
+- `mockResponseId == "exposure-clamp-max"`: one planned `set-float` absolute set above the supported range so darktable clamps to the exposure max
+- `mockResponseId == "exposure-clamp-min"`: one planned `set-float` absolute set below the supported range so darktable clamps to the exposure min
 - `mockResponseId == "unsupported-action"`: one planned operation with an unsupported action path so darktable can report a blocked execution result
 - `mockResponseId == "status-summary"`: assistant status text only, no operations
 - `mockResponseId == null`: defaults to `exposure-plus-0.7`
