@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2026 darktable developers.
+    Copyright (C) 2010-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -35,11 +35,6 @@
 
 #ifdef USE_COLORDGTK
 #include "colord-gtk.h"
-#endif
-
-#ifdef _WIN32
-#include <dwmapi.h>
-#include <gdk/gdkwin32.h>
 #endif
 
 #if 0
@@ -1737,9 +1732,9 @@ const char *dt_colorspaces_get_name(dt_colorspaces_color_profile_type_t type,
   switch(type)
   {
      case DT_COLORSPACE_NONE:
-       return _("none");
+       return NULL;
      case DT_COLORSPACE_FILE:
-       return filename && filename[0] ? filename : _("no filename");
+       return filename;
      case DT_COLORSPACE_SRGB:
        return _("sRGB");
      case DT_COLORSPACE_ADOBERGB:
@@ -2014,25 +2009,7 @@ void dt_colorspaces_set_display_profile
   profile_source = g_strdup("osx color profile api");
 #endif
 #elif defined G_OS_WIN32
-  GtkWidget *widget = (profile_type == DT_COLORSPACE_DISPLAY2)
-      ? darktable.develop->second_wnd
-      : dt_ui_center(darktable.gui->ui);
-  GdkWindow *window = gtk_widget_get_window(widget);
-  HWND hwnd = (HWND)gdk_win32_window_get_handle(window);  // get window handle
-  HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST); // get monitor handle
-  if(!hMonitor)
-  {
-    dt_print(DT_DEBUG_ALWAYS, "[win32 dt_colorspaces_set_display_profile] error getting monitor handle");
-    return;
-  }
-  MONITORINFOEX monitorInfo;
-  monitorInfo.cbSize = sizeof(MONITORINFOEX);
-  if(!GetMonitorInfoW(hMonitor, (LPMONITORINFO) &monitorInfo))  //get monitor info
-  {
-    dt_print(DT_DEBUG_ALWAYS, "[win32 dt_colorspaces_set_display_profile] error getting monitor info");
-    return;
-  }
-  HDC hdc = CreateIC(L"MONITOR", monitorInfo.szDevice, NULL, NULL); // get device-info context of the monitor
+  HDC hdc = GetDC(NULL);
   if(hdc != NULL)
   {
     DWORD len = 0;
@@ -2051,7 +2028,7 @@ void dt_colorspaces_set_display_profile
       }
     }
     g_free(wpath);
-    DeleteDC(hdc);
+    ReleaseDC(NULL, hdc);
   }
   profile_source = g_strdup("windows color profile api");
 #endif

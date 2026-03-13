@@ -1498,7 +1498,7 @@ static gboolean _event_band_motion(GtkWidget *widget, GdkEventMotion *event, gpo
   if(!inside)
   {
     range->mouse_inside = HOVER_OUTSIDE;
-    dt_control_change_cursor("default");
+    dt_control_change_cursor(GDK_LEFT_PTR);
     _current_hide_popup(range);
     return TRUE;
   }
@@ -1520,19 +1520,19 @@ static gboolean _event_band_motion(GtkWidget *widget, GdkEventMotion *event, gpo
      && fabs(range->current_x_px - smin_px) <= SNAP_SIZE)
   {
     range->mouse_inside = HOVER_MIN;
-    dt_control_change_cursor("w-resize");
+    dt_control_change_cursor(GDK_LEFT_SIDE);
   }
   else if(range->allow_resize
           && !range->set_selection
           && fabs(range->current_x_px - smax_px) <= SNAP_SIZE)
   {
     range->mouse_inside = HOVER_MAX;
-    dt_control_change_cursor("e-resize");
+    dt_control_change_cursor(GDK_RIGHT_SIDE);
   }
   else
   {
     range->mouse_inside = HOVER_INSIDE;
-    dt_control_change_cursor("default");
+    dt_control_change_cursor(GDK_LEFT_PTR);
   }
   gtk_widget_queue_draw(range->band);
   return TRUE;
@@ -1542,7 +1542,7 @@ static gboolean _event_band_leave(GtkWidget *w, GdkEventCrossing *e, gpointer us
 {
   GtkDarktableRangeSelect *range = (GtkDarktableRangeSelect *)user_data;
   range->mouse_inside = HOVER_OUTSIDE;
-  dt_control_change_cursor("default");
+  dt_control_change_cursor(GDK_LEFT_PTR);
   _current_hide_popup(range);
 
   gtk_widget_queue_draw(range->band);

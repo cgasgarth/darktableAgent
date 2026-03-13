@@ -158,10 +158,6 @@ G_BEGIN_DECLS
 #define __DT_CLONE_TARGETS__
 #endif
 
-
-#define STR_YESNO(b) ((b) ? "YES" : "NO")
-#define STR_TRUEFALSE(b) ((b) ? "TRUE" : "FALSE")
-
 typedef int32_t dt_imgid_t;
 typedef int32_t dt_filmid_t;
 #define NO_IMGID (0)
@@ -281,13 +277,9 @@ struct dt_bauhaus_t;
 struct dt_undo_t;
 struct dt_colorspaces_t;
 struct dt_l10n_t;
-#ifdef HAVE_AI
-struct dt_ai_registry_t;
-#endif
 
 typedef float dt_boundingbox_t[4];  //(x,y) of upperleft, then (x,y) of lowerright
 typedef float dt_pickerbox_t[8];
-typedef float dt_pickerpoint_t[2];
 typedef float dt_dev_zoom_pos_t[6];
 
 typedef enum dt_debug_thread_t
@@ -321,7 +313,6 @@ typedef enum dt_debug_thread_t
   DT_DEBUG_PIPE           = 1 << 25,
   DT_DEBUG_EXPOSE         = 1 << 26,
   DT_DEBUG_PICKER         = 1 << 27,
-  DT_DEBUG_AI             = 1 << 28,
   DT_DEBUG_ALL            = 0xffffffff & ~DT_DEBUG_VERBOSE,
   DT_DEBUG_COMMON         = DT_DEBUG_OPENCL | DT_DEBUG_DEV | DT_DEBUG_MASKS | DT_DEBUG_PARAMS | DT_DEBUG_IMAGEIO | DT_DEBUG_PIPE,
   DT_DEBUG_RESTRICT       = DT_DEBUG_VERBOSE | DT_DEBUG_PERF,
@@ -358,15 +349,6 @@ typedef struct dt_gimp_t
   gboolean error;
 } dt_gimp_t;
 
-typedef struct dt_splash_t
-{
-  GtkWidget *start_screen;
-  GtkWidget *progress_text;
-  GtkWidget *remaining_text;
-  GtkWidget *remaining_box;
-  gboolean create_if_needed;
-} dt_splash_t;
-
 typedef struct darktable_t
 {
   dt_codepath_t codepath;
@@ -390,7 +372,7 @@ typedef struct darktable_t
   struct dt_bauhaus_t *bauhaus;
   const struct dt_database_t *db;
   const struct dt_pwstorage_t *pwstorage;
-  struct dt_camctl_t *camctl;
+  const struct dt_camctl_t *camctl;
   const struct dt_collection_t *collection;
   struct dt_selection_t *selection;
   struct dt_points_t *points;
@@ -433,10 +415,6 @@ typedef struct darktable_t
   struct dt_sys_resources_t dtresources;
   struct dt_backthumb_t backthumbs;
   struct dt_gimp_t gimp;
-  struct dt_splash_t splash;
-#ifdef HAVE_AI
-  struct dt_ai_registry_t *ai_registry;
-#endif
 } darktable_t;
 
 typedef struct

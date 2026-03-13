@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2026 darktable developers.
+    Copyright (C) 2010-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -747,20 +747,25 @@ int process_cl_fusion(dt_iop_module_t *self,
     {
       const float mul = exposure_increment(d->exposure_stops, e, d->exposure_fusion, d->exposure_bias);
 
+      size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
       if(d->preserve_colors == DT_RGB_NORM_NONE)
-        err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_legacy_lut, width, height,
-          CLARG(dev_in), CLARG(dev_tmp1),
+      {
+        dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_legacy_lut, 0, CLARG(dev_in), CLARG(dev_tmp1),
           CLARG(width), CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs));
+        err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_legacy_lut, sizes);
+        if(err != CL_SUCCESS) goto error;
+      }
       else
-        err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_lut, width, height,
-          CLARG(dev_in), CLARG(dev_tmp1), CLARG(width),
+      {
+        dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_lut, 0, CLARG(dev_in), CLARG(dev_tmp1), CLARG(width),
           CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs), CLARG(preserve_colors), CLARG(dev_profile_info),
           CLARG(dev_profile_lut), CLARG(use_work_profile));
-      if(err != CL_SUCCESS) goto error;
+        err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_lut, sizes);
+      }
 
-      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_compute_features, width, height,
-        CLARG(dev_tmp1), CLARG(dev_col[0]),
+      dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_compute_features, 0, CLARG(dev_tmp1), CLARG(dev_col[0]),
         CLARG(width), CLARG(height));
+      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_compute_features, sizes);
       if(err != CL_SUCCESS) goto error;
     }
 
@@ -915,7 +920,7 @@ int process_cl_lut(dt_iop_module_t *self,
 
   cl_mem dev_m = NULL;
   cl_mem dev_coeffs = NULL;
-  cl_int err = CL_MEM_OBJECT_ALLOCATION_FAILURE;
+  cl_int err = DT_OPENCL_DEFAULT_ERROR;
 
   cl_mem dev_profile_info = NULL;
   cl_mem dev_profile_lut = NULL;
@@ -928,26 +933,36 @@ int process_cl_lut(dt_iop_module_t *self,
   const int height = roi_in->height;
   const int preserve_colors = d->preserve_colors;
 
+  const float mul = 1.0f;
+
+  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
   dev_m = dt_opencl_copy_host_to_device(devid, d->table, 256, 256, sizeof(float));
-  dev_coeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs);
-  if(!dev_m || !dev_coeffs) goto error;
+  if(dev_m == NULL) goto error;
 
   err = dt_ioppr_build_iccprofile_params_cl(work_profile, devid, &profile_info_cl, &profile_lut_cl,
                                             &dev_profile_info, &dev_profile_lut);
   if(err != CL_SUCCESS) goto error;
 
+  dev_coeffs = dt_opencl_copy_host_to_device_constant(devid, sizeof(float) * 3, d->unbounded_coeffs);
+
+  if(dev_coeffs == NULL) goto error;
+
   // read data/kernels/basecurve.cl for a description of "legacy" vs current
   // Conditional is moved outside of the OpenCL operations for performance.
   if(d->preserve_colors == DT_RGB_NORM_NONE)
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_legacy_lut, width, height,
-          CLARG(dev_in), CLARG(dev_out),
-          CLARG(width), CLARG(height), CLARGFLOAT(1.0f), CLARG(dev_m), CLARG(dev_coeffs));
+  {
+    dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_legacy_lut, 0, CLARG(dev_in), CLARG(dev_out),
+      CLARG(width), CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_legacy_lut, sizes);
+  }
   else
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_basecurve_lut, width, height,
-      CLARG(dev_in), CLARG(dev_out),
-      CLARG(width), CLARG(height),
-      CLARGFLOAT(1.0f), CLARG(dev_m), CLARG(dev_coeffs), CLARG(preserve_colors), CLARG(dev_profile_info),
+  {
+    //FIXME:  There are still conditionals on d->preserve_colors within this flow that could impact performance
+    dt_opencl_set_kernel_args(devid, gd->kernel_basecurve_lut, 0, CLARG(dev_in), CLARG(dev_out), CLARG(width),
+      CLARG(height), CLARG(mul), CLARG(dev_m), CLARG(dev_coeffs), CLARG(preserve_colors), CLARG(dev_profile_info),
       CLARG(dev_profile_lut), CLARG(use_work_profile));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_basecurve_lut, sizes);
+  }
 
 error:
   dt_opencl_release_mem_object(dev_m);
@@ -980,19 +995,24 @@ void tiling_callback(dt_iop_module_t *self,
 {
   dt_iop_basecurve_data_t *const d = piece->data;
 
-  tiling->maxbuf = 1.0f;
-  tiling->overhead = 0;
-  tiling->align = 1;
-
   if(d->exposure_fusion)
   {
     const int rad = MIN(roi_in->width, (int)ceilf(256 * roi_in->scale / piece->iscale));
+
     tiling->factor = 6.666f;                 // in + out + col[] + comb[] + 2*tmp
+    tiling->maxbuf = 1.0f;
+    tiling->overhead = 0;
+    tiling->xalign = 1;
+    tiling->yalign = 1;
     tiling->overlap = rad;
   }
   else
   {
     tiling->factor = 2.0f;                   // in + out
+    tiling->maxbuf = 1.0f;
+    tiling->overhead = 0;
+    tiling->xalign = 1;
+    tiling->yalign = 1;
     tiling->overlap = 0;
   }
 }

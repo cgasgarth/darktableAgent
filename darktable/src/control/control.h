@@ -43,6 +43,8 @@ G_BEGIN_DECLS
 
 struct dt_lib_backgroundjob_element_t;
 
+typedef GdkCursorType dt_cursor_t;
+
 // called from gui
 void dt_control_expose(GtkWidget *widget, cairo_t *cr);
 gboolean dt_control_draw_endmarker(GtkWidget *widget, cairo_t *crf, gpointer user_data);
@@ -62,7 +64,7 @@ void dt_control_draw_busy_msg(cairo_t *cr, int width, int height);
 void dt_control_forbid_change_cursor(void);
 // enable the possibility to change the cursor shape with dt_control_change_cursor
 void dt_control_allow_change_cursor(void);
-void dt_control_change_cursor(const char *cursor_name);
+void dt_control_change_cursor(dt_cursor_t cursor);
 void dt_control_write_sidecar_files(void);
 void dt_control_delete_images(void);
 
@@ -89,6 +91,16 @@ void dt_control_queue_redraw_widget(GtkWidget *widget);
     This redraws the wiget of the navigation module.
  */
 void dt_control_navigation_redraw(void);
+
+/** \brief request redraw of the log widget.
+    This redraws the message label.
+ */
+void dt_control_log_redraw(void);
+
+/** \brief request redraw of the toast widget.
+    This redraws the message label.
+ */
+void dt_control_toast_redraw(void);
 
 void dt_ctl_switch_mode(void);
 void dt_ctl_switch_mode_to(const char *mode);
@@ -163,11 +175,13 @@ typedef struct dt_control_t
 
   // gui settings
   dt_pthread_mutex_t global_mutex, image_mutex;
+  double last_expose_time;
 
   // job management
   dt_atomic_int running;
   dt_atomic_int quitting;
   dt_atomic_int pending_jobs;
+  dt_atomic_int running_jobs;
   gboolean cups_started;
   gboolean export_scheduled;
   dt_pthread_mutex_t queue_mutex, cond_mutex;

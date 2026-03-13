@@ -734,9 +734,9 @@ void process(dt_iop_module_t *self,
   dt_free_align(buf);
 }
 
-static gboolean _draw_thumb(GtkWidget *area,
-                            cairo_t *crf,
-                            const dt_iop_module_t *self)
+static void _draw_thumb(GtkWidget *area,
+                        cairo_t *crf,
+                        const dt_iop_module_t *self)
 {
   const dt_iop_overlay_gui_data_t *g = self->gui_data;
   const dt_iop_overlay_params_t *p = self->params;
@@ -807,7 +807,6 @@ static gboolean _draw_thumb(GtkWidget *area,
     pango_font_description_free(desc);
     g_object_unref(layout);
   }
-  return FALSE;
 }
 
 static void _alignment_callback(const GtkWidget *tb, dt_iop_module_t *self)

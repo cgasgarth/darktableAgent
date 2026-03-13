@@ -44,7 +44,6 @@ hbDependencies="adwaita-icon-theme \
     json-glib \
     lensfun \
     libavif \
-    libarchive \
     libheif \
     libomp \
     libraw \
@@ -60,7 +59,6 @@ hbDependencies="adwaita-icon-theme \
     perl \
     po4a \
     portmidi \
-    potrace \
     pugixml \
     sdl2 \
     webp"

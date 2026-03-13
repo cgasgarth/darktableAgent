@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2026 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -215,7 +215,7 @@ int process_cl(dt_iop_module_t *self,
                                   .sizex = 1 << 16,
                                   .sizey = 1 };
 
-  if(dt_opencl_local_buffer_opt(devid, gd->kernel_bloom_hblur, &hlocopt) == CL_SUCCESS)
+  if(dt_opencl_local_buffer_opt(devid, gd->kernel_bloom_hblur, &hlocopt))
     hblocksize = hlocopt.sizex;
   else
     hblocksize = 1;
@@ -231,7 +231,7 @@ int process_cl(dt_iop_module_t *self,
                                   .sizex = 1,
                                   .sizey = 1 << 16 };
 
-  if(dt_opencl_local_buffer_opt(devid, gd->kernel_bloom_vblur, &vlocopt) == CL_SUCCESS)
+  if(dt_opencl_local_buffer_opt(devid, gd->kernel_bloom_vblur, &vlocopt))
     vblocksize = vlocopt.sizey;
   else
     vblocksize = 1;
@@ -250,11 +250,20 @@ int process_cl(dt_iop_module_t *self,
   }
 
   /* gather light by threshold */
+  sizes[0] = ROUNDUPDWD(width, devid);
+  sizes[1] = ROUNDUPDHT(height, devid);
+  sizes[2] = 1;
   dev_tmp1 = dev_tmp[bucket_next(&state, NUM_BUCKETS)];
-  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_bloom_threshold, width, height,
-                            CLARG(dev_in), CLARG(dev_tmp1),
-                            CLARG(width), CLARG(height),
-                            CLARG(scale), CLARG(threshold));
+  dt_opencl_set_kernel_args(devid,
+                            gd->kernel_bloom_threshold,
+                            0,
+                            CLARG(dev_in),
+                            CLARG(dev_tmp1),
+                            CLARG(width),
+                            CLARG(height),
+                            CLARG(scale),
+                            CLARG(threshold));
+  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_bloom_threshold, sizes);
   if(err != CL_SUCCESS) goto error;
 
   if(radius != 0)
@@ -263,11 +272,14 @@ int process_cl(dt_iop_module_t *self,
       /* horizontal blur */
       sizes[0] = bwidth;
       sizes[1] = ROUNDUPDHT(height, devid);
+      sizes[2] = 1;
       local[0] = hblocksize;
       local[1] = 1;
       local[2] = 1;
       dev_tmp2 = dev_tmp[bucket_next(&state, NUM_BUCKETS)];
-      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_bloom_hblur, sizes, local,
+      dt_opencl_set_kernel_args(devid,
+                                gd->kernel_bloom_hblur,
+                                0,
                                 CLARG(dev_tmp1),
                                 CLARG(dev_tmp2),
                                 CLARG(radius),
@@ -275,28 +287,45 @@ int process_cl(dt_iop_module_t *self,
                                 CLARG(height),
                                 CLARG(hblocksize),
                                 CLLOCAL((hblocksize + 2 * radius) * sizeof(float)));
+      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_bloom_hblur, sizes, local);
       if(err != CL_SUCCESS) goto error;
 
 
       /* vertical blur */
       sizes[0] = ROUNDUPDWD(width, devid);
       sizes[1] = bheight;
+      sizes[2] = 1;
       local[0] = 1;
       local[1] = vblocksize;
       local[2] = 1;
       dev_tmp1 = dev_tmp[bucket_next(&state, NUM_BUCKETS)];
-      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_bloom_vblur, sizes, local,
-                                CLARG(dev_tmp2), CLARG(dev_tmp1),
-                                CLARG(radius), CLARG(width), CLARG(height),
+      dt_opencl_set_kernel_args(devid,
+                                gd->kernel_bloom_vblur,
+                                0,
+                                CLARG(dev_tmp2),
+                                CLARG(dev_tmp1),
+                                CLARG(radius),
+                                CLARG(width),
+                                CLARG(height),
                                 CLARG(vblocksize),
                                 CLLOCAL((vblocksize + 2 * radius) * sizeof(float)));
+      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_bloom_vblur, sizes, local);
       if(err != CL_SUCCESS) goto error;
     }
 
   /* mixing out and in -> out */
-  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_bloom_mix, width, height,
-                  CLARG(dev_in), CLARG(dev_tmp1), CLARG(dev_out), CLARG(width), CLARG(height));
-
+  sizes[0] = ROUNDUPDWD(width, devid);
+  sizes[1] = ROUNDUPDHT(height, devid);
+  sizes[2] = 1;
+  dt_opencl_set_kernel_args(devid,
+                            gd->kernel_bloom_mix,
+                            0,
+                            CLARG(dev_in),
+                            CLARG(dev_tmp1),
+                            CLARG(dev_out),
+                            CLARG(width),
+                            CLARG(height));
+  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_bloom_mix, sizes);
 
 error:
   for(int i = 0; i < NUM_BUCKETS; i++)
@@ -322,7 +351,8 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->maxbuf = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = 5 * radius; // This is a guess. TODO: check if that's sufficiently large
-  tiling->align = 1;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
   return;
 }
 

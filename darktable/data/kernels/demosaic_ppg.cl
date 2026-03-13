@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2009-2026 darktable developers.
+    Copyright (C) 2009-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -756,7 +756,7 @@ ppg_demosaic_redblue (read_only image2d_t in, write_only image2d_t out, const in
  * Demosaic image border
  */
 kernel void
-border_interpolate(read_only image2d_t in, write_only image2d_t out, const int width, const int height, const unsigned int filters)
+border_interpolate(read_only image2d_t in, write_only image2d_t out, const int width, const int height, const unsigned int filters, const int border)
 {
   const int x = get_global_id(0);
   const int y = get_global_id(1);
@@ -764,7 +764,6 @@ border_interpolate(read_only image2d_t in, write_only image2d_t out, const int w
   if(x >= width || y >= height) return;
 
   const int avgwindow = 1;
-  const int border = 3;
 
   if(x >= border && x < width-border && y >= border && y < height-border) return;
 

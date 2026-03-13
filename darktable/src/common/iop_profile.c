@@ -22,8 +22,6 @@
 #include "common/debug.h"
 #include "common/imagebuf.h"
 #include "common/matrices.h"
-#include "common/image_cache.h"
-#include "control/control.h"
 #include "develop/imageop.h"
 #include "develop/imageop_math.h"
 #include "develop/pixelpipe.h"
@@ -880,9 +878,6 @@ dt_ioppr_set_pipe_work_profile_info(struct dt_develop_t *dev,
   dt_iop_order_iccprofile_info_t *profile_info =
     dt_ioppr_add_profile_info_to_list(dev, type, filename, intent);
 
-  if(!profile_info && (pipe->type & DT_DEV_PIXELPIPE_PREVIEW) && (type == DT_COLORSPACE_FILE))
-      dt_control_log(_("work icc profile '%s' missing"), filename);
-
   if(profile_info == NULL
      || !dt_is_valid_colormatrix(profile_info->matrix_in[0][0])
      || !dt_is_valid_colormatrix(profile_info->matrix_out[0][0]))
@@ -911,9 +906,6 @@ dt_ioppr_set_pipe_input_profile_info(struct dt_develop_t *dev,
 
   if(profile_info == NULL)
   {
-    if((pipe->type & DT_DEV_PIXELPIPE_PREVIEW) && (type == DT_COLORSPACE_FILE))
-      dt_control_log(_("input icc profile '%s' missing"), filename);
-
     dt_print(DT_DEBUG_PIPE,
              "[dt_ioppr_set_pipe_input_profile_info] profile `%s' in `%s'"
              " replaced by linear Rec2020",
@@ -921,25 +913,8 @@ dt_ioppr_set_pipe_input_profile_info(struct dt_develop_t *dev,
     profile_info = dt_ioppr_add_profile_info_to_list(dev, DT_COLORSPACE_LIN_REC2020, "", intent);
   }
 
-  const dt_imgid_t imgid = dev->image_storage.id;
-  const dt_image_t *cimg = dt_image_cache_get(imgid, 'r');
-  const dt_image_colorspace_t ocsp = cimg->colorspace;
-  dt_image_cache_read_release(cimg);
-
-  const dt_colorspaces_color_profile_type_t ptype = profile_info->type;
-  const gboolean exif_rgb = ocsp == DT_IMAGE_COLORSPACE_SRGB || ocsp == DT_IMAGE_COLORSPACE_ADOBE_RGB;
-  const gboolean new_rgb = ptype == DT_COLORSPACE_SRGB || ptype == DT_COLORSPACE_ADOBERGB;
-  const gboolean user_rgb = ocsp == DT_IMAGE_COLORSPACE_USER_RGB;
-  if(!exif_rgb                       // don't fiddle with existing exif data
-      && ((new_rgb && !user_rgb) || (!new_rgb && user_rgb)))
-  {
-    dt_image_t *wimg = dt_image_cache_get(imgid, 'w');
-    wimg->colorspace = new_rgb ? DT_IMAGE_COLORSPACE_USER_RGB : DT_IMAGE_COLORSPACE_NONE;
-    dt_image_cache_write_release_info(wimg, DT_IMAGE_CACHE_RELAXED, NULL);
-  }
-
-  if(ptype >= DT_COLORSPACE_EMBEDDED_ICC
-     && ptype <= DT_COLORSPACE_ALTERNATE_MATRIX)
+  if(profile_info->type >= DT_COLORSPACE_EMBEDDED_ICC
+     && profile_info->type <= DT_COLORSPACE_ALTERNATE_MATRIX)
   {
     /* We have a camera input matrix, these are not generated from files but in colorin,
     * so we need to fetch and replace them from somewhere.
@@ -963,9 +938,6 @@ dt_ioppr_set_pipe_output_profile_info(struct dt_develop_t *dev,
 {
   dt_iop_order_iccprofile_info_t *profile_info =
     dt_ioppr_add_profile_info_to_list(dev, type, filename, intent);
-
-  if(!profile_info && (pipe->type & DT_DEV_PIXELPIPE_PREVIEW) && (type == DT_COLORSPACE_FILE))
-    dt_control_log(_("output icc profile '%s' missing"), filename);
 
   if(profile_info == NULL
      || !dt_is_valid_colormatrix(profile_info->matrix_in[0][0])
@@ -1337,8 +1309,6 @@ dt_colorspaces_cl_global_t *dt_colorspaces_init_cl_global()
     dt_opencl_create_kernel(program, "colorspaces_transform_rgb_matrix_to_lab");
   g->kernel_colorspaces_transform_rgb_matrix_to_rgb =
     dt_opencl_create_kernel(program, "colorspaces_transform_rgb_matrix_to_rgb");
-  g->kernel_colorspaces_gamma =
-    dt_opencl_create_kernel(program, "colorspaces_transform_gamma");
   return g;
 }
 
@@ -1350,7 +1320,6 @@ void dt_colorspaces_free_cl_global(dt_colorspaces_cl_global_t *g)
   dt_opencl_free_kernel(g->kernel_colorspaces_transform_lab_to_rgb_matrix);
   dt_opencl_free_kernel(g->kernel_colorspaces_transform_rgb_matrix_to_lab);
   dt_opencl_free_kernel(g->kernel_colorspaces_transform_rgb_matrix_to_rgb);
-  dt_opencl_free_kernel(g->kernel_colorspaces_gamma);
 
   free(g);
 }

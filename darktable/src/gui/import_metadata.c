@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2010-2026 darktable developers.
+    Copyright (C) 2010-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -49,8 +49,7 @@ typedef enum dt_import_grid_t
 static void _import_metadata_presets_update(dt_import_metadata_t *metadata);
 static void _fill_metadata_grid(dt_import_metadata_t *metadata);
 
-static void _metadata_save(GtkWidget *widget,
-                           dt_import_metadata_t *metadata)
+static void _metadata_save(GtkWidget *widget, dt_import_metadata_t *metadata)
 {
   const char *name = dt_metadata_get_tag_subkey((char *)g_object_get_data(G_OBJECT(widget), "tagname"));
   gchar *setting = g_strdup_printf("ui_last/import_last_%s", name);
@@ -58,17 +57,14 @@ static void _metadata_save(GtkWidget *widget,
   g_free(setting);
 }
 
-static void _import_metadata_changed(GtkWidget *widget,
-                                     dt_import_metadata_t *metadata)
+static void _import_metadata_changed(GtkWidget *widget, dt_import_metadata_t *metadata)
 {
   _metadata_save(widget, metadata);
   GtkWidget *w = gtk_grid_get_child_at(GTK_GRID(metadata->grid), 1, DT_META_META_HEADER);
   gtk_combo_box_set_active(GTK_COMBO_BOX(w), -1);
 }
 
-static gboolean _import_metadata_reset(GtkWidget *label,
-                                       GdkEventButton *event,
-                                       GtkWidget *widget)
+static gboolean _import_metadata_reset(GtkWidget *label, GdkEventButton *event, GtkWidget *widget)
 {
   if(event->type == GDK_2BUTTON_PRESS)
   {
@@ -77,8 +73,7 @@ static gboolean _import_metadata_reset(GtkWidget *label,
   return FALSE;
 }
 
-static void _metadata_reset_all(dt_import_metadata_t *metadata,
-                                const gboolean hard)
+static void _metadata_reset_all(dt_import_metadata_t *metadata, const gboolean hard)
 {
   for(unsigned int i = DT_META_META_VALUE; i < metadata->num_grid_rows + DT_META_TAGS_VALUE; i++)
   {
@@ -104,9 +99,7 @@ static void _metadata_reset_all(dt_import_metadata_t *metadata,
   }
 }
 
-static gboolean _import_metadata_reset_all(GtkWidget *label,
-                                           GdkEventButton *event,
-                                           dt_import_metadata_t *metadata)
+static gboolean _import_metadata_reset_all(GtkWidget *label, GdkEventButton *event, dt_import_metadata_t *metadata)
 {
   if(event->type == GDK_2BUTTON_PRESS)
   {
@@ -115,8 +108,7 @@ static gboolean _import_metadata_reset_all(GtkWidget *label,
   return FALSE;
 }
 
-static void _import_metadata_toggled(GtkWidget *widget,
-                                     dt_import_metadata_t *metadata)
+static void _import_metadata_toggled(GtkWidget *widget, dt_import_metadata_t *metadata)
 {
   const char *name = gtk_widget_get_name(widget);
   if(g_strcmp0(name, "tags"))
@@ -136,8 +128,7 @@ static void _import_metadata_toggled(GtkWidget *widget,
   }
 }
 
-static void _import_tags_changed(GtkWidget *widget,
-                                 dt_import_metadata_t *metadata)
+static void _import_tags_changed(GtkWidget *widget, dt_import_metadata_t *metadata)
 {
   GtkWidget *w = gtk_grid_get_child_at(GTK_GRID(metadata->grid), 1, metadata->num_grid_rows + DT_META_META_VALUE);
   gtk_combo_box_set_active(GTK_COMBO_BOX(w), -1);
@@ -178,8 +169,7 @@ static void _update_layout(dt_import_metadata_t *metadata)
   gtk_widget_set_visible(w, !write_xmp);
 }
 
-static void _apply_metadata_toggled(GtkWidget *widget,
-                                    dt_import_metadata_t *metadata)
+static void _apply_metadata_toggled(GtkWidget *widget, dt_import_metadata_t *metadata)
 {
   // activate widgets as needed
   const gboolean default_metadata = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(widget));
@@ -195,15 +185,12 @@ static void _apply_metadata_toggled(GtkWidget *widget,
   }
 }
 
-static void _metadata_prefs_changed(gpointer instance,
-                                    dt_import_metadata_t *metadata)
+static void _metadata_prefs_changed(gpointer instance, dt_import_metadata_t *metadata)
 {
   _update_layout(metadata);
 }
 
-static void _metadata_list_changed(gpointer instance,
-                                   const int type,
-                                   dt_import_metadata_t *metadata)
+static void _metadata_list_changed(gpointer instance, int type, dt_import_metadata_t *metadata)
 {
   if(type == DT_METADATA_SIGNAL_PREF_CHANGED)
   {
@@ -212,9 +199,7 @@ static void _metadata_list_changed(gpointer instance,
   }
 }
 
-static void _fill_textview(gpointer key,
-                           gpointer value,
-                           gpointer user_data)
+static void _fill_textview(gpointer key, gpointer value, gpointer user_data)
 {
   dt_import_metadata_t *metadata = (dt_import_metadata_t *)user_data;
 
@@ -233,8 +218,7 @@ static void _fill_textview(gpointer key,
   }
 }
 
-static void _import_metadata_presets_changed(GtkWidget *widget,
-                                             dt_import_metadata_t *metadata)
+static void _import_metadata_presets_changed(GtkWidget *widget, dt_import_metadata_t *metadata)
 {
   GtkTreeIter iter;
 
@@ -289,8 +273,7 @@ static void _import_metadata_presets_update(dt_import_metadata_t *metadata)
   sqlite3_finalize(stmt);
 }
 
-static void _import_tags_presets_changed(GtkWidget *widget,
-                                         dt_import_metadata_t *metadata)
+static void _import_tags_presets_changed(GtkWidget *widget, dt_import_metadata_t *metadata)
 {
   GtkTreeIter iter;
 
@@ -351,9 +334,7 @@ static void _import_tags_presets_update(dt_import_metadata_t *metadata)
   sqlite3_finalize(stmt);
 }
 
-static void _metadata_presets_changed(gpointer instance,
-                                      gpointer module,
-                                      dt_import_metadata_t *metadata)
+static void _metadata_presets_changed(gpointer instance, gpointer module, dt_import_metadata_t *metadata)
 {
   if(!g_strcmp0(module, "metadata"))
     _import_metadata_presets_update(metadata);
@@ -361,9 +342,7 @@ static void _metadata_presets_changed(gpointer instance,
     _import_tags_presets_update(metadata);
 }
 
-static GtkWidget *_set_up_label(GtkWidget *label,
-                                const int align,
-                                const int line,
+static GtkWidget *_set_up_label(GtkWidget *label, const int align, const int line,
                                 dt_import_metadata_t *metadata)
 {
   gtk_widget_set_visible(label, TRUE);
@@ -378,9 +357,7 @@ static GtkWidget *_set_up_label(GtkWidget *label,
   return labelev;
 }
 
-static GtkWidget *_set_up_combobox(GtkListStore *model,
-                                   const int line,
-                                   dt_import_metadata_t *metadata)
+static GtkWidget *_set_up_combobox(GtkListStore *model, const int line, dt_import_metadata_t *metadata)
 {
   GtkWidget *presets = gtk_combo_box_new_with_model(GTK_TREE_MODEL(model));
   gtk_widget_set_visible(presets, TRUE);
@@ -394,11 +371,8 @@ static GtkWidget *_set_up_combobox(GtkListStore *model,
   return presets;
 }
 
-static void _set_up_entry(GtkWidget *entry,
-                          const char *str,
-                          const char *name,
-                          const int line,
-                          dt_import_metadata_t *metadata)
+static void _set_up_entry(GtkWidget *entry, const char *str, const char *name,
+                             const int line, dt_import_metadata_t *metadata)
 {
   gtk_widget_set_name(entry, name);
   gtk_entry_set_text(GTK_ENTRY(entry), str);
@@ -408,11 +382,8 @@ static void _set_up_entry(GtkWidget *entry,
   gtk_grid_attach(GTK_GRID(metadata->grid), entry, 1, line, 1, 1);
 }
 
-static void _set_up_toggle_button(GtkWidget *button,
-                                  const gboolean state,
-                                  const char *name,
-                                  const int line,
-                                  dt_import_metadata_t *metadata)
+static void _set_up_toggle_button(GtkWidget *button, const gboolean state, const char *name,
+                                  const int line, dt_import_metadata_t *metadata)
 {
   gtk_widget_set_name(button, name);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), state);
@@ -608,3 +579,4 @@ void dt_import_metadata_reset(dt_import_metadata_t *metadata)
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
 // clang-format on
+

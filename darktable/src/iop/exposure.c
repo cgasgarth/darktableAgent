@@ -825,9 +825,9 @@ static float _exposure_proxy_get_effective_exposure(dt_iop_module_t *self)
   return g->effective_exposure;
 }
 
-static void _exposure_proxy_handle_event(GtkEventController *controller,
+static void _exposure_proxy_handle_event(gpointer controller,
                                          int n_press,
-                                         gdouble x, gdouble delta,
+                                         double x,
                                          const gboolean blackwhite)
 {
   dt_iop_module_t *self = darktable.develop->proxy.exposure.module;
@@ -847,27 +847,15 @@ static void _exposure_proxy_handle_event(GtkEventController *controller,
                         p->mode == EXPOSURE_MODE_DEFLICKER
                       ? g->deflicker_target_level : g->exposure;
     if(!n_press)
-      darktable.bauhaus->scroll(GTK_EVENT_CONTROLLER_SCROLL(controller), 0.0, delta, widget);
+      darktable.bauhaus->scroll(widget, controller);
     else
-    {
-      // ignores the quad width, but is accurate enough
-      const int slider_width = gtk_widget_get_allocated_width(widget);
-      // FIXME: it would be nice to fetch scope_height when using waveform
-      const int scope_width =
-        gtk_widget_get_allocated_width(darktable.lib->proxy.histogram.module->widget);
-      // bauhaus scales motion to slider widget, but we want to scale
-      // proportional to the scope widget, particularly when the
-      // slider has not been allocated and has a width of 1 (which can
-      // happen if its module group has not yet been displayed)
-      x = x * slider_width / scope_width;
       if(GTK_IS_GESTURE_SINGLE(controller))
         if(n_press > 0)
-          darktable.bauhaus->press(GTK_GESTURE_SINGLE(controller), n_press, x, 0, widget);
+          darktable.bauhaus->press(controller, n_press, x, 0, widget);
         else
-          darktable.bauhaus->release(GTK_GESTURE_SINGLE(controller), -n_press, x, 0, widget);
+          darktable.bauhaus->release(controller, -n_press, x, 0, widget);
       else
-        darktable.bauhaus->motion(GTK_EVENT_CONTROLLER_MOTION(controller), x, 0, widget);
-    }
+        darktable.bauhaus->motion(controller, x, 0, widget);
 
     gchar *text = dt_bauhaus_slider_get_text(widget, dt_bauhaus_slider_get(widget));
     dt_action_widget_toast(DT_ACTION(self), widget, "%s", text);

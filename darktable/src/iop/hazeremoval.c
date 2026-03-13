@@ -817,7 +817,8 @@ static int _dehaze_cl(dt_iop_module_t *self,
   return dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_hazeremoval_dehaze, width, height,
                                           CLARG(width), CLARG(height),
                                           CLARG(img_in), CLARG(trans_map),
-                                          CLARG(img_out), CLARG(t_min), CLFLARRAY(4, A0));
+                                          CLARG(img_out), CLARG(t_min),
+                                          CLARG(A0[0]), CLARG(A0[1]), CLARG(A0[2]));
 }
 
 void tiling_callback(dt_iop_module_t *self,
@@ -832,7 +833,8 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->maxbuf_cl = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = 0;
-  tiling->align = 1;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
 }
 
 int process_cl(dt_iop_module_t *self,

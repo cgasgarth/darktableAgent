@@ -711,30 +711,7 @@ static GList *_insert_before(GList *iop_order_list,
   return iop_order_list;
 }
 
-void dt_ioppr_migrate_legacy_iop_order_list(GList *iop_order_list)
-{
-  // @@_NEW_MODULE: For new module it is required to insert
-  //                the new module name in the iop-order list here.
-  //                The insertion can be done depending on the current
-  //                iop-order list kind.
-  _insert_before(iop_order_list, "nlmeans", "negadoctor");
-  _insert_before(iop_order_list, "negadoctor", "channelmixerrgb");
-  _insert_before(iop_order_list, "negadoctor", "censorize");
-  _insert_before(iop_order_list, "negadoctor", "primaries");
-  _insert_before(iop_order_list, "rgbcurve", "colorbalancergb");
-  _insert_before(iop_order_list, "ashift", "cacorrectrgb");
-  _insert_before(iop_order_list, "graduatednd", "crop");
-  _insert_before(iop_order_list, "flip", "enlargecanvas");
-  _insert_before(iop_order_list, "enlargecanvas", "overlay");
-  _insert_before(iop_order_list, "colorbalance", "diffuse");
-  _insert_before(iop_order_list, "nlmeans", "blurs");
-  _insert_before(iop_order_list, "filmicrgb", "sigmoid");
-  _insert_before(iop_order_list, "filmicrgb", "agx");
-  _insert_before(iop_order_list, "colorbalancergb", "colorequal");
-  _insert_before(iop_order_list, "highlights", "rasterfile");
-}
-
-static dt_iop_order_t _ioppr_get_default_iop_order_version(const dt_imgid_t imgid)
+dt_iop_order_t _ioppr_get_default_iop_order_version(const dt_imgid_t imgid)
 {
   const gboolean is_display_referred = dt_is_display_referred();
   gboolean is_ldr = FALSE;
@@ -786,7 +763,7 @@ dt_iop_order_t dt_ioppr_get_iop_order_version(const dt_imgid_t imgid)
 
 // a rule prevents operations to be switched, that is a prev operation
 // will not be allowed to be moved on top of the next operation.
-GList *dt_ioppr_get_iop_order_rules(void)
+GList *dt_ioppr_get_iop_order_rules()
 {
   GList *rules = NULL;
 
@@ -1189,7 +1166,25 @@ GList *dt_ioppr_get_iop_order_list(const dt_imgid_t imgid,
         }
         else
         {
-          dt_ioppr_migrate_legacy_iop_order_list(iop_order_list);
+          // @@_NEW_MODULE: For new module it is required to insert
+          //                the new module name in the iop-order list here.
+          //                The insertion can be done depending on the current
+          //                iop-order list kind.
+          _insert_before(iop_order_list, "nlmeans", "negadoctor");
+          _insert_before(iop_order_list, "negadoctor", "channelmixerrgb");
+          _insert_before(iop_order_list, "negadoctor", "censorize");
+          _insert_before(iop_order_list, "negadoctor", "primaries");
+          _insert_before(iop_order_list, "rgbcurve", "colorbalancergb");
+          _insert_before(iop_order_list, "ashift", "cacorrectrgb");
+          _insert_before(iop_order_list, "graduatednd", "crop");
+          _insert_before(iop_order_list, "flip", "enlargecanvas");
+          _insert_before(iop_order_list, "enlargecanvas", "overlay");
+          _insert_before(iop_order_list, "colorbalance", "diffuse");
+          _insert_before(iop_order_list, "nlmeans", "blurs");
+          _insert_before(iop_order_list, "filmicrgb", "sigmoid");
+          _insert_before(iop_order_list, "filmicrgb", "agx");
+          _insert_before(iop_order_list, "colorbalancergb", "colorequal");
+          _insert_before(iop_order_list, "highlights", "rasterfile");
         }
       }
       else if(version >= DT_IOP_ORDER_LEGACY

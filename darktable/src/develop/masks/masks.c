@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2013-2026 darktable developers.
+    Copyright (C) 2013-2025 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -317,20 +317,6 @@ static dt_masks_form_t *_group_from_module(const dt_develop_t *dev,
                                            const dt_iop_module_t *module)
 {
   return dt_masks_get_from_id(dev, module->blend_params->mask_id);
-}
-
-void dt_masks_register_forms(dt_develop_t *dev,
-                             GList *forms)
-{
-  for(GList *l = forms;
-      l;
-      l = g_list_next(l))
-  {
-    dt_masks_form_t *form = l->data;
-    dev->forms = g_list_append(dev->forms, form);
-  }
-
-  dt_dev_add_masks_history_item(dev, NULL, TRUE);
 }
 
 void dt_masks_gui_form_save_creation(dt_develop_t *dev,
@@ -1126,8 +1112,7 @@ gboolean dt_masks_events_mouse_moved(dt_iop_module_t *module,
     2. the mask manager and it is not expanded
 */
   const gboolean skipped = (module && !module->enabled)
-                        && !dt_lib_gui_get_expanded(dt_lib_get_module("masks"));
-
+                        || (!module && !dt_lib_gui_get_expanded(dt_lib_get_module("masks")));
   dt_print(DT_DEBUG_VERBOSE,
     "[dt_masks_events_mouse_moved] %s %s",
     module ? module->so->op : "mask manager",
@@ -1404,16 +1389,11 @@ void dt_masks_reset_show_masks_icons(void)
   }
 }
 
-dt_masks_edit_mode_t dt_masks_get_edit_mode(void)
+dt_masks_edit_mode_t dt_masks_get_edit_mode(dt_iop_module_t *module)
 {
   return darktable.develop->form_gui
     ? darktable.develop->form_gui->edit_mode
     : DT_MASKS_EDIT_OFF;
-}
-
-gboolean dt_masks_is_restricted_mode(void)
-{
-  return dt_masks_get_edit_mode() == DT_MASKS_EDIT_RESTRICTED;
 }
 
 void dt_masks_set_edit_mode(dt_iop_module_t *module,
@@ -2793,18 +2773,8 @@ void dt_masks_line_stroke(cairo_t *cr,
   dashed[1] /= zoom_scale;
   const int len = sizeof(dashed) / sizeof(dashed[0]);
 
-  double dashed2[] = { DT_PIXEL_APPLY_DPI(8.0), DT_PIXEL_APPLY_DPI(12.0) };
-  dashed2[0] /= zoom_scale;
-  dashed2[1] /= zoom_scale;
-
-  const gboolean restricted = dt_masks_is_restricted_mode();
-
   // first the background draw, darker
-  if(restricted && !border)
-    dt_draw_set_color_overlay(cr, FALSE, 0.1);
-  else
-    dt_draw_set_color_overlay(cr, FALSE, selected ? 0.8 : 0.5);
-
+  dt_draw_set_color_overlay(cr, FALSE, selected ? 0.8 : 0.5);
   cairo_set_dash(cr, dashed, border ? len : 0, 0);
 
   const double lwidth = (dt_iop_canvas_not_sensitive(darktable.develop) ? 0.5 : 1.0) / zoom_scale;
@@ -2819,16 +2789,8 @@ void dt_masks_line_stroke(cairo_t *cr,
   // second the foreground draw, lighter (same size as darker if selected)
   cairo_set_line_width(cr, (line_width / (selected && !border ? 1.0 : 2.0)));
 
-  if(restricted && !border)
-  {
-    cairo_set_dash(cr, dashed2, len, 4);
-    dt_draw_set_color_overlay(cr, TRUE, 1.0);
-  }
-  else if(!source)
-  {
-    dt_draw_set_color_overlay(cr, TRUE, selected ? 0.9 : 0.6);
-    cairo_set_dash(cr, dashed, border ? len : 0, 4);
-  }
+  dt_draw_set_color_overlay(cr, TRUE, selected ? 0.9 : 0.6);
+  cairo_set_dash(cr, dashed, border ? len : 0, 4);
 
   cairo_stroke(cr);
 }

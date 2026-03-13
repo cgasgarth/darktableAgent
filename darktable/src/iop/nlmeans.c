@@ -248,7 +248,7 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
                                   .cellsize = sizeof(float), .overhead = 0,
                                   .sizex = 1 << 16, .sizey = 1 };
 
-  if(dt_opencl_local_buffer_opt(devid, gd->kernel_nlmeans_horiz, &hlocopt) == CL_SUCCESS)
+  if(dt_opencl_local_buffer_opt(devid, gd->kernel_nlmeans_horiz, &hlocopt))
     hblocksize = hlocopt.sizex;
   else
     hblocksize = 1;
@@ -259,17 +259,19 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
                                   .cellsize = sizeof(float), .overhead = 0,
                                   .sizex = 1, .sizey = 1 << 16 };
 
-  if(dt_opencl_local_buffer_opt(devid, gd->kernel_nlmeans_vert, &vlocopt) == CL_SUCCESS)
+  if(dt_opencl_local_buffer_opt(devid, gd->kernel_nlmeans_vert, &vlocopt))
     vblocksize = vlocopt.sizey;
   else
     vblocksize = 1;
 
+  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
   size_t sizesl[3];
   size_t local[3];
 
-  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_nlmeans_init, width, height,
-          CLARG(dev_U2), CLARG(width), CLARG(height));
+  dt_opencl_set_kernel_args(devid, gd->kernel_nlmeans_init, 0, CLARG(dev_U2), CLARG(width), CLARG(height));
+  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_nlmeans_init, sizes);
   if(err != CL_SUCCESS) goto error;
+
 
   const size_t bwidth = ROUNDUP(width, hblocksize);
   const size_t bheight = ROUNDUP(height, vblocksize);
@@ -280,10 +282,9 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
       int q[2] = { i, j };
 
       cl_mem dev_U4 = buckets[bucket_next(&state, NUM_BUCKETS)];
-
-      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_nlmeans_dist, width, height,
-        CLARG(dev_in), CLARG(dev_U4), CLARG(width),
+      dt_opencl_set_kernel_args(devid, gd->kernel_nlmeans_dist, 0, CLARG(dev_in), CLARG(dev_U4), CLARG(width),
         CLARG(height), CLARG(q), CLARG(nL2), CLARG(nC2));
+      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_nlmeans_dist, sizes);
       if(err != CL_SUCCESS) goto error;
 
       sizesl[0] = bwidth;
@@ -293,9 +294,9 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
       local[1] = 1;
       local[2] = 1;
       cl_mem dev_U4_t = buckets[bucket_next(&state, NUM_BUCKETS)];
-      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_nlmeans_horiz, sizesl, local,
-        CLARG(dev_U4), CLARG(dev_U4_t), CLARG(width),
+      dt_opencl_set_kernel_args(devid, gd->kernel_nlmeans_horiz, 0, CLARG(dev_U4), CLARG(dev_U4_t), CLARG(width),
         CLARG(height), CLARG(q), CLARG(P), CLLOCAL((hblocksize + 2 * P) * sizeof(float)));
+      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_nlmeans_horiz, sizesl, local);
       if(err != CL_SUCCESS) goto error;
 
 
@@ -306,14 +307,15 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
       local[1] = vblocksize;
       local[2] = 1;
       cl_mem dev_U4_tt = buckets[bucket_next(&state, NUM_BUCKETS)];
-      err = dt_opencl_enqueue_kernel_2d_local_args(devid, gd->kernel_nlmeans_vert, sizesl, local,
-        CLARG(dev_U4_t), CLARG(dev_U4_tt),
+      dt_opencl_set_kernel_args(devid, gd->kernel_nlmeans_vert, 0, CLARG(dev_U4_t), CLARG(dev_U4_tt),
         CLARG(width), CLARG(height), CLARG(q), CLARG(P), CLARG(sharpness), CLLOCAL((vblocksize + 2 * P) * sizeof(float)));
+      err = dt_opencl_enqueue_kernel_2d_with_local(devid, gd->kernel_nlmeans_vert, sizesl, local);
       if(err != CL_SUCCESS) goto error;
 
-      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_nlmeans_accu, width, height,
-        CLARG(dev_in), CLARG(dev_U2), CLARG(dev_U4_tt),
+
+      dt_opencl_set_kernel_args(devid, gd->kernel_nlmeans_accu, 0, CLARG(dev_in), CLARG(dev_U2), CLARG(dev_U4_tt),
         CLARG(width), CLARG(height), CLARG(q));
+      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_nlmeans_accu, sizes);
       if(err != CL_SUCCESS) goto error;
 
       dt_opencl_finish_sync_pipe(devid, piece->pipe->type);
@@ -323,9 +325,9 @@ int process_cl(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece, cl_mem dev_
     }
 
   // normalize and blend
-  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_nlmeans_finish, width, height,
-    CLARG(dev_in), CLARG(dev_U2), CLARG(dev_out),
+  dt_opencl_set_kernel_args(devid, gd->kernel_nlmeans_finish, 0, CLARG(dev_in), CLARG(dev_U2), CLARG(dev_out),
     CLARG(width), CLARG(height), CLARG(weight));
+  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_nlmeans_finish, sizes);
 
 error:
   dt_opencl_release_mem_object(dev_U2);
@@ -350,7 +352,9 @@ void tiling_callback(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   tiling->maxbuf = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = P + K;
-  tiling->align = 1;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
+  return;
 }
 
 void process(

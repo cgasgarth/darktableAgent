@@ -129,7 +129,8 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->overhead = 0;
 
   tiling->overlap = 4;
-  tiling->align = 1;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
 }
 
 void distort_mask(dt_iop_module_t *self,
@@ -185,7 +186,7 @@ void process(dt_iop_module_t *self,
   if(exporting)
     dt_iop_clip_and_zoom_roi((float *)ovoid, (float *)ivoid, roi_out, roi_in);
   else
-    dt_iop_clip_and_zoom((float *)ovoid, (float *)ivoid, roi_out, roi_in, FALSE);
+    dt_iop_clip_and_zoom((float *)ovoid, (float *)ivoid, roi_out, roi_in);
 }
 
 void commit_params(dt_iop_module_t *self,

@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2019-2026 darktable developers.
+   Copyright (C) 2019-2024 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -2087,7 +2087,8 @@ void tiling_callback(dt_iop_module_t *self, dt_dev_pixelpipe_iop_t *piece,
   tiling->maxbuf_cl = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = max_filter_radius;
-  tiling->align = 1;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
   return;
 }
 
@@ -2264,9 +2265,9 @@ static inline cl_int reconstruct_highlights_cl(const cl_mem in, const cl_mem mas
   }
 
   // Init reconstructed with valid parts of image
-  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_init_reconstruct, width, height,
-    CLARG(in), CLARG(mask),
+  dt_opencl_set_kernel_args(devid, gd->kernel_filmic_init_reconstruct, 0, CLARG(in), CLARG(mask),
     CLARG(reconstructed), CLARG(width), CLARG(height));
+  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_init_reconstruct, sizes);
   if(err != CL_SUCCESS) goto error;
 
   // structure inpainting vs. texture duplicating weight
@@ -2310,21 +2311,21 @@ static inline cl_int reconstruct_highlights_cl(const cl_mem in, const cl_mem mas
     const int mult = 1 << s; // fancy-pants C notation for 2^s with integer type, don't be afraid
 
     // Compute wavelets low-frequency scales
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_horizontal, width, height,
-      CLARG(detail), CLARG(temp),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_horizontal, 0, CLARG(detail), CLARG(temp),
       CLARG(width), CLARG(height), CLARG(mult));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
     if(err != CL_SUCCESS) goto error;
 
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_vertical, width, height,
-      CLARG(temp), CLARG(LF),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_vertical, 0, CLARG(temp), CLARG(LF),
       CLARG(width), CLARG(height), CLARG(mult));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // Compute wavelets high-frequency scales and backup the maximum of texture over the RGB channels
     // Note : HF_RGB = detail - LF
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_wavelets_detail, width, height,
-      CLARG(detail), CLARG(LF),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_wavelets_detail, 0, CLARG(detail), CLARG(LF),
       CLARG(HF_RGB), CLARG(width), CLARG(height));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_wavelets_detail, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // Take a backup copy of HF_RGB in HF_grey - only HF_RGB will be blurred
@@ -2334,22 +2335,22 @@ static inline cl_int reconstruct_highlights_cl(const cl_mem in, const cl_mem mas
 
     // interpolate/blur/inpaint (same thing) the RGB high-frequency to fill holes
     const int blur_size = 1;
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_vertical, width, height,
-      CLARG(HF_RGB), CLARG(temp),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_vertical, 0, CLARG(HF_RGB), CLARG(temp),
       CLARG(width), CLARG(height), CLARG(blur_size));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
     if(err != CL_SUCCESS) goto error;
 
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_horizontal, width, height,
-      CLARG(temp), CLARG(HF_RGB),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_horizontal, 0, CLARG(temp), CLARG(HF_RGB),
       CLARG(width), CLARG(height), CLARG(blur_size));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // Reconstruct clipped parts
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_wavelets_reconstruct, width, height,
-      CLARG(HF_RGB), CLARG(LF),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_wavelets_reconstruct, 0, CLARG(HF_RGB), CLARG(LF),
       CLARG(HF_grey), CLARG(mask), CLARG(reconstructed), CLARG(reconstructed), CLARG(width), CLARG(height),
       CLARG(gamma), CLARG(gamma_comp), CLARG(beta), CLARG(beta_comp), CLARG(delta), CLARG(s), CLARG(scales),
       CLARG(variant));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_wavelets_reconstruct, sizes);
     if(err != CL_SUCCESS) goto error;
   }
 
@@ -2450,9 +2451,9 @@ int process_cl(dt_iop_module_t *self,
 
   // build a mask of clipped pixels
   mask = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float));
-  err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_mask, width, height,
-    CLARG(in), CLARG(mask), CLARG(width),
+  dt_opencl_set_kernel_args(devid, gd->kernel_filmic_mask, 0, CLARG(in), CLARG(mask), CLARG(width),
     CLARG(height), CLARG(d->normalize), CLARG(d->reconstruct_feather), CLARG(clipped));
+  err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_mask, sizes);
   if(err != CL_SUCCESS) goto error;
 
   // check for clipped pixels
@@ -2468,8 +2469,9 @@ int process_cl(dt_iop_module_t *self,
 
     if(g->show_mask)
     {
-      err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_show_mask, width, height,
-        CLARG(mask), CLARG(dev_out), CLARG(width), CLARG(height));
+      dt_opencl_set_kernel_args(devid, gd->kernel_filmic_show_mask, 0, CLARG(mask), CLARG(dev_out), CLARG(width),
+        CLARG(height));
+      err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_show_mask, sizes);
       dt_opencl_release_mem_object(mask);
       dt_ioppr_free_iccprofile_params_cl(&profile_info_cl, &profile_lut_cl, &dev_profile_info, &dev_profile_lut);
       return err;
@@ -2483,9 +2485,9 @@ int process_cl(dt_iop_module_t *self,
     // Inpaint noise
     const float noise_level = d->noise_level / scale;
     inpainted = dt_opencl_alloc_device(devid, sizes[0], sizes[1], sizeof(float) * 4);
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_inpaint_noise, width, height,
-      CLARG(in), CLARG(mask), CLARG(inpainted),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_inpaint_noise, 0, CLARG(in), CLARG(mask), CLARG(inpainted),
       CLARG(width), CLARG(height), CLARG(noise_level), CLARG(d->reconstruct_threshold), CLARG(d->noise_distribution));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_inpaint_noise, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // first step of highlight reconstruction in RGB
@@ -2505,9 +2507,9 @@ int process_cl(dt_iop_module_t *self,
         for(int i = 0; i < d->high_quality_reconstruction; i++)
         {
           // break ratios and norms
-          err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_compute_ratios, width, height,
-            CLARG(reconstructed), CLARG(norms),
+          dt_opencl_set_kernel_args(devid, gd->kernel_filmic_compute_ratios, 0, CLARG(reconstructed), CLARG(norms),
             CLARG(ratios), CLARG(d->preserve_color), CLARG(width), CLARG(height));
+          err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_compute_ratios, sizes);
           if(err != CL_SUCCESS) goto error;
 
           // second step of reconstruction over ratios
@@ -2515,9 +2517,9 @@ int process_cl(dt_iop_module_t *self,
           if(err != CL_SUCCESS) goto error;
 
           // restore ratios to RGB
-          err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_restore_ratios, width, height,
-            CLARG(reconstructed), CLARG(norms),
+          dt_opencl_set_kernel_args(devid, gd->kernel_filmic_restore_ratios, 0, CLARG(reconstructed), CLARG(norms),
             CLARG(reconstructed), CLARG(width), CLARG(height));
+          err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_restore_ratios, sizes);
           if(err != CL_SUCCESS) goto error;
         }
       }
@@ -2541,8 +2543,7 @@ int process_cl(dt_iop_module_t *self,
 
   if(d->preserve_color == DT_FILMIC_METHOD_NONE && d->version != DT_FILMIC_COLORSCIENCE_V5)
   {
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_rgb_split, width, height,
-      CLARG(in), CLARG(dev_out), CLARG(width),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_rgb_split, 0, CLARG(in), CLARG(dev_out), CLARG(width),
       CLARG(height), CLARG(d->dynamic_range), CLARG(d->black_source), CLARG(d->grey_source), CLARG(dev_profile_info),
       CLARG(dev_profile_lut), CLARG(use_work_profile), CLARG(d->sigma_toe), CLARG(d->sigma_shoulder),
       CLARG(d->saturation), CLARG(spline.M1), CLARG(spline.M2), CLARG(spline.M3), CLARG(spline.M4), CLARG(spline.M5),
@@ -2550,11 +2551,12 @@ int process_cl(dt_iop_module_t *self,
       CLARG(spline.type[0]), CLARG(spline.type[1]), CLARG(input_matrix_cl), CLARG(output_matrix_cl),
       CLARG(black_display), CLARG(white_display), CLARG(use_output_profile), CLARG(export_input_matrix_cl),
       CLARG(export_output_matrix_cl));
+
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_rgb_split, sizes);
   }
   else
   {
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_rgb_chroma, width, height,
-      CLARG(in), CLARG(dev_out), CLARG(width),
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_rgb_chroma, 0, CLARG(in), CLARG(dev_out), CLARG(width),
       CLARG(height), CLARG(d->dynamic_range), CLARG(d->black_source), CLARG(d->grey_source), CLARG(dev_profile_info),
       CLARG(dev_profile_lut), CLARG(use_work_profile), CLARG(d->sigma_toe), CLARG(d->sigma_shoulder),
       CLARG(d->saturation), CLARG(spline.M1), CLARG(spline.M2), CLARG(spline.M3), CLARG(spline.M4), CLARG(spline.M5),
@@ -2562,6 +2564,8 @@ int process_cl(dt_iop_module_t *self,
       CLARG(d->version), CLARG(spline.type[0]), CLARG(spline.type[1]), CLARG(input_matrix_cl), CLARG(output_matrix_cl),
       CLARG(black_display), CLARG(white_display), CLARG(use_output_profile), CLARG(export_input_matrix_cl),
       CLARG(export_output_matrix_cl), CLARG(norm_min), CLARG(norm_max));
+
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_rgb_chroma, sizes);
   }
 
 error:

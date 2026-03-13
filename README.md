@@ -38,7 +38,8 @@ This repository is in its initial setup stage.
 
 - The monorepo structure is in place.
 - Directory boundaries are defined.
-- Core implementation has not been migrated into this repo yet.
+- `darktable/` now contains the official darktable 5.4.1 stable source release as plain source files, not a nested git clone.
+- The custom local build installs into `darktable/.install-5.4.1`.
 
 ## Planned Priorities
 
@@ -47,6 +48,13 @@ This repository is in its initial setup stage.
 - integrate an in-UI chat surface inside darktable
 - add structured action execution and readback flows
 - expand into richer editing, masking, and workflow automation features
+
+## Local darktable workflow
+
+- Rebuild the local custom darktable with `./scripts/build_darktable_local.sh`
+- Run the local custom darktable with `./scripts/run_darktable_local.sh`
+- The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
+- The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
 
 ## License
 

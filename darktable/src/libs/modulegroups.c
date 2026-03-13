@@ -405,20 +405,14 @@ static gboolean _basics_goto_module(GtkWidget *w, GdkEventButton *e, gpointer us
 {
   dt_iop_module_t *module = (dt_iop_module_t *)(user_data);
   dt_dev_modulegroups_switch(darktable.develop, module);
-  const gboolean single = dt_conf_get_bool("darkroom/ui/single_module");
-  dt_iop_gui_set_expanded(module, TRUE, single);
-  // when single_module is on, the first call with collapse_others=TRUE
-  // may toggle the module closed if all others were already closed;
-  // this second call ensures the module ends up expanded.
-  if(single)
-    dt_iop_gui_set_expanded(module, TRUE, FALSE);
+  dt_iop_gui_set_expanded(module, TRUE, TRUE);
+  dt_iop_gui_set_expanded(module, TRUE, FALSE);
   return TRUE;
 }
 
-static gboolean _basics_on_off_label_callback(GtkWidget *widget, GdkEventButton *e, GtkToggleButton *btn)
+static void _basics_on_off_label_callback(GtkWidget *widget, GdkEventButton *e, GtkToggleButton *btn)
 {
   gtk_toggle_button_set_active(btn, !gtk_toggle_button_get_active(btn));
-  return TRUE;
 }
 
 static void _sync_visibility(GtkWidget *widget,
@@ -1945,6 +1939,7 @@ static void _manage_editor_groups_cleanup(dt_lib_module_t *self,
 }
 
 static void _manage_editor_basics_remove(GtkWidget *widget,
+                                         GdkEventButton *event,
                                          dt_lib_module_t *self)
 {
   dt_lib_modulegroups_t *d = self->data;
@@ -2012,7 +2007,7 @@ static void _manage_editor_basics_update_list(dt_lib_module_t *self)
 
             gtk_widget_set_tooltip_text(btn, _("remove this widget"));
             g_object_set_data(G_OBJECT(btn), "widget_id", item->id);
-            g_signal_connect(G_OBJECT(btn), "clicked",
+            g_signal_connect(G_OBJECT(btn), "button-press-event",
                              G_CALLBACK(_manage_editor_basics_remove), self);
             gtk_box_pack_end(GTK_BOX(hb), btn, FALSE, TRUE, 0);
           }
@@ -2080,6 +2075,7 @@ static void _manage_editor_save(dt_lib_module_t *self)
 }
 
 static void _manage_editor_module_remove(GtkWidget *widget,
+                                         GdkEventButton *event,
                                          dt_lib_module_t *self)
 {
   const char *module = (char *)g_object_get_data(G_OBJECT(widget), "module_name");
@@ -2135,7 +2131,7 @@ static void _manage_editor_module_update_list(dt_lib_module_t *self,
           gtk_widget_set_tooltip_text(btn, _("remove this module"));
           g_object_set_data(G_OBJECT(btn), "module_name", module->op);
           g_object_set_data(G_OBJECT(btn), "group", gr);
-          g_signal_connect(G_OBJECT(btn), "clicked",
+          g_signal_connect(G_OBJECT(btn), "button-press-event",
                            G_CALLBACK(_manage_editor_module_remove), self);
           gtk_box_pack_end(GTK_BOX(hb), btn, FALSE, TRUE, 0);
         }
@@ -2381,7 +2377,7 @@ static void _manage_module_add_popup(GtkWidget *widget,
           gtk_widget_set_tooltip_text(GTK_WIDGET(smir), _("add this module"));
           g_object_set_data(G_OBJECT(smir), "module_op", module->op);
           g_object_set_data(G_OBJECT(smir), "group", gr);
-          g_signal_connect_data(G_OBJECT(smir), "activate", callback, data, NULL, 0);
+          g_signal_connect(G_OBJECT(smir), "activate", callback, data);
           gtk_menu_shell_insert(GTK_MENU_SHELL(pop), GTK_WIDGET(smir), nba);
         }
         GtkMenuItem *smi = (GtkMenuItem *)gtk_menu_item_new_with_label(module->name());
@@ -2389,7 +2385,7 @@ static void _manage_module_add_popup(GtkWidget *widget,
         gtk_widget_set_tooltip_text(GTK_WIDGET(smi), _("add this module"));
         g_object_set_data(G_OBJECT(smi), "module_op", module->op);
         g_object_set_data(G_OBJECT(smi), "group", gr);
-        g_signal_connect_data(G_OBJECT(smi), "activate", callback, data, NULL, 0);
+        g_signal_connect(G_OBJECT(smi), "activate", callback, data);
         gtk_menu_shell_prepend(GTK_MENU_SHELL(sm_all), GTK_WIDGET(smi));
       }
       else if(toggle)
@@ -2399,7 +2395,7 @@ static void _manage_module_add_popup(GtkWidget *widget,
         gtk_widget_set_tooltip_text(GTK_WIDGET(smi), _("remove this module"));
         g_object_set_data(G_OBJECT(smi), "module_op", module->op);
         g_object_set_data(G_OBJECT(smi), "group", gr);
-        g_signal_connect_data(G_OBJECT(smi), "activate", callback, data, NULL, 0);
+        g_signal_connect(G_OBJECT(smi), "activate", callback, data);
         gtk_menu_shell_insert(GTK_MENU_SHELL(pop), GTK_WIDGET(smi), 0);
         nba++;
       }
@@ -2553,7 +2549,7 @@ static GtkWidget *_build_menu_from_actions(dt_action_t *actions,
             gtk_widget_set_tooltip_text(item_top, _("remove this widget"));
             gtk_widget_set_name(item_top, "modulegroups-popup-item");
             g_object_set_data(G_OBJECT(item_top), "widget_id", action);
-            g_signal_connect_data(G_OBJECT(item_top), "activate", callback, self, NULL, 0);
+            g_signal_connect(G_OBJECT(item_top), "activate", callback, self);
             gtk_menu_shell_insert(GTK_MENU_SHELL(base_menu), item_top, *num_selected);
             ++*num_selected;
           }
@@ -2570,7 +2566,7 @@ static GtkWidget *_build_menu_from_actions(dt_action_t *actions,
             gtk_widget_set_tooltip_text(item_top, _("add this widget"));
             gtk_widget_set_name(item_top, "modulegroups-popup-item");
             g_object_set_data(G_OBJECT(item_top), "widget_id", action);
-            g_signal_connect_data(G_OBJECT(item_top), "activate", callback, self, NULL, 0);
+            g_signal_connect(G_OBJECT(item_top), "activate", callback, self);
             gtk_menu_shell_append(GTK_MENU_SHELL(base_menu), item_top);
           }
           g_free(delimited_id);
@@ -2588,7 +2584,7 @@ static GtkWidget *_build_menu_from_actions(dt_action_t *actions,
         }
 
         g_object_set_data(G_OBJECT(item), "widget_id", action);
-        g_signal_connect_data(G_OBJECT(item), "activate", callback, self, NULL, 0);
+        g_signal_connect(G_OBJECT(item), "activate", callback, self);
         g_free(action_id);
       }
       g_free(action_label);
@@ -2644,12 +2640,14 @@ static void _manage_basics_add_popup(GtkWidget *widget,
 }
 
 static void _manage_editor_basics_add_popup(GtkWidget *widget,
+                                            GdkEvent *event,
                                             dt_lib_module_t *self)
 {
   _manage_basics_add_popup(widget, self, FALSE);
 }
 
 static void _manage_editor_module_add_popup(GtkWidget *widget,
+                                            GdkEventButton *event,
                                             dt_lib_module_t *self)
 {
   dt_lib_modulegroups_group_t *gr = g_object_get_data(G_OBJECT(widget), "group");
@@ -3081,6 +3079,7 @@ static void _buttons_update(dt_lib_module_t *self)
 }
 
 static void _manage_editor_group_move_right(GtkWidget *widget,
+                                            GdkEventButton *event,
                                             dt_lib_module_t *self)
 {
   dt_lib_modulegroups_t *d = self->data;
@@ -3100,6 +3099,7 @@ static void _manage_editor_group_move_right(GtkWidget *widget,
 }
 
 static void _manage_editor_group_move_left(GtkWidget *widget,
+                                           GdkEventButton *event,
                                            dt_lib_module_t *self)
 {
   dt_lib_modulegroups_t *d = self->data;
@@ -3119,6 +3119,7 @@ static void _manage_editor_group_move_left(GtkWidget *widget,
 }
 
 static void _manage_editor_group_remove(GtkWidget *widget,
+                                        GdkEventButton *event,
                                         dt_lib_module_t *self)
 {
   dt_lib_modulegroups_t *d = self->data;
@@ -3158,7 +3159,7 @@ static void _manage_editor_group_name_changed(GtkWidget *tb,
   gr->name = g_strdup(txt);
 }
 
-static gboolean _manage_editor_group_icon_changed(GtkWidget *widget,
+static void _manage_editor_group_icon_changed(GtkWidget *widget,
                                               GdkEventButton *event,
                                               dt_lib_modulegroups_group_t *gr)
 {
@@ -3169,10 +3170,10 @@ static gboolean _manage_editor_group_icon_changed(GtkWidget *widget,
   GtkWidget *btn = gtk_popover_get_relative_to(GTK_POPOVER(pop));
   dtgtk_button_set_paint(DTGTK_BUTTON(btn), _buttons_get_icon_fct(ic), 0, NULL);
   gtk_popover_popdown(GTK_POPOVER(pop));
-  return TRUE;
 }
 
 static void _manage_editor_group_icon_popup(GtkWidget *btn,
+                                            GdkEventButton *event,
                                             dt_lib_module_t *self)
 {
   dt_lib_modulegroups_group_t *gr = g_object_get_data(G_OBJECT(btn), "group");
@@ -3334,7 +3335,7 @@ static GtkWidget *_manage_editor_group_init_basics_box(dt_lib_module_t *self)
                                      CPF_DIRECTION_LEFT, NULL);
     gtk_widget_set_tooltip_text(bt, _("add widget to the quick access panel"));
     gtk_widget_set_name(bt, "modulegroups-btn");
-    g_signal_connect(G_OBJECT(bt), "clicked",
+    g_signal_connect(G_OBJECT(bt), "button-press-event",
                      G_CALLBACK(_manage_editor_basics_add_popup), self);
     gtk_widget_set_halign(hb4, GTK_ALIGN_CENTER);
     gtk_box_pack_start(GTK_BOX(hb4), bt, FALSE, FALSE, 0);
@@ -3367,7 +3368,7 @@ static GtkWidget *_manage_editor_group_init_modules_box(dt_lib_module_t *self,
   gtk_widget_set_name(btn, "modulegroups-group-icon");
   gtk_widget_set_tooltip_text(btn, _("group icon"));
   gtk_widget_set_sensitive(btn, !d->edit_ro);
-  g_signal_connect(G_OBJECT(btn), "clicked",
+  g_signal_connect(G_OBJECT(btn), "button-press-event",
                    G_CALLBACK(_manage_editor_group_icon_popup), self);
   g_object_set_data(G_OBJECT(btn), "group", gr);
   gtk_box_pack_start(GTK_BOX(hb3), btn, FALSE, TRUE, 0);
@@ -3389,7 +3390,7 @@ static GtkWidget *_manage_editor_group_init_modules_box(dt_lib_module_t *self,
     btn = dtgtk_button_new(dtgtk_cairo_paint_remove, 0, NULL);
     gtk_widget_set_tooltip_text(btn, _("remove group"));
     g_object_set_data(G_OBJECT(btn), "group", gr);
-    g_signal_connect(G_OBJECT(btn), "clicked",
+    g_signal_connect(G_OBJECT(btn), "button-press-event",
                      G_CALLBACK(_manage_editor_group_remove), self);
     gtk_box_pack_end(GTK_BOX(hb3), btn, FALSE, TRUE, 0);
   }
@@ -3417,7 +3418,7 @@ static GtkWidget *_manage_editor_group_init_modules_box(dt_lib_module_t *self,
     gtk_widget_set_name(btn, "modulegroups-btn");
     gtk_widget_set_tooltip_text(btn, _("move group to the left"));
     g_object_set_data(G_OBJECT(btn), "group", gr);
-    g_signal_connect(G_OBJECT(btn), "clicked",
+    g_signal_connect(G_OBJECT(btn), "button-press-event",
                      G_CALLBACK(_manage_editor_group_move_left), self);
     gtk_box_pack_start(GTK_BOX(hb4), btn, FALSE, FALSE, 2);
 
@@ -3428,7 +3429,7 @@ static GtkWidget *_manage_editor_group_init_modules_box(dt_lib_module_t *self,
     gtk_widget_set_tooltip_text(bt, _("add module to the group"));
     gtk_widget_set_name(bt, "modulegroups-btn");
     g_object_set_data(G_OBJECT(bt), "group", gr);
-    g_signal_connect(G_OBJECT(bt), "clicked",
+    g_signal_connect(G_OBJECT(bt), "button-press-event",
                      G_CALLBACK(_manage_editor_module_add_popup), self);
     gtk_widget_set_halign(plusbox, GTK_ALIGN_CENTER);
     gtk_box_pack_start(GTK_BOX(plusbox), bt, FALSE, FALSE, 0);
@@ -3439,7 +3440,7 @@ static GtkWidget *_manage_editor_group_init_modules_box(dt_lib_module_t *self,
     gtk_widget_set_name(btn, "modulegroups-btn");
     gtk_widget_set_tooltip_text(btn, _("move group to the right"));
     g_object_set_data(G_OBJECT(btn), "group", gr);
-    g_signal_connect(G_OBJECT(btn), "clicked",
+    g_signal_connect(G_OBJECT(btn), "button-press-event",
                      G_CALLBACK(_manage_editor_group_move_right), self);
     gtk_box_pack_end(GTK_BOX(hb4), btn, FALSE, FALSE, 2);
 
@@ -3452,6 +3453,7 @@ static GtkWidget *_manage_editor_group_init_modules_box(dt_lib_module_t *self,
 }
 
 static void _manage_editor_reset(GtkWidget *widget,
+                                 GdkEventButton *event,
                                  dt_lib_module_t *self)
 {
   dt_lib_modulegroups_t *d = self->data;
@@ -3462,6 +3464,7 @@ static void _manage_editor_reset(GtkWidget *widget,
 }
 
 static void _manage_editor_group_add(GtkWidget *widget,
+                                     GdkEventButton *event,
                                      dt_lib_module_t *self)
 {
   dt_lib_modulegroups_t *d = self->data;
@@ -3733,7 +3736,7 @@ static void _preset_autoapply_edit(GtkButton *button,
   {
     const int rowid = sqlite3_column_int(stmt, 0);
     sqlite3_finalize(stmt);
-    dt_gui_presets_show_edit_dialog(d->edit_preset,
+    dt_gui_presets_show_edit_dialog(d->edit_preset, self->name(self),
                                     rowid, G_CALLBACK(_preset_autoapply_changed),
                                     self, FALSE, FALSE, FALSE, GTK_WINDOW(d->dialog));
   }
@@ -4042,7 +4045,7 @@ static void _manage_show_window(dt_lib_module_t *self)
   gtk_box_pack_start(GTK_BOX(hb), gtk_label_new(_("module groups")), FALSE, TRUE, 0);
   d->preset_btn_add_group = dtgtk_button_new(dtgtk_cairo_paint_square_plus,
                                              CPF_DIRECTION_LEFT, NULL);
-  g_signal_connect(G_OBJECT(d->preset_btn_add_group), "clicked",
+  g_signal_connect(G_OBJECT(d->preset_btn_add_group), "button-press-event",
                    G_CALLBACK(_manage_editor_group_add),
                    self);
   gtk_box_pack_start(GTK_BOX(hb), d->preset_btn_add_group, FALSE, FALSE, 0);
@@ -4067,7 +4070,7 @@ static void _manage_show_window(dt_lib_module_t *self)
   hb2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
   d->preset_reset_btn = gtk_button_new_with_label(_("reset"));
-  g_signal_connect(G_OBJECT(d->preset_reset_btn), "clicked",
+  g_signal_connect(G_OBJECT(d->preset_reset_btn), "button-press-event",
                    G_CALLBACK(_manage_editor_reset), self);
   gtk_box_pack_end(GTK_BOX(hb2), d->preset_reset_btn, FALSE, TRUE, 0);
 

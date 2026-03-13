@@ -1,6 +1,6 @@
 /*
    This file is part of darktable,
-   Copyright (C) 2021-2026 darktable developers.
+   Copyright (C) 2021-2025 darktable developers.
 
    darktable is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -797,7 +797,8 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->maxbuf_cl = 1.0f;
   tiling->overhead = 0;
   tiling->overlap = max_filter_radius;
-  tiling->align = 1;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
   return;
 }
 
@@ -1455,6 +1456,7 @@ static inline cl_int wavelets_process_cl(const int devid,
                                          cl_mem in,
                                          cl_mem reconstructed,
                                          cl_mem mask,
+                                         const size_t sizes[3],
                                          const int width,
                                          const int height,
                                          const dt_iop_diffuse_data_t *const data,
@@ -1523,21 +1525,24 @@ static inline cl_int wavelets_process_cl(const int devid,
     }
 
     // Compute wavelets low-frequency scales
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_horizontal, width, height,
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_horizontal, 0,
                               CLARG(buffer_in), CLARG(HF[s]),
                               CLARG(width), CLARG(height), CLARG(mult));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_horizontal, sizes);
     if(err != CL_SUCCESS) return err;
 
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_bspline_vertical, width, height,
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_bspline_vertical, 0,
                               CLARG(HF[s]), CLARG(buffer_out),
                               CLARG(width), CLARG(height), CLARG(mult));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_bspline_vertical, sizes);
     if(err != CL_SUCCESS) return err;
 
     // Compute wavelets high-frequency scales and backup the maximum
     // of texture over the RGB channels Note : HF = detail - LF
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_filmic_wavelets_detail, width, height,
+    dt_opencl_set_kernel_args(devid, gd->kernel_filmic_wavelets_detail, 0,
                               CLARG(buffer_in), CLARG(buffer_out),
                               CLARG(HF[s]), CLARG(width), CLARG(height));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_filmic_wavelets_detail, sizes);
     if(err != CL_SUCCESS) return err;
 
     residual = buffer_out;
@@ -1584,7 +1589,7 @@ static inline cl_int wavelets_process_cl(const int devid,
     if(s == 0) buffer_out = reconstructed;
 
     // Compute wavelets low-frequency scales
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_diffuse_pde, width, height,
+    dt_opencl_set_kernel_args(devid, gd->kernel_diffuse_pde, 0,
                               CLARG(HF[s]), CLARG(buffer_in), CLARG(mask),
                               CLARG(has_mask), CLARG(buffer_out),
                               CLARG(width), CLARG(height),
@@ -1592,6 +1597,7 @@ static inline cl_int wavelets_process_cl(const int devid,
                               CLARG(regularization), CLARG(variance_threshold),
                               CLARG(current_radius_square), CLARG(mult), CLARG(ABCD),
                               CLARG(strength));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_diffuse_pde, sizes);
     if(err != CL_SUCCESS) return err;
 
     count++;
@@ -1627,7 +1633,7 @@ int process_cl(dt_iop_module_t *self,
   if(fastmode)
     return dt_opencl_enqueue_copy_image(devid, dev_in, dev_out, origin, origin, region);
 
-  size_t sizes[3] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
+  size_t sizes[] = { ROUNDUPDWD(width, devid), ROUNDUPDHT(height, devid), 1 };
 
   cl_mem in = dev_in;
   cl_mem temp_in = NULL;
@@ -1668,17 +1674,17 @@ int process_cl(dt_iop_module_t *self,
   if(has_mask)
   {
     // build a boolean mask, TRUE where image is above threshold, FALSE otherwise
-    // FIXME OPENCL these kernels don't check for width & height
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_diffuse_build_mask, width, height,
+    dt_opencl_set_kernel_args(devid, gd->kernel_diffuse_build_mask, 0,
                               CLARG(in), CLARG(mask), CLARG(data->threshold),
                               CLARG(roi_out->width), CLARG(roi_out->height));
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_diffuse_build_mask, sizes);
     if(err != CL_SUCCESS) goto error;
 
     // init the inpainting area with noise
-    err = dt_opencl_enqueue_kernel_2d_args(devid, gd->kernel_diffuse_inpaint_mask, width, height,
+    dt_opencl_set_kernel_args(devid, gd->kernel_diffuse_inpaint_mask, 0,
                               CLARG(temp1), CLARG(in), CLARG(mask),
                               CLARG(roi_out->width), CLARG(roi_out->height));
-
+    err = dt_opencl_enqueue_kernel_2d(devid, gd->kernel_diffuse_inpaint_mask, sizes);
     if(err != CL_SUCCESS) goto error;
 
     in = temp1;
@@ -1704,7 +1710,7 @@ int process_cl(dt_iop_module_t *self,
 
     if(it == iterations - 1)
       temp_out = dev_out;
-    err = wavelets_process_cl(devid, temp_in, temp_out, mask,
+    err = wavelets_process_cl(devid, temp_in, temp_out, mask, sizes,
                               width, height, data, gd, final_radius,
                               scale, scales, has_mask, HF, LF_odd, LF_even);
   }

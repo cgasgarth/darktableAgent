@@ -59,9 +59,8 @@ Requirements
 * FreeBSD
 * NetBSD
 * OpenBSD
-* Windows 10 and later
+* Windows 8.1 with [UCRT](https://support.microsoft.com/en-us/topic/update-for-universal-c-runtime-in-windows-c0514201-7fe6-95a3-b0a5-287930f3560c) and later
 * Apple Silicon Macs running macOS 14 and later
-* Intel Macs running macOS 15 and later
 
 *Big-endian platforms are not supported.*
 
@@ -94,12 +93,13 @@ you can build the software yourself following the instructions [below](#building
 
 ### Latest release
 
-5.4.1 (stable)
+5.4.0 (stable)
 
-* [Download package for Windows](https://github.com/darktable-org/darktable/releases/download/release-5.4.1/darktable-5.4.1-win64.exe)
-* [Download disk image for macOS on Apple Silicon](https://github.com/darktable-org/darktable/releases/download/release-5.4.1/darktable-5.4.1-arm64.dmg)
-* [Download disk image for macOS on Intel](https://github.com/darktable-org/darktable/releases/download/release-5.4.1/darktable-5.4.1-x86_64.dmg)
-* [Download AppImage for Linux](https://github.com/darktable-org/darktable/releases/download/release-5.4.1/Darktable-5.4.1-x86_64.AppImage)
+* [Download package for Windows](https://github.com/darktable-org/darktable/releases/download/release-5.4.0/darktable-5.4.0-win64.exe)
+* [Download disk image for macOS on Intel](https://github.com/darktable-org/darktable/releases/download/release-5.4.0/darktable-5.4.0-x86_64.dmg)
+* [Download disk image for macOS on Apple Silicon](https://github.com/darktable-org/darktable/releases/download/release-5.4.0/darktable-5.4.0-arm64.dmg)
+* [Download disk image for macOS 13.5 on Apple Silicon](https://github.com/darktable-org/darktable/releases/download/release-5.4.0/darktable-5.4.0-arm64-13.5.dmg)
+* [Download AppImage for Linux](https://github.com/darktable-org/darktable/releases/download/release-5.4.0/Darktable-5.4.0-x86_64.AppImage)
 * [Install native packages or add a third-party repository for Linux distros](https://software.opensuse.org/download.html?project=graphics:darktable:stable&package=darktable)
 * [Install Flatpak package for Linux](https://flathub.org/apps/details/org.darktable.Darktable)
 * [More information about installing darktable on any system](https://www.darktable.org/install/)
@@ -176,7 +176,6 @@ Required dependencies (minimum version):
 * libcurl 7.56
 * libpng 1.5.0 *(for PNG import & export, also for reading LUT files in PNG format)*
 * Exiv2 0.27.2 *(but at least 0.27.4 built with ISO BMFF support needed for Canon CR3 raw import)*
-* potrace 1.16
 * pugixml 1.8
 
 Required dependencies (no version requirement):
@@ -194,7 +193,6 @@ Optional dependencies (minimum version):
 * libgphoto2 2.5 *(for camera tethering)*
 * Imath 3.1.0 *(for 16-bit "half" float TIFF export and faster import)*
 * libavif 0.9.3 *(for AVIF import & export)*
-* libarchive 3.8.5 *(for AI models download)*
 * libheif 1.13.0 *(for HEIF/HEIC/HIF import; also for AVIF import if no libavif)*
 * libjxl 0.7.0 *(for JPEG XL import & export)*
 * WebP 0.3.0 *(for WebP import & export)*
@@ -269,7 +267,7 @@ See below (in "Using") how to start a test install of the unstable version witho
 
 #### Latest stable release
 
-5.4.1
+5.4.0
 
 The darktable project releases two major versions every year, on Summer and Winter Solstices, tagged with even numbers (e.g. 4.2, 4.4, 4.6, 4.8).
 Minor revisions are tagged with a third digit (e.g. 4.4.1, 4.4.2) and mostly provide bug fixes and camera support.
@@ -279,7 +277,7 @@ You may want to compile these stable releases yourself to get better performance
 git clone --recurse-submodules --depth 1 https://github.com/darktable-org/darktable.git
 cd darktable
 git fetch --tags
-git checkout tags/release-5.4.1
+git checkout tags/release-5.4.0
 ```
 
 ### Get submodules
@@ -343,11 +341,11 @@ sudo cmake --install .
 
 ##### macOS
 
-See [Homebrew](packaging/macosx/BUILD_hb.txt) or [MacPorts](packaging/macosx/BUILD.txt) instructions.
+See [Homebrew](https://github.com/darktable-org/darktable/blob/master/packaging/macosx/BUILD_hb.txt) or [MacPorts](https://github.com/darktable-org/darktable/blob/master/packaging/macosx/BUILD.txt) instructions.
 
 ##### Windows
 
-See [these instructions](packaging/windows/README.md).
+See [these instructions](https://github.com/darktable-org/darktable/tree/master/packaging/windows).
 
 ### Using
 

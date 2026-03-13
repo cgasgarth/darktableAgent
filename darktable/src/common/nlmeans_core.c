@@ -1,6 +1,6 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2011-2026 darktable developers.
+    Copyright (C) 2011-2024 darktable developers.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -572,14 +572,14 @@ static void get_blocksizes(
                                   .cellsize = sizeof(float), .overhead = 0,
                                   .sizex = 1 << 16, .sizey = 1 };
 
-  *h = dt_opencl_local_buffer_opt(devid, horiz_kernel, &hlocopt) == CL_SUCCESS ? hlocopt.sizex : 1;
+  *h = dt_opencl_local_buffer_opt(devid, horiz_kernel, &hlocopt) ? hlocopt.sizex : 1;
 
   dt_opencl_local_buffer_t vlocopt
     = (dt_opencl_local_buffer_t){ .xoffset = 1, .xfactor = 1, .yoffset = 2 * radius, .yfactor = 1,
                                   .cellsize = sizeof(float), .overhead = 0,
                                   .sizex = 1, .sizey = 1 << 16 };
 
-  *v = dt_opencl_local_buffer_opt(devid, vert_kernel, &vlocopt) == CL_SUCCESS ? vlocopt.sizey : 1;
+  *v = dt_opencl_local_buffer_opt(devid, vert_kernel, &vlocopt) ? vlocopt.sizey : 1;
   return;
 }
 
@@ -610,9 +610,9 @@ static inline cl_int nlmeans_cl_horiz(
 {
   const size_t sizesl[3] = { bwidth, ROUNDUPDHT(height, devid), 1 };
   const size_t local[3] = { hblocksize, 1, 1 };
-  return dt_opencl_enqueue_kernel_2d_local_args(devid, kernel, sizesl, local,
-    CLARG(dev_U4), CLARG(dev_U4_t), CLARG(width), CLARG(height), CLARRAY(2, q),
+  dt_opencl_set_kernel_args(devid, kernel, 0, CLARG(dev_U4), CLARG(dev_U4_t), CLARG(width), CLARG(height), CLARRAY(2, q),
     CLARG(P), CLLOCAL((hblocksize + 2 * P) * sizeof(float)));
+  return dt_opencl_enqueue_kernel_2d_with_local(devid, kernel, sizesl, local);
 }
 
 // add difference-weighted proportion of patch-center pixel to output pixel
@@ -627,8 +627,9 @@ static inline cl_int nlmeans_cl_accu(
         const int width,
         const size_t sizes[3])
 {
-  return dt_opencl_enqueue_kernel_2d_args(devid, kernel, sizes[0], sizes[1],
-    CLARG(dev_in), CLARG(dev_out), CLARG(dev_U4_tt), CLARG(width), CLARG(height), CLARRAY(2, q));
+  dt_opencl_set_kernel_args(devid, kernel, 0, CLARG(dev_in), CLARG(dev_out), CLARG(dev_U4_tt), CLARG(width),
+    CLARG(height), CLARRAY(2, q));
+  return dt_opencl_enqueue_kernel_2d(devid, kernel, sizes);
 }
 
 int nlmeans_denoise_cl(
@@ -678,9 +679,9 @@ int nlmeans_denoise_cl(
 
     // compute channel-normed squared differences between input pixels and shifted (by q) pixels
     cl_mem dev_U4 = buckets[bucket_next(&state, NUM_BUCKETS)];
-    err = dt_opencl_enqueue_kernel_2d_args(devid, params->kernel_dist, width, height,
-      CLARG(dev_in), CLARG(dev_U4), CLARG(width),
+    dt_opencl_set_kernel_args(devid, params->kernel_dist, 0, CLARG(dev_in), CLARG(dev_U4), CLARG(width),
       CLARG(height), CLARG(q), CLARG(nL2), CLARG(nC2));
+    err = dt_opencl_enqueue_kernel_2d(devid, params->kernel_dist, sizes);
     if(err != CL_SUCCESS) break;
 
     // add up individual columns
@@ -693,9 +694,9 @@ int nlmeans_denoise_cl(
     const size_t local[3] = { 1, vblocksize, 1 };
     const float sharpness = params->sharpness;
     cl_mem dev_U4_tt = buckets[bucket_next(&state, NUM_BUCKETS)];
-    err = dt_opencl_enqueue_kernel_2d_local_args(devid, params->kernel_vert, sizesl, local,
-      CLARG(dev_U4_t), CLARG(dev_U4_tt), CLARG(width),
+    dt_opencl_set_kernel_args(devid, params->kernel_vert, 0, CLARG(dev_U4_t), CLARG(dev_U4_tt), CLARG(width),
       CLARG(height), CLARG(q), CLARG(P), CLARG(sharpness), CLLOCAL((vblocksize + 2 * P) * sizeof(float)));
+    err = dt_opencl_enqueue_kernel_2d_with_local(devid, params->kernel_vert, sizesl, local);
     if(err != CL_SUCCESS) break;
 
     // add weighted proportion of patch's center pixel to output pixel
@@ -764,8 +765,9 @@ int nlmeans_denoiseprofile_cl(
 
     // compute squared differences between input pixels and shifted (by q) pixels
     cl_mem dev_U4 = buckets[bucket_next(&state, NUM_BUCKETS)];
-    err = dt_opencl_enqueue_kernel_2d_args(devid, params->kernel_dist, width, height,
-            CLARG(dev_in), CLARG(dev_U4), CLARG(width), CLARG(height), CLARG(q));
+    dt_opencl_set_kernel_args(devid, params->kernel_dist, 0, CLARG(dev_in), CLARG(dev_U4), CLARG(width),
+      CLARG(height), CLARG(q));
+    err = dt_opencl_enqueue_kernel_2d(devid, params->kernel_dist, sizes);
     if(err != CL_SUCCESS) break;
 
     // add up individual columns
@@ -778,10 +780,10 @@ int nlmeans_denoiseprofile_cl(
     const size_t local[3] = { 1, vblocksize, 1 };
     const float central_pixel_weight = params->center_weight;
     cl_mem dev_U4_tt = buckets[bucket_next(&state, NUM_BUCKETS)];
-    err = dt_opencl_enqueue_kernel_2d_local_args(devid, params->kernel_vert, sizesl, local,
-      CLARG(dev_U4_t), CLARG(dev_U4_tt), CLARG(width),
+    dt_opencl_set_kernel_args(devid, params->kernel_vert, 0, CLARG(dev_U4_t), CLARG(dev_U4_tt), CLARG(width),
       CLARG(height), CLARG(q), CLARG(P), CLARG(norm), CLLOCAL((vblocksize + 2 * P) * sizeof(float)),
       CLARG(central_pixel_weight), CLARG(dev_U4));
+    err = dt_opencl_enqueue_kernel_2d_with_local(devid, params->kernel_vert, sizesl, local);
     if(err != CL_SUCCESS) break;
 
     // add weighted proportion of patch's center pixel to output pixel

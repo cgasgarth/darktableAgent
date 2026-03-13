@@ -23,11 +23,6 @@
 #include "imageio/imageio_jpeg.h"
 #include <gphoto2/gphoto2-file.h>
 
-#ifdef USE_LUA
-#include "lua/call.h"
-#include "lua/events.h"
-#endif
-
 #include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -688,13 +683,9 @@ static void _camctl_unlock(const dt_camctl_t *c)
   _dispatch_control_status(c, CAMERA_CONTROL_AVAILABLE);
 }
 
-static void *_update_cameras_thread(void *ptr);
 dt_camctl_t *dt_camctl_new()
 {
   dt_camctl_t *camctl = g_malloc0(sizeof(dt_camctl_t));
-  if(camctl == NULL)
-    return NULL;
-
   dt_print(DT_DEBUG_CAMCTL, "[camera_control] creating new context %p", camctl);
 
   // Initialize gphoto2 context and setup dispatch callbacks
@@ -718,14 +709,6 @@ dt_camctl_t *dt_camctl_new()
 
   dt_pthread_mutex_init(&camctl->lock, NULL);
   dt_pthread_mutex_init(&camctl->listeners_lock, NULL);
-
-  /* create thread taking care of connecting gphoto2 devices */
-  if(dt_control_running())
-  {
-    dt_control_t *control = darktable.control;
-    if(dt_pthread_create(&control->update_gphoto_thread, _update_cameras_thread, camctl))
-      dt_print(DT_DEBUG_ALWAYS, "could not start camera update thread");
-  }
   return camctl;
 }
 
@@ -858,7 +841,7 @@ static gboolean _camctl_update_cameras(const dt_camctl_t *c)
   if(!camctl) return FALSE;
 
   dt_pthread_mutex_lock(&camctl->lock);
-  camctl->changed_camera = FALSE;
+  gboolean changed_camera = FALSE;
 
   /* reload portdrivers */
   if(camctl->gpports) gp_port_info_list_free(camctl->gpports);
@@ -913,7 +896,7 @@ static gboolean _camctl_update_cameras(const dt_camctl_t *c)
       dt_print(DT_DEBUG_CAMCTL,
                "[camera_control] found new %s on port %s",
                testcam->model, testcam->port);
-      camctl->changed_camera = TRUE;
+      changed_camera = TRUE;
     }
     g_free(testcam);
   }
@@ -944,7 +927,7 @@ static gboolean _camctl_update_cameras(const dt_camctl_t *c)
         camctl->unused_cameras = unused_item =
           g_list_delete_link(c->unused_cameras, unused_item);
         _camctl_unused_camera_destroy(oldcam);
-        camctl->changed_camera = TRUE;
+        changed_camera = TRUE;
       }
       else
       {
@@ -992,7 +975,7 @@ static gboolean _camctl_update_cameras(const dt_camctl_t *c)
           }
           // Add to camera list
           camctl->cameras = g_list_append(camctl->cameras, camera);
-          camctl->changed_camera = TRUE;
+          changed_camera = TRUE;
 
           dt_print(DT_DEBUG_CAMCTL,
                    "[camera_control] remove %s on port %s from"
@@ -1038,7 +1021,7 @@ static gboolean _camctl_update_cameras(const dt_camctl_t *c)
         dt_control_log(_("camera `%s' on port `%s' disconnected while mounted"),
                        cam->model, cam->port);
         _camctl_camera_destroy_struct(oldcam);
-        camctl->changed_camera = TRUE;
+        changed_camera = TRUE;
       }
       else if((cam->ptperror) || (cam->unmount))
       {
@@ -1055,31 +1038,39 @@ static gboolean _camctl_update_cameras(const dt_camctl_t *c)
         dt_camera_t *oldcam = (dt_camera_t *)citem->data;
         camctl->cameras = citem = g_list_delete_link(c->cameras, citem);
         _camctl_camera_destroy(oldcam);
-        camctl->changed_camera = TRUE;
+        changed_camera = TRUE;
       }
     } while(citem && (citem = g_list_next(citem)) != NULL);
   }
 
   gp_list_unref(available_cameras);
 
-  camctl->import_ui = TRUE;
   dt_pthread_mutex_unlock(&camctl->lock);
   // tell the world that we are done. this assumes that there is just
   // one global camctl.  if there would ever be more it would be easy
   // to pass c with the signal.
-  DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CAMERA_DETECTED);
+  if(changed_camera)
+    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_CAMERA_DETECTED);
 
-  return camctl->changed_camera;
+  return changed_camera;
 }
 
-static void *_update_cameras_thread(void *ptr)
+void *dt_update_cameras_thread(void *ptr)
 {
   dt_pthread_setname("gphoto_update");
-  dt_camctl_t *camctl = (dt_camctl_t *)ptr;
+  /* wait until dt_camctl_new() has created darktable.camctl
+      This might take some time depending on initial work like updating xmp / splash
+  */
+  while(darktable.camctl == NULL)
+    g_usleep(1000);
+
+  dt_camctl_t *camctl = (dt_camctl_t *)darktable.camctl;
+
   while(dt_control_running())
   {
     if(camctl->import_ui == FALSE
          && dt_view_get_current() == DT_VIEW_LIGHTTABLE)
+//TODO:  && import module is expanded and visible
     {
       camctl->ticker += 1;
       if((camctl->ticker & camctl->tickmask) == 0)
@@ -1711,7 +1702,7 @@ static void _camera_build_property_menu(CameraWidget *widget,
           /* construct menu item for property */
           gp_widget_get_name(child, &sk);
           GtkMenuItem *item = GTK_MENU_ITEM(gtk_menu_item_new_with_label(sk));
-          g_signal_connect(G_OBJECT(item), "activate", G_CALLBACK(item_activate), user_data);
+          g_signal_connect(G_OBJECT(item), "activate", item_activate, user_data);
           /* add submenu item to menu */
           gtk_menu_shell_append(GTK_MENU_SHELL(menu), GTK_WIDGET(item));
         }
@@ -2408,23 +2399,6 @@ static void _dispatch_camera_image_downloaded(const dt_camctl_t *c,
       lstnr->image_downloaded(camera, in_path, in_filename, filename, lstnr->data);
   }
   dt_pthread_mutex_unlock(&camctl->listeners_lock);
-
-#ifdef USE_LUA
-  dt_lua_async_call_alien(dt_lua_event_trigger_wrapper,
-      0, NULL, NULL,
-      LUA_ASYNC_TYPENAME, "const char*", "camera-image-downloaded",
-      LUA_ASYNC_TYPENAME_WITH_FREE, "char*", g_strdup(camera && camera->model ? camera->model : ""),
-      g_cclosure_new(G_CALLBACK(&free), NULL, NULL),
-      LUA_ASYNC_TYPENAME_WITH_FREE, "char*", g_strdup(camera && camera->port ? camera->port : ""),
-      g_cclosure_new(G_CALLBACK(&free), NULL, NULL),
-      LUA_ASYNC_TYPENAME_WITH_FREE, "char*", g_strdup(in_path ? in_path : ""),
-      g_cclosure_new(G_CALLBACK(&free), NULL, NULL),
-      LUA_ASYNC_TYPENAME_WITH_FREE, "char*", g_strdup(in_filename ? in_filename : ""),
-      g_cclosure_new(G_CALLBACK(&free), NULL, NULL),
-      LUA_ASYNC_TYPENAME_WITH_FREE, "char*", g_strdup(filename ? filename : ""),
-      g_cclosure_new(G_CALLBACK(&free), NULL, NULL),
-      LUA_ASYNC_DONE);
-#endif
 }
 
 static void _dispatch_control_status(const dt_camctl_t *c,

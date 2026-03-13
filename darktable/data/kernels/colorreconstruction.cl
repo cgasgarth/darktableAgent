@@ -1,6 +1,7 @@
 /*
     This file is part of darktable,
-    Copyright (C) 2012-2026 darktable developers.
+    copyright (c) 2012 johannes hanika.
+    copyright (c) 2015 Ulrich Pegelow.
 
     darktable is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -47,6 +48,46 @@ grid_rescale(
   return convert_float2(roixy + pxy) * scale - convert_float2(bxy);
 }
 
+
+void
+atomic_add_f(
+    global float *val,
+    const  float  delta)
+{
+#ifdef NVIDIA_SM_20
+  // buys me another 3x--10x over the `algorithmic' improvements in the splat kernel below,
+  // depending on configuration (sigma_s and sigma_r)
+  float res = 0;
+  asm volatile ("atom.global.add.f32 %0, [%1], %2;" : "=f"(res) : "l"(val), "f"(delta));
+
+#else
+  union
+  {
+    float f;
+    unsigned int i;
+  }
+  old_val;
+  union
+  {
+    float f;
+    unsigned int i;
+  }
+  new_val;
+
+  global volatile unsigned int *ival = (global volatile unsigned int *)val;
+
+  do
+  {
+    // the following is equivalent to old_val.f = *val. however, as according to the opencl standard
+    // we can not rely on global buffer val to be consistently cached (relaxed memory consistency) we
+    // access it via a slower but consistent atomic operation.
+    old_val.i = atomic_add(ival, 0);
+    new_val.f = old_val.f + delta;
+  }
+  while (atomic_cmpxchg (ival, old_val.i, new_val.i) != old_val.i);
+#endif
+}
+
 kernel void
 colorreconstruction_zero(
     global float  *grid,
@@ -84,8 +125,8 @@ colorreconstruction_splat(
   const int j = get_local_id(1);
   int li = lszx*j + i;
 
-  const int4   size  = (int4)(sizex, sizey, sizez, 0);
-  const float4 sigma = (float4)(sigma_s, sigma_s, sigma_r, 0);
+  int4   size  = (int4)(sizex, sizey, sizez, 0);
+  float4 sigma = (float4)(sigma_s, sigma_s, sigma_r, 0);
 
   const float4 pixel = read_imagef (in, samplerc, (int2)(x, y));
   float weight, m;
@@ -112,11 +153,11 @@ colorreconstruction_splat(
   if(x < width && y < height)
   {
     // splat into downsampled grid
-    const float4 p = (float4)(x, y, pixel.x, 0);
-    const float4 gridp = image_to_grid(p, size, sigma);
+    float4 p = (float4)(x, y, pixel.x, 0);
+    float4 gridp = image_to_grid(p, size, sigma);
 
     // closest integer splatting:
-    const int4 xi = clamp(convert_int4(round(gridp)), 0, size - 1);
+    int4 xi = clamp(convert_int4(round(gridp)), 0, size - 1);
 
     // first accumulate into local memory
     gi[li] = xi.x + size.x*xi.y + size.x*size.y*xi.z;
@@ -239,15 +280,15 @@ colorreconstruction_slice(
   const int oy = sizex;
   const int oz = sizey*sizex;
 
-  const int4   size  = (int4)(sizex, sizey, sizez, 0);
-  const float4 sigma = (float4)(sigma_s, sigma_s, sigma_r, 0);
+  int4   size  = (int4)(sizex, sizey, sizez, 0);
+  float4 sigma = (float4)(sigma_s, sigma_s, sigma_r, 0);
 
   float4 pixel = read_imagef (in, samplerc, (int2)(x, y));
-  const float blend = clipf(20.0f / threshold * pixel.x - 19.0f);
-  const float2 pxy = grid_rescale((int2)(x, y), roixy, bxy, scale);
-  const float4 p = (float4)(pxy.x, pxy.y, pixel.x, 0);
-  const float4 gridp = image_to_grid(p, size, sigma);
-  const int4 gridi = min(size - 2, (int4)(gridp.x, gridp.y, gridp.z, 0));
+  float blend = clipf(20.0f / threshold * pixel.x - 19.0f);
+  float2 pxy = grid_rescale((int2)(x, y), roixy, bxy, scale);
+  float4 p = (float4)(pxy.x, pxy.y, pixel.x, 0);
+  float4 gridp = image_to_grid(p, size, sigma);
+  int4 gridi = min(size - 2, (int4)(gridp.x, gridp.y, gridp.z, 0));
   float fx = gridp.x - gridi.x;
   float fy = gridp.y - gridi.y;
   float fz = gridp.z - gridi.z;

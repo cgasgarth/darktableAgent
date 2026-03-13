@@ -220,7 +220,7 @@ else(DEFINED PROJECT_VERSION AND PROJECT_VERSION VERSION_GREATER 0)
   else(NOT SOURCE_PACKAGE)
     if(NOT EXISTS ${CMAKE_SOURCE_DIR}/src/version_gen.c)
       # should be expanded by git archive due to export-subst in .gitattributes
-      set(PROJECT_VERSION "archive-$Format:%H$")
+      set(PROJECT_VERSION "archive-c3f96cadf0ab739965a55f692a061070e19604fd")
       # but was it expanded?
       if(PROJECT_VERSION MATCHES Format)
         set(PROJECT_VERSION "unknown-version")

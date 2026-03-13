@@ -193,8 +193,7 @@ static int32_t _generic_dt_control_fileop_images_job_run
    int32_t (*fileop_callback)(const int32_t,
                               const int32_t),
    const char *desc,
-   const char *desc_pl,
-   const gboolean is_copy)
+   const char *desc_pl)
 {
   dt_control_image_enumerator_t *params = dt_control_job_get_params(job);
   GList *t = params->index;
@@ -212,48 +211,31 @@ static int32_t _generic_dt_control_fileop_images_job_run
   if(!dt_is_valid_filmid(film_id))
   {
     dt_control_log(_("failed to create film roll for destination directory,"
-                     " aborting move."));
+                     " aborting move.."));
     return -1;
   }
-
-  int32_t col_count = dt_collection_get_collected_count();
-  char *old_chk = dt_collection_checksum(FALSE);
 
   gboolean completeSuccess = TRUE;
   double prev_time = 0;
   while(t && !_job_cancelled(job))
   {
-    const gboolean success = fileop_callback(GPOINTER_TO_INT(t->data), film_id) != -1;
-    completeSuccess &= success;
+    completeSuccess &= (fileop_callback(GPOINTER_TO_INT(t->data), film_id) != -1);
     t = g_list_next(t);
     fraction += 1.0 / total;
     _update_progress(job, fraction, &prev_time);
-    if(success) col_count--;
   }
 
-  char *new_chk = dt_collection_checksum(FALSE);
-  const gboolean col_changed = g_strcmp0(old_chk, new_chk) != 0;
-  g_free(old_chk);
-  g_free(new_chk);
-
-  // If there is no more image in the current collection or we did a
-  // copy and we did not change to a new collection then jump to the
-  // new location.
-  if(completeSuccess
-     && !col_changed
-     && (col_count == 0 || is_copy))
+  if(completeSuccess)
   {
     char collect[1024];
     snprintf(collect, sizeof(collect), "1:0:0:%s$", new_film.dirname);
     dt_collection_deserialize(collect, FALSE);
   }
   dt_film_remove_empty();
-
   DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_FILMROLLS_CHANGED);
   dt_collection_update_query(darktable.collection,
                              DT_COLLECTION_CHANGE_RELOAD, DT_COLLECTION_PROP_UNDEF,
                              g_list_copy(params->index));
-
   dt_control_queue_redraw_center();
   return 0;
 }
@@ -1474,16 +1456,14 @@ static int32_t _control_move_images_job_run(dt_job_t *job)
 {
   return _generic_dt_control_fileop_images_job_run(job, &dt_image_move,
                                                    _("moving %d image"),
-                                                   _("moving %d images"),
-                                                   FALSE);
+                                                   _("moving %d images"));
 }
 
 static int32_t _control_copy_images_job_run(dt_job_t *job)
 {
   return _generic_dt_control_fileop_images_job_run(job, &dt_image_copy,
                                                    _("copying %d image"),
-                                                   _("copying %d images"),
-                                                   TRUE);
+                                                   _("copying %d images"));
 }
 
 static int32_t _control_local_copy_images_job_run(dt_job_t *job)
@@ -1554,7 +1534,7 @@ static int32_t _control_refresh_exif_run(dt_job_t *job)
   dt_control_job_set_progress_message(job, ngettext("refreshing info for %d image",
                                                     "refreshing info for %d images", total), total);
   double prev_time = 0;
-  while(t && !_job_cancelled(job))
+  while(t)
   {
     const dt_imgid_t imgid = GPOINTER_TO_INT(t->data);
     if(dt_is_valid_imgid(imgid))
@@ -2582,7 +2562,7 @@ void dt_control_export(GList *imgid_list,
   dt_imageio_module_data_t *sdata = mstorage->get_params(mstorage);
   if(sdata == NULL)
   {
-    dt_control_log(_("failed to get parameters from storage module `%s', aborting export."),
+    dt_control_log(_("failed to get parameters from storage module `%s', aborting export.."),
                    mstorage->name(mstorage));
     dt_control_job_dispose(job);
     return;
@@ -2594,7 +2574,7 @@ void dt_control_export(GList *imgid_list,
   void *fdata = mformat->get_params(mformat);
   if(fdata == NULL)
   {
-    dt_control_log(_("failed to get parameters from format module `%s', aborting export."),
+    dt_control_log(_("failed to get parameters from format module `%s', aborting export.."),
                    mformat->name());
     dt_control_job_dispose(job);
     return;

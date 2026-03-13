@@ -28,7 +28,6 @@
 #include "common/focus_peaking.h"
 #include "common/history.h"
 #include "common/image_cache.h"
-#include "common/iop_order.h"
 #include "common/overlay.h"
 #include "common/selection.h"
 #include "common/styles.h"
@@ -48,7 +47,6 @@
 #include "dtgtk/thumbtable.h"
 #include "gui/accelerators.h"
 #include "gui/color_picker_proxy.h"
-#include "gui/drag_and_drop.h"
 #include "gui/gtk.h"
 #include "gui/guides.h"
 #include "gui/presets.h"
@@ -69,8 +67,6 @@
 
 #include <gdk/gdkkeysyms.h>
 #include <glib.h>
-#include <json-glib/json-glib.h>
-#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,7 +85,6 @@ static void _dev_change_image(dt_develop_t *dev, const dt_imgid_t imgid);
 
 static void _darkroom_display_second_window(dt_develop_t *dev);
 static void _darkroom_ui_second_window_write_config(GtkWidget *widget);
-static void _darkroom_ui_second_window_cleanup(dt_develop_t *dev);
 
 const char *name(const dt_view_t *self)
 {
@@ -97,2514 +92,6 @@ const char *name(const dt_view_t *self)
 }
 
 #ifdef USE_LUA
-
-static const char *_live_snapshot_field_name(dt_introspection_field_t *field)
-{
-  if(field == NULL) return "value";
-  if(field->header.field_name && field->header.field_name[0] != '\0') return field->header.field_name;
-  if(field->header.name && field->header.name[0] != '\0') return field->header.name;
-  return "value";
-}
-
-static gchar *_live_snapshot_join_path(const gchar *prefix, const gchar *suffix)
-{
-  if(suffix == NULL || suffix[0] == '\0') return g_strdup(prefix ? prefix : "");
-  if(prefix == NULL || prefix[0] == '\0') return g_strdup(suffix);
-  return g_strdup_printf("%s.%s", prefix, suffix);
-}
-
-static gchar *_live_snapshot_index_path(const gchar *prefix, const size_t index)
-{
-  if(prefix == NULL || prefix[0] == '\0') return g_strdup_printf("[%zu]", index);
-  return g_strdup_printf("%s[%zu]", prefix, index);
-}
-
-static void _live_snapshot_add_field_header(JsonBuilder *builder, const gchar *path, const gchar *kind)
-{
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "path");
-  json_builder_add_string_value(builder, path);
-  json_builder_set_member_name(builder, "kind");
-  json_builder_add_string_value(builder, kind);
-}
-
-static void _live_snapshot_add_integer_value(JsonBuilder *builder, const guint64 value)
-{
-  if(value <= G_MAXINT64)
-    json_builder_add_int_value(builder, (gint64)value);
-  else
-    json_builder_add_double_value(builder, (gdouble)value);
-}
-
-static void _live_snapshot_append_param_fields(JsonBuilder *builder,
-                                               dt_introspection_field_t *field,
-                                               const void *base,
-                                               const gchar *path)
-{
-  if(field == NULL || base == NULL) return;
-
-  const guint8 *value = ((const guint8 *)base) + field->header.offset;
-
-  switch(field->header.type)
-  {
-    case DT_INTROSPECTION_TYPE_STRUCT:
-    case DT_INTROSPECTION_TYPE_UNION:
-      for(size_t index = 0; index < field->Struct.entries; index++)
-      {
-        dt_introspection_field_t *child = field->Struct.fields[index];
-        g_autofree gchar *child_path = _live_snapshot_join_path(path, _live_snapshot_field_name(child));
-        _live_snapshot_append_param_fields(builder, child, base, child_path);
-      }
-      break;
-    case DT_INTROSPECTION_TYPE_ARRAY:
-      if(field->Array.type == DT_INTROSPECTION_TYPE_CHAR)
-      {
-        const char *text = (const char *)value;
-        const size_t text_len = strnlen(text, field->Array.count);
-        if(g_utf8_validate(text, text_len, NULL))
-        {
-          g_autofree gchar *string_value = g_strndup(text, text_len);
-          _live_snapshot_add_field_header(builder, path, "string");
-          json_builder_set_member_name(builder, "value");
-          json_builder_add_string_value(builder, string_value);
-          json_builder_end_object(builder);
-          break;
-        }
-      }
-
-      for(size_t index = 0; index < field->Array.count; index++)
-      {
-        dt_introspection_field_t *child = NULL;
-        const void *child_value = dt_introspection_access_array(field, (void *)value, index, &child);
-        if(child_value == NULL || child == NULL) continue;
-
-        g_autofree gchar *child_path = _live_snapshot_index_path(path, index);
-        _live_snapshot_append_param_fields(builder, child,
-                                           (const guint8 *)child_value - child->header.offset,
-                                           child_path);
-      }
-      break;
-    case DT_INTROSPECTION_TYPE_FLOAT:
-      if(isfinite(*(const float *)value))
-      {
-        _live_snapshot_add_field_header(builder, path, "float");
-        json_builder_set_member_name(builder, "value");
-        json_builder_add_double_value(builder, *(const float *)value);
-        json_builder_end_object(builder);
-      }
-      break;
-    case DT_INTROSPECTION_TYPE_DOUBLE:
-      if(isfinite(*(const double *)value))
-      {
-        _live_snapshot_add_field_header(builder, path, "double");
-        json_builder_set_member_name(builder, "value");
-        json_builder_add_double_value(builder, *(const double *)value);
-        json_builder_end_object(builder);
-      }
-      break;
-    case DT_INTROSPECTION_TYPE_CHAR:
-      _live_snapshot_add_field_header(builder, path, "char");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const char *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_INT8:
-      _live_snapshot_add_field_header(builder, path, "int8");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const int8_t *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_UINT8:
-      _live_snapshot_add_field_header(builder, path, "uint8");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const uint8_t *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_SHORT:
-      _live_snapshot_add_field_header(builder, path, "short");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const short *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_USHORT:
-      _live_snapshot_add_field_header(builder, path, "ushort");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const unsigned short *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_INT:
-      _live_snapshot_add_field_header(builder, path, "int");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const int *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_UINT:
-      _live_snapshot_add_field_header(builder, path, "uint");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const unsigned int *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_LONG:
-      _live_snapshot_add_field_header(builder, path, "long");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_int_value(builder, (gint64)*(const long *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_ULONG:
-      _live_snapshot_add_field_header(builder, path, "ulong");
-      json_builder_set_member_name(builder, "value");
-      _live_snapshot_add_integer_value(builder, *(const unsigned long *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_BOOL:
-      _live_snapshot_add_field_header(builder, path, "bool");
-      json_builder_set_member_name(builder, "value");
-      json_builder_add_boolean_value(builder, *(const gboolean *)value);
-      json_builder_end_object(builder);
-      break;
-    case DT_INTROSPECTION_TYPE_ENUM:
-      {
-        _live_snapshot_add_field_header(builder, path, "enum");
-        json_builder_set_member_name(builder, "value");
-        const int enum_value = *(const int *)value;
-        const char *enum_name = dt_introspection_get_enum_name(field, enum_value);
-        if(enum_name != NULL)
-          json_builder_add_string_value(builder, enum_name);
-        else
-          json_builder_add_int_value(builder, (gint64)enum_value);
-        json_builder_end_object(builder);
-      }
-      break;
-    case DT_INTROSPECTION_TYPE_NONE:
-    case DT_INTROSPECTION_TYPE_OPAQUE:
-    case DT_INTROSPECTION_TYPE_FLOATCOMPLEX:
-    default:
-      break;
-  }
-}
-
-static void _live_snapshot_add_params(JsonBuilder *builder,
-                                      dt_iop_module_t *module,
-                                      const void *params)
-{
-  json_builder_set_member_name(builder, "params");
-  json_builder_begin_object(builder);
-
-  if(module != NULL && module->have_introspection && params != NULL)
-  {
-    dt_introspection_t *introspection = module->get_introspection();
-    if(introspection != NULL && introspection->field != NULL)
-    {
-      json_builder_set_member_name(builder, "encoding");
-      json_builder_add_string_value(builder, "introspection-v1");
-      json_builder_set_member_name(builder, "fields");
-      json_builder_begin_array(builder);
-      _live_snapshot_append_param_fields(builder, introspection->field, params, "");
-      json_builder_end_array(builder);
-      json_builder_end_object(builder);
-      return;
-    }
-  }
-
-  json_builder_set_member_name(builder, "encoding");
-  json_builder_add_string_value(builder, "unsupported");
-  json_builder_end_object(builder);
-}
-
-static gchar *_live_snapshot_instance_key(const char *module_op,
-                                          const gint instance,
-                                          const gint multi_priority,
-                                          const char *multi_name)
-{
-  return g_strdup_printf("%s#%d#%d#%s",
-                         module_op ? module_op : "unknown",
-                         instance,
-                         multi_priority,
-                         multi_name ? multi_name : "");
-}
-
-static const gchar *_live_snapshot_blend_mode_name(const uint32_t blend_mode)
-{
-  switch(blend_mode & DEVELOP_BLEND_MODE_MASK)
-  {
-    case DEVELOP_BLEND_NORMAL2:
-      return "normal";
-    case DEVELOP_BLEND_AVERAGE:
-      return "average";
-    case DEVELOP_BLEND_DIFFERENCE2:
-      return "difference";
-    case DEVELOP_BLEND_BOUNDED:
-      return "bounded";
-    case DEVELOP_BLEND_LIGHTEN:
-      return "lighten";
-    case DEVELOP_BLEND_DARKEN:
-      return "darken";
-    case DEVELOP_BLEND_SCREEN:
-      return "screen";
-    case DEVELOP_BLEND_MULTIPLY:
-      return "multiply";
-    case DEVELOP_BLEND_DIVIDE:
-      return "divide";
-    case DEVELOP_BLEND_ADD:
-      return "add";
-    case DEVELOP_BLEND_SUBTRACT:
-      return "subtract";
-    case DEVELOP_BLEND_GEOMETRIC_MEAN:
-      return "geometric-mean";
-    case DEVELOP_BLEND_HARMONIC_MEAN:
-      return "harmonic-mean";
-    case DEVELOP_BLEND_OVERLAY:
-      return "overlay";
-    case DEVELOP_BLEND_SOFTLIGHT:
-      return "softlight";
-    case DEVELOP_BLEND_HARDLIGHT:
-      return "hardlight";
-    case DEVELOP_BLEND_VIVIDLIGHT:
-      return "vividlight";
-    case DEVELOP_BLEND_LINEARLIGHT:
-      return "linearlight";
-    case DEVELOP_BLEND_PINLIGHT:
-      return "pinlight";
-    case DEVELOP_BLEND_LIGHTNESS:
-      return "lightness";
-    case DEVELOP_BLEND_CHROMATICITY:
-      return "chromaticity";
-    case DEVELOP_BLEND_LAB_LIGHTNESS:
-      return "lab-lightness";
-    case DEVELOP_BLEND_LAB_A:
-      return "lab-a";
-    case DEVELOP_BLEND_LAB_B:
-      return "lab-b";
-    case DEVELOP_BLEND_LAB_COLOR:
-      return "lab-color";
-    case DEVELOP_BLEND_RGB_R:
-      return "rgb-r";
-    case DEVELOP_BLEND_RGB_G:
-      return "rgb-g";
-    case DEVELOP_BLEND_RGB_B:
-      return "rgb-b";
-    case DEVELOP_BLEND_HSV_VALUE:
-      return "hsv-value";
-    case DEVELOP_BLEND_HSV_COLOR:
-      return "hsv-color";
-    case DEVELOP_BLEND_HUE:
-      return "hue";
-    case DEVELOP_BLEND_COLOR:
-      return "color";
-    case DEVELOP_BLEND_COLORADJUST:
-      return "coloradjust";
-    case DEVELOP_BLEND_DIFFERENCE:
-      return "difference-legacy";
-    case DEVELOP_BLEND_SUBTRACT_INVERSE:
-      return "subtract-inverse";
-    case DEVELOP_BLEND_DIVIDE_INVERSE:
-      return "divide-inverse";
-    case DEVELOP_BLEND_LAB_L:
-      return "lab-l";
-    default:
-      return "unknown";
-  }
-}
-
-static const gchar *_live_snapshot_blend_colorspace_name(const dt_develop_blend_colorspace_t csp)
-{
-  switch(csp)
-  {
-    case DEVELOP_BLEND_CS_RAW:
-      return "raw";
-    case DEVELOP_BLEND_CS_LAB:
-      return "lab";
-    case DEVELOP_BLEND_CS_RGB_DISPLAY:
-      return "rgb-display";
-    case DEVELOP_BLEND_CS_RGB_SCENE:
-      return "rgb-scene";
-    case DEVELOP_BLEND_CS_NONE:
-    default:
-      return "unknown";
-  }
-}
-
-typedef enum dt_live_module_mask_action_t
-{
-  DT_LIVE_MODULE_MASK_ACTION_INVALID = 0,
-  DT_LIVE_MODULE_MASK_ACTION_CLEAR_MASK,
-  DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES,
-} dt_live_module_mask_action_t;
-
-typedef struct dt_live_module_mask_form_t
-{
-  dt_mask_id_t formid;
-  gint state;
-  float opacity;
-} dt_live_module_mask_form_t;
-
-static dt_live_module_mask_action_t _live_module_mask_action_from_string(const gchar *action)
-{
-  if(g_strcmp0(action, "clear-mask") == 0) return DT_LIVE_MODULE_MASK_ACTION_CLEAR_MASK;
-  if(g_strcmp0(action, "reuse-same-shapes") == 0) return DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES;
-  return DT_LIVE_MODULE_MASK_ACTION_INVALID;
-}
-
-static dt_masks_form_t *_live_mask_group_from_module(dt_develop_t *dev, dt_iop_module_t *module)
-{
-  if(dev == NULL || module == NULL || module->blend_params == NULL) return NULL;
-  if(!dt_is_valid_maskid(module->blend_params->mask_id)) return NULL;
-
-  dt_masks_form_t *group = dt_masks_get_from_id(dev, module->blend_params->mask_id);
-  if(group == NULL || !(group->type & DT_MASKS_GROUP)) return NULL;
-  return group;
-}
-
-static GArray *_live_mask_collect_forms(dt_masks_form_t *group)
-{
-  GArray *forms = g_array_new(FALSE, FALSE, sizeof(dt_live_module_mask_form_t));
-  if(group == NULL || !(group->type & DT_MASKS_GROUP)) return forms;
-
-  for(const GList *iter = group->points; iter != NULL; iter = g_list_next(iter))
-  {
-    const dt_masks_point_group_t *point = iter->data;
-    if(point == NULL) continue;
-
-    const dt_live_module_mask_form_t form = {
-      .formid = point->formid,
-      .state = point->state,
-      .opacity = point->opacity,
-    };
-    g_array_append_val(forms, form);
-  }
-
-  return forms;
-}
-
-static gboolean _live_mask_forms_equal(const GArray *left, const GArray *right)
-{
-  const guint left_len = left != NULL ? left->len : 0;
-  const guint right_len = right != NULL ? right->len : 0;
-  if(left_len != right_len) return FALSE;
-
-  for(guint index = 0; index < left_len; index++)
-  {
-    const dt_live_module_mask_form_t *left_form = &g_array_index(left, dt_live_module_mask_form_t, index);
-    const dt_live_module_mask_form_t *right_form = &g_array_index(right, dt_live_module_mask_form_t, index);
-    if(left_form->formid != right_form->formid) return FALSE;
-    if(left_form->state != right_form->state) return FALSE;
-    if(fabsf(left_form->opacity - right_form->opacity) > 1e-6f) return FALSE;
-  }
-
-  return TRUE;
-}
-
-static gboolean _live_mask_forms_have_entries(const GArray *forms)
-{
-  return forms != NULL && forms->len > 0;
-}
-
-static void _live_snapshot_add_mask_forms(JsonBuilder *builder,
-                                          const gchar *member_name,
-                                          const GArray *forms)
-{
-  json_builder_set_member_name(builder, member_name);
-  json_builder_begin_array(builder);
-
-  if(forms != NULL)
-  {
-    for(guint index = 0; index < forms->len; index++)
-    {
-      const dt_live_module_mask_form_t *form = &g_array_index(forms, dt_live_module_mask_form_t, index);
-      json_builder_begin_object(builder);
-      json_builder_set_member_name(builder, "formId");
-      json_builder_add_int_value(builder, form->formid);
-      json_builder_set_member_name(builder, "state");
-      json_builder_add_int_value(builder, form->state);
-      json_builder_set_member_name(builder, "opacity");
-      json_builder_add_double_value(builder, form->opacity);
-      json_builder_end_object(builder);
-    }
-  }
-
-  json_builder_end_array(builder);
-}
-
-static gboolean _live_snapshot_parse_blend_mode_name(const gchar *blend_mode_name,
-                                                     uint32_t *blend_mode_out)
-{
-  if(blend_mode_name == NULL || blend_mode_name[0] == '\0') return FALSE;
-
-  struct dt_live_blend_mode_name_t
-  {
-    const gchar *name;
-    uint32_t mode;
-  };
-
-  static const struct dt_live_blend_mode_name_t blend_modes[] = {
-    { "normal", DEVELOP_BLEND_NORMAL2 },
-    { "average", DEVELOP_BLEND_AVERAGE },
-    { "difference", DEVELOP_BLEND_DIFFERENCE2 },
-    { "bounded", DEVELOP_BLEND_BOUNDED },
-    { "lighten", DEVELOP_BLEND_LIGHTEN },
-    { "darken", DEVELOP_BLEND_DARKEN },
-    { "screen", DEVELOP_BLEND_SCREEN },
-    { "multiply", DEVELOP_BLEND_MULTIPLY },
-    { "divide", DEVELOP_BLEND_DIVIDE },
-    { "add", DEVELOP_BLEND_ADD },
-    { "subtract", DEVELOP_BLEND_SUBTRACT },
-    { "geometric-mean", DEVELOP_BLEND_GEOMETRIC_MEAN },
-    { "harmonic-mean", DEVELOP_BLEND_HARMONIC_MEAN },
-    { "overlay", DEVELOP_BLEND_OVERLAY },
-    { "softlight", DEVELOP_BLEND_SOFTLIGHT },
-    { "hardlight", DEVELOP_BLEND_HARDLIGHT },
-    { "vividlight", DEVELOP_BLEND_VIVIDLIGHT },
-    { "linearlight", DEVELOP_BLEND_LINEARLIGHT },
-    { "pinlight", DEVELOP_BLEND_PINLIGHT },
-    { "lightness", DEVELOP_BLEND_LIGHTNESS },
-    { "chromaticity", DEVELOP_BLEND_CHROMATICITY },
-    { "lab-lightness", DEVELOP_BLEND_LAB_LIGHTNESS },
-    { "lab-a", DEVELOP_BLEND_LAB_A },
-    { "lab-b", DEVELOP_BLEND_LAB_B },
-    { "lab-color", DEVELOP_BLEND_LAB_COLOR },
-    { "rgb-r", DEVELOP_BLEND_RGB_R },
-    { "rgb-g", DEVELOP_BLEND_RGB_G },
-    { "rgb-b", DEVELOP_BLEND_RGB_B },
-    { "hsv-value", DEVELOP_BLEND_HSV_VALUE },
-    { "hsv-color", DEVELOP_BLEND_HSV_COLOR },
-    { "hue", DEVELOP_BLEND_HUE },
-    { "color", DEVELOP_BLEND_COLOR },
-    { "coloradjust", DEVELOP_BLEND_COLORADJUST },
-    { "difference-legacy", DEVELOP_BLEND_DIFFERENCE },
-    { "subtract-inverse", DEVELOP_BLEND_SUBTRACT_INVERSE },
-    { "divide-inverse", DEVELOP_BLEND_DIVIDE_INVERSE },
-    { "lab-l", DEVELOP_BLEND_LAB_L },
-    { NULL, 0 },
-  };
-
-  for(const struct dt_live_blend_mode_name_t *blend_mode = blend_modes;
-      blend_mode->name != NULL;
-      blend_mode++)
-  {
-    if(g_strcmp0(blend_mode->name, blend_mode_name) == 0)
-    {
-      if(blend_mode_out != NULL) *blend_mode_out = blend_mode->mode;
-      return TRUE;
-    }
-  }
-
-  return FALSE;
-}
-
-static dt_develop_blend_colorspace_t _live_module_blend_colorspace(dt_iop_module_t *module)
-{
-  if(module == NULL || module->blend_params == NULL) return DEVELOP_BLEND_CS_NONE;
-
-  const dt_develop_blend_colorspace_t default_csp =
-    dt_develop_blend_default_module_blend_colorspace(module);
-  switch(default_csp)
-  {
-    case DEVELOP_BLEND_CS_RAW:
-      return DEVELOP_BLEND_CS_RAW;
-    case DEVELOP_BLEND_CS_LAB:
-    case DEVELOP_BLEND_CS_RGB_DISPLAY:
-    case DEVELOP_BLEND_CS_RGB_SCENE:
-      switch(module->blend_params->blend_cst)
-      {
-        case DEVELOP_BLEND_CS_LAB:
-        case DEVELOP_BLEND_CS_RGB_DISPLAY:
-        case DEVELOP_BLEND_CS_RGB_SCENE:
-          return module->blend_params->blend_cst;
-        default:
-          return default_csp;
-      }
-    case DEVELOP_BLEND_CS_NONE:
-    default:
-      return DEVELOP_BLEND_CS_NONE;
-  }
-}
-
-static gboolean _live_module_blend_mode_supported(const dt_develop_blend_colorspace_t csp,
-                                                   const uint32_t blend_mode)
-{
-  switch(csp)
-  {
-    case DEVELOP_BLEND_CS_LAB:
-      return blend_mode == DEVELOP_BLEND_NORMAL2 || blend_mode == DEVELOP_BLEND_AVERAGE
-             || blend_mode == DEVELOP_BLEND_DIFFERENCE || blend_mode == DEVELOP_BLEND_DIFFERENCE2
-             || blend_mode == DEVELOP_BLEND_BOUNDED || blend_mode == DEVELOP_BLEND_LIGHTEN
-             || blend_mode == DEVELOP_BLEND_DARKEN || blend_mode == DEVELOP_BLEND_SCREEN
-             || blend_mode == DEVELOP_BLEND_MULTIPLY || blend_mode == DEVELOP_BLEND_ADD
-             || blend_mode == DEVELOP_BLEND_SUBTRACT || blend_mode == DEVELOP_BLEND_OVERLAY
-             || blend_mode == DEVELOP_BLEND_SOFTLIGHT || blend_mode == DEVELOP_BLEND_HARDLIGHT
-             || blend_mode == DEVELOP_BLEND_VIVIDLIGHT || blend_mode == DEVELOP_BLEND_LINEARLIGHT
-             || blend_mode == DEVELOP_BLEND_PINLIGHT || blend_mode == DEVELOP_BLEND_LIGHTNESS
-             || blend_mode == DEVELOP_BLEND_CHROMATICITY || blend_mode == DEVELOP_BLEND_HUE
-             || blend_mode == DEVELOP_BLEND_COLOR || blend_mode == DEVELOP_BLEND_COLORADJUST
-             || blend_mode == DEVELOP_BLEND_LAB_LIGHTNESS || blend_mode == DEVELOP_BLEND_LAB_L
-             || blend_mode == DEVELOP_BLEND_LAB_A || blend_mode == DEVELOP_BLEND_LAB_B
-             || blend_mode == DEVELOP_BLEND_LAB_COLOR;
-    case DEVELOP_BLEND_CS_RGB_DISPLAY:
-      return blend_mode == DEVELOP_BLEND_NORMAL2 || blend_mode == DEVELOP_BLEND_AVERAGE
-             || blend_mode == DEVELOP_BLEND_DIFFERENCE || blend_mode == DEVELOP_BLEND_DIFFERENCE2
-             || blend_mode == DEVELOP_BLEND_BOUNDED || blend_mode == DEVELOP_BLEND_LIGHTEN
-             || blend_mode == DEVELOP_BLEND_DARKEN || blend_mode == DEVELOP_BLEND_SCREEN
-             || blend_mode == DEVELOP_BLEND_MULTIPLY || blend_mode == DEVELOP_BLEND_ADD
-             || blend_mode == DEVELOP_BLEND_SUBTRACT || blend_mode == DEVELOP_BLEND_OVERLAY
-             || blend_mode == DEVELOP_BLEND_SOFTLIGHT || blend_mode == DEVELOP_BLEND_HARDLIGHT
-             || blend_mode == DEVELOP_BLEND_VIVIDLIGHT || blend_mode == DEVELOP_BLEND_LINEARLIGHT
-             || blend_mode == DEVELOP_BLEND_PINLIGHT || blend_mode == DEVELOP_BLEND_LIGHTNESS
-             || blend_mode == DEVELOP_BLEND_CHROMATICITY || blend_mode == DEVELOP_BLEND_HUE
-             || blend_mode == DEVELOP_BLEND_COLOR || blend_mode == DEVELOP_BLEND_COLORADJUST
-             || blend_mode == DEVELOP_BLEND_HSV_VALUE || blend_mode == DEVELOP_BLEND_HSV_COLOR
-             || blend_mode == DEVELOP_BLEND_RGB_R || blend_mode == DEVELOP_BLEND_RGB_G
-             || blend_mode == DEVELOP_BLEND_RGB_B;
-    case DEVELOP_BLEND_CS_RAW:
-      return blend_mode == DEVELOP_BLEND_NORMAL2 || blend_mode == DEVELOP_BLEND_AVERAGE
-             || blend_mode == DEVELOP_BLEND_DIFFERENCE || blend_mode == DEVELOP_BLEND_DIFFERENCE2
-             || blend_mode == DEVELOP_BLEND_BOUNDED || blend_mode == DEVELOP_BLEND_LIGHTEN
-             || blend_mode == DEVELOP_BLEND_DARKEN || blend_mode == DEVELOP_BLEND_SCREEN
-             || blend_mode == DEVELOP_BLEND_MULTIPLY || blend_mode == DEVELOP_BLEND_ADD
-             || blend_mode == DEVELOP_BLEND_SUBTRACT || blend_mode == DEVELOP_BLEND_OVERLAY
-             || blend_mode == DEVELOP_BLEND_SOFTLIGHT || blend_mode == DEVELOP_BLEND_HARDLIGHT
-             || blend_mode == DEVELOP_BLEND_VIVIDLIGHT || blend_mode == DEVELOP_BLEND_LINEARLIGHT
-             || blend_mode == DEVELOP_BLEND_PINLIGHT;
-    case DEVELOP_BLEND_CS_RGB_SCENE:
-      return blend_mode == DEVELOP_BLEND_NORMAL2 || blend_mode == DEVELOP_BLEND_AVERAGE
-             || blend_mode == DEVELOP_BLEND_DIFFERENCE || blend_mode == DEVELOP_BLEND_DIFFERENCE2
-             || blend_mode == DEVELOP_BLEND_MULTIPLY || blend_mode == DEVELOP_BLEND_DIVIDE
-             || blend_mode == DEVELOP_BLEND_DIVIDE_INVERSE || blend_mode == DEVELOP_BLEND_ADD
-             || blend_mode == DEVELOP_BLEND_SUBTRACT
-             || blend_mode == DEVELOP_BLEND_SUBTRACT_INVERSE
-             || blend_mode == DEVELOP_BLEND_GEOMETRIC_MEAN
-             || blend_mode == DEVELOP_BLEND_HARMONIC_MEAN || blend_mode == DEVELOP_BLEND_RGB_R
-             || blend_mode == DEVELOP_BLEND_RGB_G || blend_mode == DEVELOP_BLEND_RGB_B
-             || blend_mode == DEVELOP_BLEND_LIGHTNESS || blend_mode == DEVELOP_BLEND_CHROMATICITY;
-    case DEVELOP_BLEND_CS_NONE:
-    default:
-      return FALSE;
-  }
-}
-
-static gboolean _live_module_blend_parameter_enabled(const dt_develop_blend_colorspace_t csp,
-                                                     const uint32_t blend_mode)
-{
-  if(csp == DEVELOP_BLEND_CS_RGB_SCENE)
-  {
-    switch(blend_mode & ~DEVELOP_BLEND_REVERSE)
-    {
-      case DEVELOP_BLEND_ADD:
-      case DEVELOP_BLEND_MULTIPLY:
-      case DEVELOP_BLEND_SUBTRACT:
-      case DEVELOP_BLEND_SUBTRACT_INVERSE:
-      case DEVELOP_BLEND_DIVIDE:
-      case DEVELOP_BLEND_DIVIDE_INVERSE:
-      case DEVELOP_BLEND_RGB_R:
-      case DEVELOP_BLEND_RGB_G:
-      case DEVELOP_BLEND_RGB_B:
-        return TRUE;
-      default:
-        return FALSE;
-    }
-  }
-
-  return FALSE;
-}
-
-static void _live_snapshot_add_blend(JsonBuilder *builder,
-                                     const char *module_op,
-                                     const dt_iop_module_t *module,
-                                     const dt_develop_blend_params_t *blend_params)
-{
-  const int flags = module != NULL ? module->flags() : dt_iop_get_module_flags(module_op);
-  const gboolean supported = blend_params != NULL && (flags & IOP_FLAGS_SUPPORTS_BLENDING);
-  const gboolean masks_supported = supported && !(flags & IOP_FLAGS_NO_MASKS);
-
-  json_builder_set_member_name(builder, "blend");
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "supported");
-  json_builder_add_boolean_value(builder, supported);
-  json_builder_set_member_name(builder, "masksSupported");
-  json_builder_add_boolean_value(builder, masks_supported);
-
-  if(supported)
-  {
-    const dt_develop_blend_colorspace_t blend_csp = _live_module_blend_colorspace((dt_iop_module_t *)module);
-    json_builder_set_member_name(builder, "opacity");
-    json_builder_add_double_value(builder, blend_params->opacity);
-    json_builder_set_member_name(builder, "blendMode");
-    json_builder_add_string_value(builder, _live_snapshot_blend_mode_name(blend_params->blend_mode));
-    json_builder_set_member_name(builder, "reverseOrder");
-    json_builder_add_boolean_value(builder,
-                                   (blend_params->blend_mode & DEVELOP_BLEND_REVERSE)
-                                     == DEVELOP_BLEND_REVERSE);
-    json_builder_set_member_name(builder, "blendColorspace");
-    json_builder_add_string_value(builder, _live_snapshot_blend_colorspace_name(blend_csp));
-  }
-
-  json_builder_end_object(builder);
-}
-
-static void _live_snapshot_add_stack_item(JsonBuilder *builder, dt_iop_module_t *module)
-{
-  g_autofree gchar *instance_key =
-    _live_snapshot_instance_key(module->op, module->instance, module->multi_priority, module->multi_name);
-
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "instanceKey");
-  json_builder_add_string_value(builder, instance_key);
-  json_builder_set_member_name(builder, "moduleOp");
-  json_builder_add_string_value(builder, module->op);
-  json_builder_set_member_name(builder, "enabled");
-  json_builder_add_boolean_value(builder, module->enabled);
-  json_builder_set_member_name(builder, "iopOrder");
-  json_builder_add_int_value(builder, module->iop_order);
-  json_builder_set_member_name(builder, "multiPriority");
-  json_builder_add_int_value(builder, module->multi_priority);
-  json_builder_set_member_name(builder, "multiName");
-  json_builder_add_string_value(builder, module->multi_name);
-  _live_snapshot_add_params(builder, module, module->params);
-  _live_snapshot_add_blend(builder, module->op, module, module->blend_params);
-  json_builder_end_object(builder);
-}
-
-static void _live_snapshot_add_history_item(JsonBuilder *builder,
-                                            const dt_dev_history_item_t *history_item,
-                                            const gint index,
-                                            const gint history_end)
-{
-  const dt_iop_module_t *module = history_item->module;
-  const char *module_op = module ? module->op : history_item->op_name;
-  const gint instance = module ? module->instance : -1;
-  g_autofree gchar *instance_key =
-    _live_snapshot_instance_key(module_op, instance, history_item->multi_priority, history_item->multi_name);
-
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "index");
-  json_builder_add_int_value(builder, index);
-  json_builder_set_member_name(builder, "applied");
-  json_builder_add_boolean_value(builder, index < history_end);
-  json_builder_set_member_name(builder, "instanceKey");
-  json_builder_add_string_value(builder, instance_key);
-  json_builder_set_member_name(builder, "moduleOp");
-  json_builder_add_string_value(builder, module_op ? module_op : "unknown");
-  json_builder_set_member_name(builder, "enabled");
-  json_builder_add_boolean_value(builder, history_item->enabled);
-  json_builder_set_member_name(builder, "iopOrder");
-  json_builder_add_int_value(builder, history_item->iop_order);
-  json_builder_set_member_name(builder, "multiPriority");
-  json_builder_add_int_value(builder, history_item->multi_priority);
-  json_builder_set_member_name(builder, "multiName");
-  json_builder_add_string_value(builder, history_item->multi_name);
-  _live_snapshot_add_params(builder, history_item->module, history_item->params);
-  _live_snapshot_add_blend(builder, module_op, module, history_item->blend_params);
-  json_builder_end_object(builder);
-}
-
-static gchar *_live_snapshot_to_json(dt_develop_t *dev)
-{
-  g_autoptr(JsonBuilder) builder = json_builder_new();
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "appliedHistoryEnd");
-  json_builder_add_int_value(builder, dev->history_end);
-
-  json_builder_set_member_name(builder, "moduleStack");
-  json_builder_begin_array(builder);
-  for(const GList *iter = dev->iop; iter; iter = g_list_next(iter))
-  {
-    dt_iop_module_t *module = iter->data;
-    if(module == NULL || dt_iop_is_hidden(module)) continue;
-    _live_snapshot_add_stack_item(builder, module);
-  }
-  json_builder_end_array(builder);
-
-  json_builder_set_member_name(builder, "historyItems");
-  json_builder_begin_array(builder);
-  dt_pthread_mutex_lock(&dev->history_mutex);
-  int index = 0;
-  for(const GList *iter = dev->history; iter; iter = g_list_next(iter), index++)
-  {
-    dt_dev_history_item_t *history_item = iter->data;
-    if(history_item == NULL) continue;
-    _live_snapshot_add_history_item(builder, history_item, index, dev->history_end);
-  }
-  dt_pthread_mutex_unlock(&dev->history_mutex);
-  json_builder_end_array(builder);
-  json_builder_end_object(builder);
-
-  JsonNode *root = json_builder_get_root(builder);
-  g_autoptr(JsonGenerator) generator = json_generator_new();
-  json_generator_set_root(generator, root);
-  json_generator_set_pretty(generator, FALSE);
-  g_autofree gchar *json = json_generator_to_data(generator, NULL);
-  json_node_free(root);
-  return g_strdup(json);
-}
-
-static gchar *_live_json_builder_to_string(JsonBuilder *builder)
-{
-  JsonNode *root = json_builder_get_root(builder);
-  g_autoptr(JsonGenerator) generator = json_generator_new();
-  json_generator_set_root(generator, root);
-  json_generator_set_pretty(generator, FALSE);
-  g_autofree gchar *json = json_generator_to_data(generator, NULL);
-  json_node_free(root);
-  return g_strdup(json);
-}
-
-static JsonNode *_live_json_copy_object_root(const gchar *json)
-{
-  if(json == NULL || json[0] == '\0') return NULL;
-
-  g_autoptr(JsonParser) parser = json_parser_new();
-  if(!json_parser_load_from_data(parser, json, -1, NULL)) return NULL;
-
-  JsonNode *root = json_parser_get_root(parser);
-  if(root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) return NULL;
-
-  return json_node_copy(root);
-}
-
-static gboolean _live_snapshot_add_active_image(JsonBuilder *builder, dt_develop_t *dev)
-{
-  if(builder == NULL || dev == NULL || dev->image_storage.id == NO_IMGID) return FALSE;
-
-  const dt_image_t *image = dt_image_cache_get(dev->image_storage.id, 'r');
-  if(image == NULL) return FALSE;
-
-  char directory_path[PATH_MAX] = { 0 };
-  dt_image_film_roll_directory(image, directory_path, sizeof(directory_path));
-  g_autofree gchar *source_asset_path = g_build_filename(directory_path, image->filename, NULL);
-
-  json_builder_set_member_name(builder, "activeImage");
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "imageId");
-  json_builder_add_int_value(builder, image->id);
-  json_builder_set_member_name(builder, "directoryPath");
-  json_builder_add_string_value(builder, directory_path);
-  json_builder_set_member_name(builder, "fileName");
-  json_builder_add_string_value(builder, image->filename);
-  json_builder_set_member_name(builder, "sourceAssetPath");
-  json_builder_add_string_value(builder, source_asset_path);
-  json_builder_end_object(builder);
-
-  dt_image_cache_read_release(image);
-  return TRUE;
-}
-
-static dt_iop_module_t *_live_snapshot_find_visible_module(dt_develop_t *dev, const gchar *instance_key)
-{
-  if(dev == NULL || instance_key == NULL || instance_key[0] == '\0') return NULL;
-
-  for(const GList *iter = dev->iop; iter; iter = g_list_next(iter))
-  {
-    dt_iop_module_t *module = iter->data;
-    if(module == NULL || dt_iop_is_hidden(module)) continue;
-
-    g_autofree gchar *candidate_key =
-      _live_snapshot_instance_key(module->op, module->instance, module->multi_priority, module->multi_name);
-    if(g_strcmp0(candidate_key, instance_key) == 0) return module;
-  }
-
-  return NULL;
-}
-
-typedef enum dt_live_module_instance_action_t
-{
-  DT_LIVE_MODULE_INSTANCE_ACTION_INVALID = 0,
-  DT_LIVE_MODULE_INSTANCE_ACTION_ENABLE,
-  DT_LIVE_MODULE_INSTANCE_ACTION_DISABLE,
-  DT_LIVE_MODULE_INSTANCE_ACTION_CREATE,
-  DT_LIVE_MODULE_INSTANCE_ACTION_DUPLICATE,
-  DT_LIVE_MODULE_INSTANCE_ACTION_DELETE,
-  DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_BEFORE,
-  DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_AFTER,
-} dt_live_module_instance_action_t;
-
-typedef struct dt_live_module_action_payload_t
-{
-  const gchar *instance_key;
-  const gchar *action;
-  const gchar *anchor_instance_key;
-  gboolean have_requested_enabled;
-  gboolean requested_enabled;
-  dt_iop_module_t *module;
-  dt_iop_module_t *result_module;
-  dt_iop_module_t *replacement_module;
-  gboolean have_previous_enabled;
-  gboolean previous_enabled;
-  gboolean have_current_enabled;
-  gboolean current_enabled;
-  gboolean have_previous_iop_order;
-  gint previous_iop_order;
-  gboolean have_current_iop_order;
-  gint current_iop_order;
-  gboolean have_history;
-  gint history_before;
-  gint history_after;
-} dt_live_module_action_payload_t;
-
-typedef struct dt_live_module_blend_payload_t
-{
-  const gchar *instance_key;
-  dt_iop_module_t *module;
-  gboolean have_previous_opacity;
-  double previous_opacity;
-  gboolean have_requested_opacity;
-  double requested_opacity;
-  gboolean have_current_opacity;
-  double current_opacity;
-  gboolean have_previous_blend_mode;
-  const gchar *previous_blend_mode;
-  gboolean have_requested_blend_mode;
-  const gchar *requested_blend_mode;
-  gboolean have_current_blend_mode;
-  const gchar *current_blend_mode;
-  gboolean have_previous_reverse_order;
-  gboolean previous_reverse_order;
-  gboolean have_requested_reverse_order;
-  gboolean requested_reverse_order;
-  gboolean have_current_reverse_order;
-  gboolean current_reverse_order;
-  gboolean have_history;
-  gint history_before;
-  gint history_after;
-} dt_live_module_blend_payload_t;
-
-typedef struct dt_live_module_blend_request_t
-{
-  gboolean have_opacity;
-  double opacity;
-  gboolean have_blend_mode;
-  uint32_t blend_mode;
-  gboolean have_reverse_order;
-  gboolean reverse_order;
-} dt_live_module_blend_request_t;
-
-typedef struct dt_live_module_mask_payload_t
-{
-  const gchar *instance_key;
-  const gchar *action;
-  const gchar *source_instance_key;
-  dt_iop_module_t *module;
-  gboolean have_previous_has_mask;
-  gboolean previous_has_mask;
-  gboolean have_current_has_mask;
-  gboolean current_has_mask;
-  gboolean have_changed;
-  gboolean changed;
-  GArray *previous_forms;
-  GArray *source_forms;
-  GArray *current_forms;
-  gboolean have_history;
-  gint history_before;
-  gint history_after;
-} dt_live_module_mask_payload_t;
-
-typedef struct dt_live_module_mask_request_t
-{
-  dt_live_module_mask_action_t action;
-  gchar *source_instance_key;
-} dt_live_module_mask_request_t;
-
-typedef enum dt_live_module_reorder_check_t
-{
-  DT_LIVE_MODULE_REORDER_CHECK_OK = 0,
-  DT_LIVE_MODULE_REORDER_CHECK_NO_OP,
-  DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_FENCE,
-  DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_RULE,
-} dt_live_module_reorder_check_t;
-
-static dt_live_module_instance_action_t _live_module_instance_action_from_string(const gchar *action,
-                                                                                 gboolean *enabled_out)
-{
-  if(g_strcmp0(action, "enable") == 0)
-  {
-    if(enabled_out != NULL) *enabled_out = TRUE;
-    return DT_LIVE_MODULE_INSTANCE_ACTION_ENABLE;
-  }
-  if(g_strcmp0(action, "disable") == 0)
-  {
-    if(enabled_out != NULL) *enabled_out = FALSE;
-    return DT_LIVE_MODULE_INSTANCE_ACTION_DISABLE;
-  }
-  if(g_strcmp0(action, "create") == 0)
-    return DT_LIVE_MODULE_INSTANCE_ACTION_CREATE;
-  if(g_strcmp0(action, "duplicate") == 0)
-    return DT_LIVE_MODULE_INSTANCE_ACTION_DUPLICATE;
-  if(g_strcmp0(action, "delete") == 0)
-    return DT_LIVE_MODULE_INSTANCE_ACTION_DELETE;
-  if(g_strcmp0(action, "move-before") == 0)
-    return DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_BEFORE;
-  if(g_strcmp0(action, "move-after") == 0)
-    return DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_AFTER;
-  return DT_LIVE_MODULE_INSTANCE_ACTION_INVALID;
-}
-
-static gboolean _live_module_instance_action_requires_anchor(const dt_live_module_instance_action_t action_kind)
-{
-  return action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_BEFORE
-         || action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_AFTER;
-}
-
-static void _live_snapshot_add_module_action(JsonBuilder *builder,
-                                             const dt_live_module_action_payload_t *payload)
-{
-  json_builder_set_member_name(builder, "moduleAction");
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "targetInstanceKey");
-  json_builder_add_string_value(builder, payload != NULL && payload->instance_key ? payload->instance_key : "");
-  json_builder_set_member_name(builder, "action");
-  json_builder_add_string_value(builder, payload != NULL && payload->action ? payload->action : "");
-
-  if(payload != NULL && payload->anchor_instance_key != NULL)
-  {
-    json_builder_set_member_name(builder, "anchorInstanceKey");
-    json_builder_add_string_value(builder, payload->anchor_instance_key);
-  }
-
-  if(payload != NULL && payload->have_requested_enabled)
-  {
-    json_builder_set_member_name(builder, "requestedEnabled");
-    json_builder_add_boolean_value(builder, payload->requested_enabled);
-  }
-
-  if(payload != NULL && payload->module != NULL)
-  {
-    json_builder_set_member_name(builder, "moduleOp");
-    json_builder_add_string_value(builder, payload->module->op);
-    json_builder_set_member_name(builder, "iopOrder");
-    json_builder_add_int_value(builder, payload->module->iop_order);
-    json_builder_set_member_name(builder, "multiPriority");
-    json_builder_add_int_value(builder, payload->module->multi_priority);
-    json_builder_set_member_name(builder, "multiName");
-    json_builder_add_string_value(builder, payload->module->multi_name);
-  }
-
-  if(payload != NULL && payload->result_module != NULL)
-  {
-    g_autofree gchar *result_instance_key =
-      _live_snapshot_instance_key(payload->result_module->op, payload->result_module->instance,
-                                  payload->result_module->multi_priority, payload->result_module->multi_name);
-    json_builder_set_member_name(builder, "resultInstanceKey");
-    json_builder_add_string_value(builder, result_instance_key);
-    if(payload->module == NULL)
-    {
-      json_builder_set_member_name(builder, "moduleOp");
-      json_builder_add_string_value(builder, payload->result_module->op);
-      json_builder_set_member_name(builder, "iopOrder");
-      json_builder_add_int_value(builder, payload->result_module->iop_order);
-      json_builder_set_member_name(builder, "multiPriority");
-      json_builder_add_int_value(builder, payload->result_module->multi_priority);
-      json_builder_set_member_name(builder, "multiName");
-      json_builder_add_string_value(builder, payload->result_module->multi_name);
-    }
-  }
-
-  if(payload != NULL && payload->replacement_module != NULL)
-  {
-    g_autofree gchar *replacement_instance_key =
-      _live_snapshot_instance_key(payload->replacement_module->op, payload->replacement_module->instance,
-                                  payload->replacement_module->multi_priority,
-                                  payload->replacement_module->multi_name);
-    json_builder_set_member_name(builder, "replacementInstanceKey");
-    json_builder_add_string_value(builder, replacement_instance_key);
-    json_builder_set_member_name(builder, "replacementIopOrder");
-    json_builder_add_int_value(builder, payload->replacement_module->iop_order);
-    json_builder_set_member_name(builder, "replacementMultiPriority");
-    json_builder_add_int_value(builder, payload->replacement_module->multi_priority);
-    json_builder_set_member_name(builder, "replacementMultiName");
-    json_builder_add_string_value(builder, payload->replacement_module->multi_name);
-  }
-
-  if(payload != NULL && payload->have_previous_enabled)
-  {
-    json_builder_set_member_name(builder, "previousEnabled");
-    json_builder_add_boolean_value(builder, payload->previous_enabled);
-  }
-
-  if(payload != NULL && payload->have_current_enabled)
-  {
-    json_builder_set_member_name(builder, "currentEnabled");
-    json_builder_add_boolean_value(builder, payload->current_enabled);
-  }
-
-  if(payload != NULL && payload->have_previous_enabled && payload->have_current_enabled)
-  {
-    json_builder_set_member_name(builder, "changed");
-    json_builder_add_boolean_value(builder, payload->previous_enabled != payload->current_enabled);
-  }
-
-  if(payload != NULL && payload->have_previous_iop_order)
-  {
-    json_builder_set_member_name(builder, "previousIopOrder");
-    json_builder_add_int_value(builder, payload->previous_iop_order);
-  }
-
-  if(payload != NULL && payload->have_current_iop_order)
-  {
-    json_builder_set_member_name(builder, "currentIopOrder");
-    json_builder_add_int_value(builder, payload->current_iop_order);
-  }
-
-  if(payload != NULL && payload->have_history)
-  {
-    json_builder_set_member_name(builder, "historyBefore");
-    json_builder_add_int_value(builder, payload->history_before);
-    json_builder_set_member_name(builder, "historyAfter");
-    json_builder_add_int_value(builder, payload->history_after);
-    json_builder_set_member_name(builder, "requestedHistoryEnd");
-    json_builder_add_int_value(builder, payload->history_after);
-  }
-
-  json_builder_end_object(builder);
-}
-
-static void _live_snapshot_add_module_blend(JsonBuilder *builder,
-                                            const dt_live_module_blend_payload_t *payload)
-{
-  json_builder_set_member_name(builder, "moduleBlend");
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "targetInstanceKey");
-  json_builder_add_string_value(builder, payload != NULL && payload->instance_key ? payload->instance_key : "");
-
-  if(payload != NULL && payload->module != NULL)
-  {
-    json_builder_set_member_name(builder, "moduleOp");
-    json_builder_add_string_value(builder, payload->module->op);
-    json_builder_set_member_name(builder, "iopOrder");
-    json_builder_add_int_value(builder, payload->module->iop_order);
-    json_builder_set_member_name(builder, "multiPriority");
-    json_builder_add_int_value(builder, payload->module->multi_priority);
-    json_builder_set_member_name(builder, "multiName");
-    json_builder_add_string_value(builder, payload->module->multi_name);
-  }
-
-  if(payload != NULL && payload->have_previous_opacity)
-  {
-    json_builder_set_member_name(builder, "previousOpacity");
-    json_builder_add_double_value(builder, payload->previous_opacity);
-  }
-
-  if(payload != NULL && payload->have_requested_opacity)
-  {
-    json_builder_set_member_name(builder, "requestedOpacity");
-    json_builder_add_double_value(builder, payload->requested_opacity);
-  }
-
-  if(payload != NULL && payload->have_current_opacity)
-  {
-    json_builder_set_member_name(builder, "currentOpacity");
-    json_builder_add_double_value(builder, payload->current_opacity);
-  }
-
-  if(payload != NULL && payload->have_previous_blend_mode)
-  {
-    json_builder_set_member_name(builder, "previousBlendMode");
-    json_builder_add_string_value(builder, payload->previous_blend_mode);
-  }
-
-  if(payload != NULL && payload->have_requested_blend_mode)
-  {
-    json_builder_set_member_name(builder, "requestedBlendMode");
-    json_builder_add_string_value(builder, payload->requested_blend_mode);
-  }
-
-  if(payload != NULL && payload->have_current_blend_mode)
-  {
-    json_builder_set_member_name(builder, "currentBlendMode");
-    json_builder_add_string_value(builder, payload->current_blend_mode);
-  }
-
-  if(payload != NULL && payload->have_previous_reverse_order)
-  {
-    json_builder_set_member_name(builder, "previousReverseOrder");
-    json_builder_add_boolean_value(builder, payload->previous_reverse_order);
-  }
-
-  if(payload != NULL && payload->have_requested_reverse_order)
-  {
-    json_builder_set_member_name(builder, "requestedReverseOrder");
-    json_builder_add_boolean_value(builder, payload->requested_reverse_order);
-  }
-
-  if(payload != NULL && payload->have_current_reverse_order)
-  {
-    json_builder_set_member_name(builder, "currentReverseOrder");
-    json_builder_add_boolean_value(builder, payload->current_reverse_order);
-  }
-
-  if(payload != NULL && payload->have_history)
-  {
-    json_builder_set_member_name(builder, "historyBefore");
-    json_builder_add_int_value(builder, payload->history_before);
-    json_builder_set_member_name(builder, "historyAfter");
-    json_builder_add_int_value(builder, payload->history_after);
-    json_builder_set_member_name(builder, "requestedHistoryEnd");
-    json_builder_add_int_value(builder, payload->history_after);
-  }
-
-  json_builder_end_object(builder);
-}
-
-static void _live_snapshot_add_module_mask(JsonBuilder *builder,
-                                           const dt_live_module_mask_payload_t *payload)
-{
-  json_builder_set_member_name(builder, "moduleMask");
-  json_builder_begin_object(builder);
-  json_builder_set_member_name(builder, "targetInstanceKey");
-  json_builder_add_string_value(builder, payload != NULL && payload->instance_key ? payload->instance_key : "");
-  json_builder_set_member_name(builder, "action");
-  json_builder_add_string_value(builder, payload != NULL && payload->action ? payload->action : "");
-
-  if(payload != NULL && payload->source_instance_key != NULL)
-  {
-    json_builder_set_member_name(builder, "sourceInstanceKey");
-    json_builder_add_string_value(builder, payload->source_instance_key);
-  }
-
-  if(payload != NULL && payload->module != NULL)
-  {
-    json_builder_set_member_name(builder, "moduleOp");
-    json_builder_add_string_value(builder, payload->module->op);
-    json_builder_set_member_name(builder, "iopOrder");
-    json_builder_add_int_value(builder, payload->module->iop_order);
-    json_builder_set_member_name(builder, "multiPriority");
-    json_builder_add_int_value(builder, payload->module->multi_priority);
-    json_builder_set_member_name(builder, "multiName");
-    json_builder_add_string_value(builder, payload->module->multi_name);
-  }
-
-  if(payload != NULL && payload->have_previous_has_mask)
-  {
-    json_builder_set_member_name(builder, "previousHasMask");
-    json_builder_add_boolean_value(builder, payload->previous_has_mask);
-  }
-
-  if(payload != NULL && payload->have_current_has_mask)
-  {
-    json_builder_set_member_name(builder, "currentHasMask");
-    json_builder_add_boolean_value(builder, payload->current_has_mask);
-  }
-
-  if(payload != NULL && payload->have_changed)
-  {
-    json_builder_set_member_name(builder, "changed");
-    json_builder_add_boolean_value(builder, payload->changed);
-  }
-
-  _live_snapshot_add_mask_forms(builder, "previousForms", payload != NULL ? payload->previous_forms : NULL);
-  _live_snapshot_add_mask_forms(builder, "sourceForms", payload != NULL ? payload->source_forms : NULL);
-  _live_snapshot_add_mask_forms(builder, "currentForms", payload != NULL ? payload->current_forms : NULL);
-
-  if(payload != NULL && payload->have_history)
-  {
-    json_builder_set_member_name(builder, "historyBefore");
-    json_builder_add_int_value(builder, payload->history_before);
-    json_builder_set_member_name(builder, "historyAfter");
-    json_builder_add_int_value(builder, payload->history_after);
-    json_builder_set_member_name(builder, "requestedHistoryEnd");
-    json_builder_add_int_value(builder, payload->history_after);
-  }
-
-  json_builder_end_object(builder);
-}
-
-static gboolean _live_parse_module_instance_blend_request(const gchar *json_text,
-                                                          dt_live_module_blend_request_t *request_out)
-{
-  if(json_text == NULL || json_text[0] == '\0' || request_out == NULL) return FALSE;
-
-  g_autoptr(JsonParser) parser = json_parser_new();
-  if(!json_parser_load_from_data(parser, json_text, -1, NULL)) return FALSE;
-
-  JsonNode *root = json_parser_get_root(parser);
-  if(root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) return FALSE;
-
-  JsonObject *object = json_node_get_object(root);
-  if(object == NULL) return FALSE;
-
-  dt_live_module_blend_request_t request = { 0 };
-  GList *members = json_object_get_members(object);
-  for(const GList *iter = members; iter != NULL; iter = g_list_next(iter))
-  {
-    const gchar *key = iter->data;
-    JsonNode *member = json_object_get_member(object, key);
-
-    if(g_strcmp0(key, "opacity") == 0)
-    {
-      const GType value_type = member != NULL && JSON_NODE_HOLDS_VALUE(member)
-                                  ? json_node_get_value_type(member)
-                                  : G_TYPE_INVALID;
-      if(value_type != G_TYPE_DOUBLE && value_type != G_TYPE_INT64 && value_type != G_TYPE_INT
-         && value_type != G_TYPE_UINT64 && value_type != G_TYPE_UINT && value_type != G_TYPE_LONG
-         && value_type != G_TYPE_ULONG)
-      {
-        g_list_free(members);
-        return FALSE;
-      }
-
-      request.have_opacity = TRUE;
-      request.opacity = json_node_get_double(member);
-    }
-    else if(g_strcmp0(key, "blendMode") == 0)
-    {
-      if(member == NULL || !JSON_NODE_HOLDS_VALUE(member)
-         || json_node_get_value_type(member) != G_TYPE_STRING)
-      {
-        g_list_free(members);
-        return FALSE;
-      }
-
-      request.have_blend_mode =
-        _live_snapshot_parse_blend_mode_name(json_node_get_string(member), &request.blend_mode);
-      if(!request.have_blend_mode)
-      {
-        g_list_free(members);
-        return FALSE;
-      }
-    }
-    else if(g_strcmp0(key, "reverseOrder") == 0)
-    {
-      if(member == NULL || !JSON_NODE_HOLDS_VALUE(member)
-         || json_node_get_value_type(member) != G_TYPE_BOOLEAN)
-      {
-        g_list_free(members);
-        return FALSE;
-      }
-
-      request.have_reverse_order = TRUE;
-      request.reverse_order = json_node_get_boolean(member);
-    }
-    else
-    {
-      g_list_free(members);
-      return FALSE;
-    }
-  }
-  g_list_free(members);
-
-  if(!request.have_opacity && !request.have_blend_mode && !request.have_reverse_order) return FALSE;
-
-  *request_out = request;
-  return TRUE;
-}
-
-static gboolean _live_parse_module_instance_mask_request(const gchar *json_text,
-                                                         dt_live_module_mask_request_t *request_out)
-{
-  if(json_text == NULL || json_text[0] == '\0' || request_out == NULL) return FALSE;
-
-  g_autoptr(JsonParser) parser = json_parser_new();
-  if(!json_parser_load_from_data(parser, json_text, -1, NULL)) return FALSE;
-
-  JsonNode *root = json_parser_get_root(parser);
-  if(root == NULL || !JSON_NODE_HOLDS_OBJECT(root)) return FALSE;
-
-  JsonObject *object = json_node_get_object(root);
-  if(object == NULL) return FALSE;
-
-  dt_live_module_mask_request_t request = { 0 };
-  GList *members = json_object_get_members(object);
-  for(const GList *iter = members; iter != NULL; iter = g_list_next(iter))
-  {
-    const gchar *key = iter->data;
-    JsonNode *member = json_object_get_member(object, key);
-
-    if(g_strcmp0(key, "action") == 0)
-    {
-      if(member == NULL || !JSON_NODE_HOLDS_VALUE(member)
-         || json_node_get_value_type(member) != G_TYPE_STRING)
-      {
-        g_list_free(members);
-        return FALSE;
-      }
-
-      request.action = _live_module_mask_action_from_string(json_node_get_string(member));
-      if(request.action == DT_LIVE_MODULE_MASK_ACTION_INVALID)
-      {
-        g_free(request.source_instance_key);
-        g_list_free(members);
-        return FALSE;
-      }
-    }
-    else if(g_strcmp0(key, "sourceInstanceKey") == 0)
-    {
-      if(member == NULL || !JSON_NODE_HOLDS_VALUE(member)
-         || json_node_get_value_type(member) != G_TYPE_STRING)
-      {
-        g_list_free(members);
-        return FALSE;
-      }
-
-      request.source_instance_key = g_strdup(json_node_get_string(member));
-    }
-    else
-    {
-      g_free(request.source_instance_key);
-      g_list_free(members);
-      return FALSE;
-    }
-  }
-  g_list_free(members);
-
-  if(request.action == DT_LIVE_MODULE_MASK_ACTION_INVALID)
-  {
-    g_free(request.source_instance_key);
-    return FALSE;
-  }
-  if(request.action == DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES
-     && (request.source_instance_key == NULL || request.source_instance_key[0] == '\0'))
-  {
-    g_free(request.source_instance_key);
-    return FALSE;
-  }
-  if(request.action != DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES
-     && request.source_instance_key != NULL)
-  {
-    g_free(request.source_instance_key);
-    return FALSE;
-  }
-
-  *request_out = request;
-  return TRUE;
-}
-
-static gchar *_live_apply_module_instance_blend_to_json(dt_develop_t *dev,
-                                                        const gchar *instance_key,
-                                                        const dt_live_module_blend_request_t *request)
-{
-  g_autoptr(JsonBuilder) builder = json_builder_new();
-  json_builder_begin_object(builder);
-
-  dt_live_module_blend_payload_t blend_payload = {
-    .instance_key = instance_key,
-  };
-
-  if(request != NULL && request->have_opacity)
-  {
-    blend_payload.have_requested_opacity = TRUE;
-    blend_payload.requested_opacity = request->opacity;
-  }
-  if(request != NULL && request->have_blend_mode)
-  {
-    blend_payload.have_requested_blend_mode = TRUE;
-    blend_payload.requested_blend_mode = _live_snapshot_blend_mode_name(request->blend_mode);
-  }
-  if(request != NULL && request->have_reverse_order)
-  {
-    blend_payload.have_requested_reverse_order = TRUE;
-    blend_payload.requested_reverse_order = request->reverse_order;
-  }
-
-  if(dt_view_get_current() != DT_VIEW_DARKROOM)
-  {
-    _live_snapshot_add_module_blend(builder, &blend_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-view");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  if(dev == NULL || dev->image_storage.id == NO_IMGID)
-  {
-    _live_snapshot_add_module_blend(builder, &blend_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "no-active-image");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  _live_snapshot_add_active_image(builder, dev);
-
-  dt_iop_module_t *module = _live_snapshot_find_visible_module(dev, instance_key);
-  if(module == NULL)
-  {
-    _live_snapshot_add_module_blend(builder, &blend_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unknown-instance-key");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  blend_payload.module = module;
-
-  if(!(module->flags() & IOP_FLAGS_SUPPORTS_BLENDING) || module->blend_params == NULL)
-  {
-    blend_payload.have_history = TRUE;
-    blend_payload.history_before = dev->history_end;
-    blend_payload.history_after = dev->history_end;
-    _live_snapshot_add_module_blend(builder, &blend_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-module-blend");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  const double previous_opacity = module->blend_params->opacity;
-  const uint32_t previous_blend_mode = module->blend_params->blend_mode & DEVELOP_BLEND_MODE_MASK;
-  const gboolean previous_reverse_order =
-    (module->blend_params->blend_mode & DEVELOP_BLEND_REVERSE) == DEVELOP_BLEND_REVERSE;
-  const gint history_before = dev->history_end;
-  const dt_develop_blend_colorspace_t blend_csp = _live_module_blend_colorspace(module);
-
-  if(request != NULL && request->have_opacity)
-  {
-    blend_payload.have_previous_opacity = TRUE;
-    blend_payload.previous_opacity = previous_opacity;
-  }
-  if(request != NULL && request->have_blend_mode)
-  {
-    blend_payload.have_previous_blend_mode = TRUE;
-    blend_payload.previous_blend_mode = _live_snapshot_blend_mode_name(previous_blend_mode);
-  }
-  if(request != NULL && request->have_reverse_order)
-  {
-    blend_payload.have_previous_reverse_order = TRUE;
-    blend_payload.previous_reverse_order = previous_reverse_order;
-  }
-
-  if(request != NULL && request->have_blend_mode
-     && !_live_module_blend_mode_supported(blend_csp, request->blend_mode))
-  {
-    if(request->have_opacity)
-    {
-      blend_payload.have_current_opacity = TRUE;
-      blend_payload.current_opacity = previous_opacity;
-    }
-    if(request->have_blend_mode)
-    {
-      blend_payload.have_current_blend_mode = TRUE;
-      blend_payload.current_blend_mode = _live_snapshot_blend_mode_name(previous_blend_mode);
-    }
-    if(request->have_reverse_order)
-    {
-      blend_payload.have_current_reverse_order = TRUE;
-      blend_payload.current_reverse_order = previous_reverse_order;
-    }
-    blend_payload.have_history = TRUE;
-    blend_payload.history_before = history_before;
-    blend_payload.history_after = history_before;
-    _live_snapshot_add_module_blend(builder, &blend_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-module-blend-mode");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  dt_develop_blend_params_t updated_blend_params = *module->blend_params;
-
-  if(request != NULL && request->have_opacity)
-  {
-    updated_blend_params.opacity = request->opacity;
-  }
-
-  if(request != NULL && request->have_blend_mode)
-  {
-    updated_blend_params.blend_mode =
-      request->blend_mode | (updated_blend_params.blend_mode & DEVELOP_BLEND_REVERSE);
-    if(!_live_module_blend_parameter_enabled(blend_csp, updated_blend_params.blend_mode))
-    {
-      updated_blend_params.blend_parameter = 0.0f;
-    }
-  }
-
-  if(request != NULL && request->have_reverse_order)
-  {
-    updated_blend_params.blend_mode &= ~DEVELOP_BLEND_REVERSE;
-    if(request->reverse_order) updated_blend_params.blend_mode |= DEVELOP_BLEND_REVERSE;
-  }
-
-  const gboolean blend_changed =
-    (request != NULL && request->have_opacity && fabs(previous_opacity - updated_blend_params.opacity) > 1e-6)
-    || (request != NULL && request->have_blend_mode
-        && previous_blend_mode != (updated_blend_params.blend_mode & DEVELOP_BLEND_MODE_MASK))
-    || (request != NULL && request->have_reverse_order
-        && previous_reverse_order
-             != ((updated_blend_params.blend_mode & DEVELOP_BLEND_REVERSE) == DEVELOP_BLEND_REVERSE));
-
-  if(blend_changed)
-  {
-    dt_iop_commit_blend_params(module, &updated_blend_params);
-    dt_dev_add_history_item(dev, module, module->enabled);
-    dt_iop_gui_update_blending(module);
-  }
-
-  const double current_opacity = module->blend_params->opacity;
-  const uint32_t current_blend_mode = module->blend_params->blend_mode & DEVELOP_BLEND_MODE_MASK;
-  const gboolean current_reverse_order =
-    (module->blend_params->blend_mode & DEVELOP_BLEND_REVERSE) == DEVELOP_BLEND_REVERSE;
-  const gint history_after = dev->history_end;
-  g_autofree gchar *snapshot_json = _live_snapshot_to_json(dev);
-
-  if(request != NULL && request->have_opacity)
-  {
-    blend_payload.have_current_opacity = TRUE;
-    blend_payload.current_opacity = current_opacity;
-  }
-  if(request != NULL && request->have_blend_mode)
-  {
-    blend_payload.have_current_blend_mode = TRUE;
-    blend_payload.current_blend_mode = _live_snapshot_blend_mode_name(current_blend_mode);
-  }
-  if(request != NULL && request->have_reverse_order)
-  {
-    blend_payload.have_current_reverse_order = TRUE;
-    blend_payload.current_reverse_order = current_reverse_order;
-  }
-  blend_payload.have_history = TRUE;
-  blend_payload.history_before = history_before;
-  blend_payload.history_after = history_after;
-  _live_snapshot_add_module_blend(builder, &blend_payload);
-
-  if((request != NULL && request->have_opacity && fabs(current_opacity - request->opacity) > 1e-6)
-     || (request != NULL && request->have_blend_mode && current_blend_mode != request->blend_mode)
-     || (request != NULL && request->have_reverse_order && current_reverse_order != request->reverse_order))
-  {
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "module-blend-failed");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  JsonNode *snapshot_root = _live_json_copy_object_root(snapshot_json);
-  if(snapshot_root == NULL)
-  {
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "snapshot-unavailable");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  json_builder_set_member_name(builder, "snapshot");
-  json_builder_add_value(builder, snapshot_root);
-  json_builder_set_member_name(builder, "status");
-  json_builder_add_string_value(builder, "ok");
-  json_builder_end_object(builder);
-  return _live_json_builder_to_string(builder);
-}
-
-static gboolean _live_module_masks_supported(dt_iop_module_t *module)
-{
-  return module != NULL && module->blend_params != NULL
-         && (module->flags() & IOP_FLAGS_SUPPORTS_BLENDING)
-         && !(module->flags() & IOP_FLAGS_NO_MASKS);
-}
-
-static gchar *_live_apply_module_instance_mask_to_json(dt_develop_t *dev,
-                                                       const gchar *instance_key,
-                                                       const dt_live_module_mask_request_t *request)
-{
-  g_autoptr(JsonBuilder) builder = json_builder_new();
-  json_builder_begin_object(builder);
-
-  dt_live_module_mask_payload_t mask_payload = {
-    .instance_key = instance_key,
-    .action = request != NULL && request->action == DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES
-                ? "reuse-same-shapes"
-                : "clear-mask",
-    .source_instance_key = request != NULL ? request->source_instance_key : NULL,
-    .previous_forms = g_array_new(FALSE, FALSE, sizeof(dt_live_module_mask_form_t)),
-    .source_forms = g_array_new(FALSE, FALSE, sizeof(dt_live_module_mask_form_t)),
-    .current_forms = g_array_new(FALSE, FALSE, sizeof(dt_live_module_mask_form_t)),
-  };
-
-  if(dt_view_get_current() != DT_VIEW_DARKROOM)
-  {
-    _live_snapshot_add_module_mask(builder, &mask_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-view");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    gchar *result = _live_json_builder_to_string(builder);
-    g_array_unref(mask_payload.previous_forms);
-    g_array_unref(mask_payload.source_forms);
-    g_array_unref(mask_payload.current_forms);
-    return result;
-  }
-
-  if(dev == NULL || dev->image_storage.id == NO_IMGID)
-  {
-    _live_snapshot_add_module_mask(builder, &mask_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "no-active-image");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    gchar *result = _live_json_builder_to_string(builder);
-    g_array_unref(mask_payload.previous_forms);
-    g_array_unref(mask_payload.source_forms);
-    g_array_unref(mask_payload.current_forms);
-    return result;
-  }
-
-  _live_snapshot_add_active_image(builder, dev);
-
-  dt_iop_module_t *module = _live_snapshot_find_visible_module(dev, instance_key);
-  if(module == NULL)
-  {
-    _live_snapshot_add_module_mask(builder, &mask_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unknown-instance-key");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    gchar *result = _live_json_builder_to_string(builder);
-    g_array_unref(mask_payload.previous_forms);
-    g_array_unref(mask_payload.source_forms);
-    g_array_unref(mask_payload.current_forms);
-    return result;
-  }
-
-  mask_payload.module = module;
-  const gint history_before = dev->history_end;
-
-  if(!_live_module_masks_supported(module))
-  {
-    mask_payload.have_previous_has_mask = TRUE;
-    mask_payload.previous_has_mask = FALSE;
-    mask_payload.have_current_has_mask = TRUE;
-    mask_payload.current_has_mask = FALSE;
-    mask_payload.have_changed = TRUE;
-    mask_payload.changed = FALSE;
-    mask_payload.have_history = TRUE;
-    mask_payload.history_before = history_before;
-    mask_payload.history_after = history_before;
-    _live_snapshot_add_module_mask(builder, &mask_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-module-mask");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    gchar *result = _live_json_builder_to_string(builder);
-    g_array_unref(mask_payload.previous_forms);
-    g_array_unref(mask_payload.source_forms);
-    g_array_unref(mask_payload.current_forms);
-    return result;
-  }
-
-  dt_masks_form_t *previous_group = _live_mask_group_from_module(dev, module);
-  GArray *previous_forms = _live_mask_collect_forms(previous_group);
-  g_array_unref(mask_payload.previous_forms);
-  mask_payload.previous_forms = previous_forms;
-  mask_payload.have_previous_has_mask = TRUE;
-  mask_payload.previous_has_mask = _live_mask_forms_have_entries(previous_forms);
-
-  dt_iop_module_t *source_module = NULL;
-  GArray *source_forms = mask_payload.source_forms;
-  if(request != NULL && request->action == DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES)
-  {
-    source_module = _live_snapshot_find_visible_module(dev, request->source_instance_key);
-    if(source_module == NULL)
-    {
-      g_array_unref(mask_payload.current_forms);
-      mask_payload.current_forms = _live_mask_collect_forms(previous_group);
-      mask_payload.have_current_has_mask = TRUE;
-      mask_payload.current_has_mask = mask_payload.previous_has_mask;
-      mask_payload.have_changed = TRUE;
-      mask_payload.changed = FALSE;
-      mask_payload.have_history = TRUE;
-      mask_payload.history_before = history_before;
-      mask_payload.history_after = history_before;
-      _live_snapshot_add_module_mask(builder, &mask_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "unknown-source-instance-key");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      gchar *result = _live_json_builder_to_string(builder);
-      g_array_unref(mask_payload.previous_forms);
-      g_array_unref(mask_payload.source_forms);
-      g_array_unref(mask_payload.current_forms);
-      return result;
-    }
-
-    if(!_live_module_masks_supported(source_module))
-    {
-      g_array_unref(mask_payload.current_forms);
-      mask_payload.current_forms = _live_mask_collect_forms(previous_group);
-      mask_payload.have_current_has_mask = TRUE;
-      mask_payload.current_has_mask = mask_payload.previous_has_mask;
-      mask_payload.have_changed = TRUE;
-      mask_payload.changed = FALSE;
-      mask_payload.have_history = TRUE;
-      mask_payload.history_before = history_before;
-      mask_payload.history_after = history_before;
-      _live_snapshot_add_module_mask(builder, &mask_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "source-module-mask-unavailable");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      gchar *result = _live_json_builder_to_string(builder);
-      g_array_unref(mask_payload.previous_forms);
-      g_array_unref(mask_payload.source_forms);
-      g_array_unref(mask_payload.current_forms);
-      return result;
-    }
-
-    dt_masks_form_t *source_group = _live_mask_group_from_module(dev, source_module);
-    source_forms = _live_mask_collect_forms(source_group);
-    g_array_unref(mask_payload.source_forms);
-    mask_payload.source_forms = source_forms;
-
-    if(!_live_mask_forms_have_entries(source_forms))
-    {
-      g_array_unref(mask_payload.current_forms);
-      mask_payload.current_forms = _live_mask_collect_forms(previous_group);
-      mask_payload.have_current_has_mask = TRUE;
-      mask_payload.current_has_mask = mask_payload.previous_has_mask;
-      mask_payload.have_changed = TRUE;
-      mask_payload.changed = FALSE;
-      mask_payload.have_history = TRUE;
-      mask_payload.history_before = history_before;
-      mask_payload.history_after = history_before;
-      _live_snapshot_add_module_mask(builder, &mask_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "source-module-mask-unavailable");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      gchar *result = _live_json_builder_to_string(builder);
-      g_array_unref(mask_payload.previous_forms);
-      g_array_unref(mask_payload.source_forms);
-      g_array_unref(mask_payload.current_forms);
-      return result;
-    }
-
-    if(mask_payload.previous_has_mask && !_live_mask_forms_equal(previous_forms, source_forms))
-    {
-      g_array_unref(mask_payload.current_forms);
-      mask_payload.current_forms = _live_mask_collect_forms(previous_group);
-      mask_payload.have_current_has_mask = TRUE;
-      mask_payload.current_has_mask = mask_payload.previous_has_mask;
-      mask_payload.have_changed = TRUE;
-      mask_payload.changed = FALSE;
-      mask_payload.have_history = TRUE;
-      mask_payload.history_before = history_before;
-      mask_payload.history_after = history_before;
-      _live_snapshot_add_module_mask(builder, &mask_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "target-module-mask-not-clear");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      gchar *result = _live_json_builder_to_string(builder);
-      g_array_unref(mask_payload.previous_forms);
-      g_array_unref(mask_payload.source_forms);
-      g_array_unref(mask_payload.current_forms);
-      return result;
-    }
-  }
-
-  gboolean changed = FALSE;
-  if(request != NULL && request->action == DT_LIVE_MODULE_MASK_ACTION_CLEAR_MASK)
-  {
-    if(mask_payload.previous_has_mask)
-    {
-      if(previous_group != NULL) dt_masks_form_remove(module, NULL, previous_group);
-      dt_masks_set_edit_mode(module, DT_MASKS_EDIT_OFF);
-      changed = TRUE;
-    }
-  }
-  else if(request != NULL && request->action == DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES)
-  {
-    if(!_live_mask_forms_equal(previous_forms, source_forms))
-    {
-      dt_masks_iop_use_same_as(module, source_module);
-      dt_masks_iop_update(module);
-      dt_masks_set_edit_mode(module, DT_MASKS_EDIT_FULL);
-      changed = TRUE;
-    }
-  }
-
-  dt_masks_form_t *current_group = _live_mask_group_from_module(dev, module);
-  GArray *current_forms = _live_mask_collect_forms(current_group);
-  g_array_unref(mask_payload.current_forms);
-  mask_payload.current_forms = current_forms;
-  mask_payload.have_current_has_mask = TRUE;
-  mask_payload.current_has_mask = _live_mask_forms_have_entries(current_forms);
-  mask_payload.have_changed = TRUE;
-  mask_payload.changed = changed;
-  mask_payload.have_history = TRUE;
-  mask_payload.history_before = history_before;
-  mask_payload.history_after = dev->history_end;
-  _live_snapshot_add_module_mask(builder, &mask_payload);
-
-  if((request != NULL && request->action == DT_LIVE_MODULE_MASK_ACTION_CLEAR_MASK && mask_payload.current_has_mask)
-     || (request != NULL && request->action == DT_LIVE_MODULE_MASK_ACTION_REUSE_SAME_SHAPES
-         && !_live_mask_forms_equal(mask_payload.current_forms, mask_payload.source_forms)))
-  {
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "module-mask-failed");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    gchar *result = _live_json_builder_to_string(builder);
-    g_array_unref(mask_payload.previous_forms);
-    g_array_unref(mask_payload.source_forms);
-    g_array_unref(mask_payload.current_forms);
-    return result;
-  }
-
-  g_autofree gchar *snapshot_json = _live_snapshot_to_json(dev);
-  JsonNode *snapshot_root = _live_json_copy_object_root(snapshot_json);
-  if(snapshot_root == NULL)
-  {
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "snapshot-unavailable");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    gchar *result = _live_json_builder_to_string(builder);
-    g_array_unref(mask_payload.previous_forms);
-    g_array_unref(mask_payload.source_forms);
-    g_array_unref(mask_payload.current_forms);
-    return result;
-  }
-
-  json_builder_set_member_name(builder, "snapshot");
-  json_builder_add_value(builder, snapshot_root);
-  json_builder_set_member_name(builder, "status");
-  json_builder_add_string_value(builder, "ok");
-  json_builder_end_object(builder);
-  gchar *result = _live_json_builder_to_string(builder);
-  g_array_unref(mask_payload.previous_forms);
-  g_array_unref(mask_payload.source_forms);
-  g_array_unref(mask_payload.current_forms);
-  return result;
-}
-
-static dt_live_module_reorder_check_t _live_module_instance_check_reorder(dt_develop_t *dev,
-                                                                          dt_iop_module_t *module,
-                                                                          dt_iop_module_t *anchor,
-                                                                          const dt_live_module_instance_action_t action_kind)
-{
-  if(dev == NULL || module == NULL || anchor == NULL) return DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_RULE;
-  if(module == anchor) return DT_LIVE_MODULE_REORDER_CHECK_NO_OP;
-  if(module->flags() & IOP_FLAGS_FENCE) return DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_FENCE;
-
-  gint module_index = -1;
-  gint anchor_index = -1;
-  gint index = 0;
-  for(const GList *iter = dev->iop; iter; iter = g_list_next(iter), index++)
-  {
-    dt_iop_module_t *candidate = iter->data;
-    if(candidate == module) module_index = index;
-    if(candidate == anchor) anchor_index = index;
-  }
-
-  if(module_index < 0 || anchor_index < 0) return DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_RULE;
-
-  gboolean moving_forward = FALSE;
-  gint range_start = 0;
-  gint range_end = -1;
-
-  if(action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_BEFORE)
-  {
-    if(module_index + 1 == anchor_index) return DT_LIVE_MODULE_REORDER_CHECK_NO_OP;
-    moving_forward = module_index < anchor_index;
-    range_start = moving_forward ? module_index + 1 : anchor_index;
-    range_end = moving_forward ? anchor_index - 1 : module_index - 1;
-  }
-  else if(action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_AFTER)
-  {
-    if(module_index == anchor_index + 1) return DT_LIVE_MODULE_REORDER_CHECK_NO_OP;
-    moving_forward = module_index < anchor_index;
-    range_start = moving_forward ? module_index + 1 : anchor_index + 1;
-    range_end = moving_forward ? anchor_index : module_index - 1;
-  }
-  else
-    return DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_RULE;
-
-  index = 0;
-  for(const GList *iter = dev->iop; iter; iter = g_list_next(iter), index++)
-  {
-    dt_iop_module_t *candidate = iter->data;
-    if(index < range_start || index > range_end || candidate == NULL) continue;
-
-    if(candidate->flags() & IOP_FLAGS_FENCE) return DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_FENCE;
-
-    for(const GList *rules = darktable.iop_order_rules; rules; rules = g_list_next(rules))
-    {
-      const dt_iop_order_rule_t *rule = rules->data;
-      if(rule == NULL) continue;
-
-      if(moving_forward)
-      {
-        if(dt_iop_module_is(module->so, rule->op_prev)
-           && dt_iop_module_is(candidate->so, rule->op_next))
-          return DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_RULE;
-      }
-      else
-      {
-        if(dt_iop_module_is(candidate->so, rule->op_prev)
-           && dt_iop_module_is(module->so, rule->op_next))
-          return DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_RULE;
-      }
-    }
-  }
-
-  return DT_LIVE_MODULE_REORDER_CHECK_OK;
-}
-
-static guint _live_module_visible_family_count(const dt_develop_t *dev, const dt_iop_module_t *module)
-{
-  if(dev == NULL || module == NULL) return 0;
-
-  guint count = 0;
-  for(const GList *iter = dev->iop; iter; iter = g_list_next(iter))
-  {
-    const dt_iop_module_t *candidate = iter->data;
-    if(candidate == NULL || dt_iop_is_hidden((dt_iop_module_t *)candidate)) continue;
-    if(candidate->instance == module->instance) count++;
-  }
-
-  return count;
-}
-
-static dt_iop_module_t *_live_module_delete_sibling(const dt_iop_module_t *module)
-{
-  if(module == NULL || module->dev == NULL) return NULL;
-
-  dt_iop_module_t *next = NULL;
-  gboolean found = FALSE;
-  for(const GList *modules = module->dev->iop; modules; modules = g_list_next(modules))
-  {
-    dt_iop_module_t *candidate = modules->data;
-    if(candidate == NULL || dt_iop_is_hidden(candidate)) continue;
-
-    if(candidate == module)
-    {
-      found = TRUE;
-      if(next != NULL) break;
-    }
-    else if(candidate->instance == module->instance)
-    {
-      next = candidate;
-      if(found) break;
-    }
-  }
-
-  return next;
-}
-
-static gboolean _live_delete_module_instance(dt_develop_t *dev,
-                                             dt_iop_module_t *module,
-                                             dt_iop_module_t **replacement_out)
-{
-  if(replacement_out != NULL) *replacement_out = NULL;
-  if(dev == NULL || module == NULL) return FALSE;
-
-  dt_iop_module_t *replacement = _live_module_delete_sibling(module);
-  dt_iop_module_t *replacement_for_response = NULL;
-  if(replacement == NULL) return FALSE;
-
-  if(dev->gui_attached)
-    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_DEVELOP_HISTORY_WILL_CHANGE);
-
-  if(darktable.develop->gui_module == module)
-    dt_iop_request_focus(NULL);
-
-  const gboolean is_zero = (module->multi_priority == 0);
-
-  ++darktable.gui->reset;
-
-  if(!dt_iop_is_hidden(module))
-    dt_iop_gui_cleanup_module(module);
-
-  dt_dev_module_remove(dev, module);
-
-  if(is_zero)
-  {
-    dt_iop_module_t *first = NULL;
-    for(GList *history = dev->history; history; history = g_list_next(history))
-    {
-      dt_dev_history_item_t *hist = history->data;
-      if(hist->module != NULL && !dt_iop_is_hidden(hist->module)
-         && hist->module->instance == module->instance && hist->module != module)
-      {
-        first = hist->module;
-        break;
-      }
-    }
-    if(first == NULL) first = replacement;
-
-    if(first != NULL)
-    {
-      dt_iop_update_multi_priority(first, 0);
-      for(GList *history = dev->history; history; history = g_list_next(history))
-      {
-        dt_dev_history_item_t *hist = history->data;
-        if(hist->module == first) hist->multi_priority = 0;
-      }
-      replacement = first;
-      replacement_for_response = first;
-    }
-  }
-
-  if(dev->gui_attached)
-    DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_DEVELOP_HISTORY_CHANGE);
-
-  dt_iop_connect_accels_multi(module->so);
-  dt_action_cleanup_instance_iop(module);
-  dev->alliop = g_list_append(dev->alliop, module);
-  dt_dev_pixelpipe_rebuild(dev);
-  dt_control_queue_redraw_center();
-
-  --darktable.gui->reset;
-
-  if(replacement_out != NULL) *replacement_out = replacement_for_response;
-  return TRUE;
-}
-
-static const gchar *_live_module_instance_reorder_reason(const dt_live_module_reorder_check_t check)
-{
-  switch(check)
-  {
-    case DT_LIVE_MODULE_REORDER_CHECK_NO_OP:
-      return "module-reorder-no-op";
-    case DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_FENCE:
-      return "module-reorder-blocked-by-fence";
-    case DT_LIVE_MODULE_REORDER_CHECK_BLOCKED_BY_RULE:
-      return "module-reorder-blocked-by-rule";
-    case DT_LIVE_MODULE_REORDER_CHECK_OK:
-    default:
-      return NULL;
-  }
-}
-
-static dt_iop_module_t *_live_create_module_instance(dt_iop_module_t *base, const gboolean copy_params)
-{
-  if(base == NULL) return NULL;
-
-  dt_dev_add_history_item(base->dev, base, FALSE);
-
-  if(darktable.gui != NULL) ++darktable.gui->reset;
-  dt_iop_module_t *module = dt_dev_module_duplicate(base->dev, base);
-  if(darktable.gui != NULL) --darktable.gui->reset;
-  if(module == NULL) return NULL;
-
-  if(!dt_iop_is_hidden(module))
-  {
-    dt_iop_gui_init(module);
-    dt_iop_gui_set_expander(module);
-    dt_iop_gui_set_expanded(module, FALSE, FALSE);
-
-    if(base->expander != NULL && module->expander != NULL)
-    {
-      GList *modules = module->dev->iop;
-      int pos_module = 0;
-      int pos_base = 0;
-      int pos = 0;
-
-      while(modules)
-      {
-        dt_iop_module_t *current = modules->data;
-        if(current == module)
-          pos_module = pos;
-        else if(current == base)
-          pos_base = pos;
-        modules = g_list_next(modules);
-        pos++;
-      }
-
-      GValue position = G_VALUE_INIT;
-      g_value_init(&position, G_TYPE_INT);
-      gtk_container_child_get_property(
-          GTK_CONTAINER(dt_ui_get_container(darktable.gui->ui, DT_UI_CONTAINER_PANEL_RIGHT_CENTER)),
-          base->expander, "position", &position);
-      gtk_box_reorder_child(
-          dt_ui_get_container(darktable.gui->ui, DT_UI_CONTAINER_PANEL_RIGHT_CENTER),
-          module->expander, g_value_get_int(&position) + pos_base - pos_module + 1);
-      g_value_unset(&position);
-    }
-
-    dt_iop_reload_defaults(module);
-
-    if(copy_params)
-    {
-      memcpy(module->params, base->params, module->params_size);
-      if(module->flags() & IOP_FLAGS_SUPPORTS_BLENDING)
-      {
-        dt_iop_commit_blend_params(module, base->blend_params);
-        if(dt_is_valid_maskid(base->blend_params->mask_id))
-        {
-          module->blend_params->mask_id = NO_MASKID;
-          dt_masks_iop_use_same_as(module, base);
-        }
-      }
-    }
-
-    dt_dev_add_history_item(module->dev, module, TRUE);
-    dt_iop_gui_update_blending(module);
-    dt_iop_gui_update(module);
-  }
-
-  dt_iop_connect_accels_multi(base->so);
-  if(module->dev->gui_attached)
-  {
-    dt_dev_pixelpipe_rebuild(module->dev);
-  }
-  dt_dev_modulegroups_update_visibility(module->dev);
-
-  return module;
-}
-
-static gchar *_live_apply_module_instance_action_to_json(dt_develop_t *dev,
-                                                         const gchar *instance_key,
-                                                         const gchar *action,
-                                                         const gchar *anchor_instance_key)
-{
-  g_autoptr(JsonBuilder) builder = json_builder_new();
-  json_builder_begin_object(builder);
-
-  gboolean requested_enabled = FALSE;
-  const dt_live_module_instance_action_t action_kind =
-    _live_module_instance_action_from_string(action, &requested_enabled);
-  const gboolean supported_action = action_kind != DT_LIVE_MODULE_INSTANCE_ACTION_INVALID;
-  const gboolean requires_anchor = _live_module_instance_action_requires_anchor(action_kind);
-  dt_live_module_action_payload_t action_payload = {
-    .instance_key = instance_key,
-    .action = action,
-    .anchor_instance_key = requires_anchor ? anchor_instance_key : NULL,
-    .have_requested_enabled = action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_ENABLE
-                             || action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_DISABLE,
-    .requested_enabled = requested_enabled,
-  };
-
-  if(dt_view_get_current() != DT_VIEW_DARKROOM)
-  {
-    _live_snapshot_add_module_action(builder, &action_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-view");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  if(dev == NULL || dev->image_storage.id == NO_IMGID)
-  {
-    _live_snapshot_add_module_action(builder, &action_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "no-active-image");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  _live_snapshot_add_active_image(builder, dev);
-
-  if(!supported_action)
-  {
-    _live_snapshot_add_module_action(builder, &action_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-module-action");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  dt_iop_module_t *module = _live_snapshot_find_visible_module(dev, instance_key);
-  if(module == NULL)
-  {
-    _live_snapshot_add_module_action(builder, &action_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unknown-instance-key");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  const gboolean previous_enabled = module->enabled;
-  const gint previous_iop_order = module->iop_order;
-  const gint history_before = dev->history_end;
-  action_payload.module = module;
-
-  if(action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_CREATE
-      || action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_DUPLICATE)
-  {
-    if(module->flags() & IOP_FLAGS_ONE_INSTANCE)
-    {
-      action_payload.have_history = TRUE;
-      action_payload.history_before = history_before;
-      action_payload.history_after = history_before;
-      _live_snapshot_add_module_action(builder, &action_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "unsupported-module-state");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    dt_iop_module_t *result_module =
-      _live_create_module_instance(module, action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_DUPLICATE);
-
-    const gint history_after = dev->history_end;
-    g_autofree gchar *snapshot_json = _live_snapshot_to_json(dev);
-
-    action_payload.module = result_module;
-    action_payload.result_module = result_module;
-    action_payload.have_history = TRUE;
-    action_payload.history_before = history_before;
-    action_payload.history_after = history_after;
-    _live_snapshot_add_module_action(builder, &action_payload);
-
-    if(result_module == NULL)
-    {
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "module-action-failed");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    JsonNode *snapshot_root = _live_json_copy_object_root(snapshot_json);
-    if(snapshot_root == NULL)
-    {
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "snapshot-unavailable");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    json_builder_set_member_name(builder, "snapshot");
-    json_builder_add_value(builder, snapshot_root);
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "ok");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  if(action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_DELETE)
-  {
-    action_payload.have_history = TRUE;
-    action_payload.history_before = history_before;
-    action_payload.history_after = history_before;
-
-    if(_live_module_visible_family_count(dev, module) <= 1)
-    {
-      _live_snapshot_add_module_action(builder, &action_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "module-delete-blocked-last-instance");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    dt_iop_module_t *replacement_module = NULL;
-    const gboolean deleted = _live_delete_module_instance(dev, module, &replacement_module);
-    const gint history_after = dev->history_end;
-    g_autofree gchar *snapshot_json = deleted ? _live_snapshot_to_json(dev) : NULL;
-
-    action_payload.replacement_module = replacement_module;
-    action_payload.have_history = TRUE;
-    action_payload.history_before = history_before;
-    action_payload.history_after = history_after;
-    _live_snapshot_add_module_action(builder, &action_payload);
-
-    if(!deleted)
-    {
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "module-action-failed");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    JsonNode *snapshot_root = _live_json_copy_object_root(snapshot_json);
-    if(snapshot_root == NULL)
-    {
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "snapshot-unavailable");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    json_builder_set_member_name(builder, "snapshot");
-    json_builder_add_value(builder, snapshot_root);
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "ok");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  if(requires_anchor)
-  {
-    dt_iop_module_t *anchor_module = _live_snapshot_find_visible_module(dev, anchor_instance_key);
-    action_payload.have_previous_iop_order = TRUE;
-    action_payload.previous_iop_order = previous_iop_order;
-    action_payload.have_current_iop_order = TRUE;
-    action_payload.current_iop_order = previous_iop_order;
-    action_payload.have_history = TRUE;
-    action_payload.history_before = history_before;
-    action_payload.history_after = history_before;
-
-    if(anchor_module == NULL)
-    {
-      _live_snapshot_add_module_action(builder, &action_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "unknown-anchor-instance-key");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    const dt_live_module_reorder_check_t reorder_check =
-      _live_module_instance_check_reorder(dev, module, anchor_module, action_kind);
-    const gchar *reorder_reason = _live_module_instance_reorder_reason(reorder_check);
-    if(reorder_reason != NULL)
-    {
-      _live_snapshot_add_module_action(builder, &action_payload);
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, reorder_reason);
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    const gboolean moved = (action_kind == DT_LIVE_MODULE_INSTANCE_ACTION_MOVE_BEFORE)
-                             ? dt_ioppr_move_iop_before(dev, module, anchor_module)
-                             : dt_ioppr_move_iop_after(dev, module, anchor_module);
-    if(moved)
-    {
-      dt_dev_reorder_gui_module_list(dev);
-      dt_dev_add_history_item(dev, module, TRUE);
-      dt_iop_connect_accels_multi(module->so);
-      if(dev->gui_attached) dt_dev_pixelpipe_rebuild(dev);
-      DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_DEVELOP_MODULE_MOVED);
-    }
-
-    const gint history_after = dev->history_end;
-    const gint current_iop_order = module->iop_order;
-    g_autofree gchar *snapshot_json = moved ? _live_snapshot_to_json(dev) : NULL;
-
-    action_payload.have_current_iop_order = TRUE;
-    action_payload.current_iop_order = current_iop_order;
-    action_payload.have_history = TRUE;
-    action_payload.history_before = history_before;
-    action_payload.history_after = history_after;
-    _live_snapshot_add_module_action(builder, &action_payload);
-
-    if(!moved)
-    {
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "module-action-failed");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    JsonNode *snapshot_root = _live_json_copy_object_root(snapshot_json);
-    if(snapshot_root == NULL)
-    {
-      json_builder_set_member_name(builder, "reason");
-      json_builder_add_string_value(builder, "snapshot-unavailable");
-      json_builder_set_member_name(builder, "status");
-      json_builder_add_string_value(builder, "unavailable");
-      json_builder_end_object(builder);
-      return _live_json_builder_to_string(builder);
-    }
-
-    json_builder_set_member_name(builder, "snapshot");
-    json_builder_add_value(builder, snapshot_root);
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "ok");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  if(module->hide_enable_button || module->off == NULL)
-  {
-    action_payload.have_requested_enabled = TRUE;
-    action_payload.requested_enabled = requested_enabled;
-    action_payload.have_previous_enabled = TRUE;
-    action_payload.previous_enabled = previous_enabled;
-    action_payload.have_current_enabled = TRUE;
-    action_payload.current_enabled = module->enabled;
-    action_payload.have_history = TRUE;
-    action_payload.history_before = history_before;
-    action_payload.history_after = history_before;
-    _live_snapshot_add_module_action(builder, &action_payload);
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "unsupported-module-state");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  if(previous_enabled != requested_enabled)
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(module->off), requested_enabled);
-
-  const gboolean current_enabled = module->enabled;
-  const gint history_after = dev->history_end;
-  g_autofree gchar *snapshot_json = _live_snapshot_to_json(dev);
-
-  action_payload.have_requested_enabled = TRUE;
-  action_payload.requested_enabled = requested_enabled;
-  action_payload.have_previous_enabled = TRUE;
-  action_payload.previous_enabled = previous_enabled;
-  action_payload.have_current_enabled = TRUE;
-  action_payload.current_enabled = current_enabled;
-  action_payload.have_history = TRUE;
-  action_payload.history_before = history_before;
-  action_payload.history_after = history_after;
-  _live_snapshot_add_module_action(builder, &action_payload);
-
-  if(current_enabled != requested_enabled)
-  {
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "module-action-failed");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  JsonNode *snapshot_root = _live_json_copy_object_root(snapshot_json);
-  if(snapshot_root == NULL)
-  {
-    json_builder_set_member_name(builder, "reason");
-    json_builder_add_string_value(builder, "snapshot-unavailable");
-    json_builder_set_member_name(builder, "status");
-    json_builder_add_string_value(builder, "unavailable");
-    json_builder_end_object(builder);
-    return _live_json_builder_to_string(builder);
-  }
-
-  json_builder_set_member_name(builder, "snapshot");
-  json_builder_add_value(builder, snapshot_root);
-  json_builder_set_member_name(builder, "status");
-  json_builder_add_string_value(builder, "ok");
-  json_builder_end_object(builder);
-  return _live_json_builder_to_string(builder);
-}
 
 static int display_image_cb(lua_State *L)
 {
@@ -2621,61 +108,6 @@ static int display_image_cb(lua_State *L)
     dt_dev_write_history(dev);
   }
   luaA_push(L, dt_lua_image_t, &dev->image_storage.id);
-  return 1;
-}
-
-static int live_snapshot_cb(lua_State *L)
-{
-  dt_develop_t *dev = darktable.develop;
-  g_autofree gchar *snapshot_json = _live_snapshot_to_json(dev);
-  lua_pushstring(L, snapshot_json ? snapshot_json : "{}");
-  return 1;
-}
-
-static int live_apply_module_instance_action_cb(lua_State *L)
-{
-  dt_develop_t *dev = darktable.develop;
-  const gchar *instance_key = luaL_checkstring(L, 1);
-  const gchar *action = luaL_checkstring(L, 2);
-  const gchar *anchor_instance_key = lua_gettop(L) >= 3 && !lua_isnil(L, 3) ? luaL_checkstring(L, 3) : NULL;
-  g_autofree gchar *response_json =
-    _live_apply_module_instance_action_to_json(dev, instance_key, action, anchor_instance_key);
-  lua_pushstring(L, response_json ? response_json : "{}");
-  return 1;
-}
-
-static int live_apply_module_instance_blend_cb(lua_State *L)
-{
-  dt_develop_t *dev = darktable.develop;
-  const gchar *instance_key = luaL_checkstring(L, 1);
-  const gchar *blend_json = luaL_checkstring(L, 2);
-  dt_live_module_blend_request_t request = { 0 };
-  if(!_live_parse_module_instance_blend_request(blend_json, &request))
-  {
-    return luaL_error(L, "invalid blend request");
-  }
-
-  g_autofree gchar *response_json =
-    _live_apply_module_instance_blend_to_json(dev, instance_key, &request);
-  lua_pushstring(L, response_json ? response_json : "{}");
-  return 1;
-}
-
-static int live_apply_module_instance_mask_cb(lua_State *L)
-{
-  dt_develop_t *dev = darktable.develop;
-  const gchar *instance_key = luaL_checkstring(L, 1);
-  const gchar *mask_json = luaL_checkstring(L, 2);
-  dt_live_module_mask_request_t request = { 0 };
-  if(!_live_parse_module_instance_mask_request(mask_json, &request))
-  {
-    return luaL_error(L, "invalid mask request");
-  }
-
-  g_autofree gchar *source_instance_key = request.source_instance_key;
-  g_autofree gchar *response_json =
-    _live_apply_module_instance_mask_to_json(dev, instance_key, &request);
-  lua_pushstring(L, response_json ? response_json : "{}");
   return 1;
 }
 
@@ -2720,7 +152,11 @@ static void _get_zoom_pos_bnd(dt_dev_viewport_t *port,
 
 void init(dt_view_t *self)
 {
-  self->data = darktable.develop;
+  dt_develop_t *dev = malloc(sizeof(dt_develop_t));
+  self->data = darktable.develop = dev;
+
+  dt_dev_init(dev, TRUE);
+
   darktable.view_manager->proxy.darkroom.view = self;
 
 #ifdef USE_LUA
@@ -2731,26 +167,6 @@ void init(dt_view_t *self)
   dt_lua_gtk_wrap(L);
   lua_pushcclosure(L, dt_lua_type_member_common, 1);
   dt_lua_type_register_const_type(L, my_type, "display_image");
-  lua_pushlightuserdata(L, self);
-  lua_pushcclosure(L, live_snapshot_cb, 1);
-  dt_lua_gtk_wrap(L);
-  lua_pushcclosure(L, dt_lua_type_member_common, 1);
-  dt_lua_type_register_const_type(L, my_type, "live_snapshot");
-  lua_pushlightuserdata(L, self);
-  lua_pushcclosure(L, live_apply_module_instance_action_cb, 1);
-  dt_lua_gtk_wrap(L);
-  lua_pushcclosure(L, dt_lua_type_member_common, 1);
-  dt_lua_type_register_const_type(L, my_type, "live_apply_module_instance_action");
-  lua_pushlightuserdata(L, self);
-  lua_pushcclosure(L, live_apply_module_instance_blend_cb, 1);
-  dt_lua_gtk_wrap(L);
-  lua_pushcclosure(L, dt_lua_type_member_common, 1);
-  dt_lua_type_register_const_type(L, my_type, "live_apply_module_instance_blend");
-  lua_pushlightuserdata(L, self);
-  lua_pushcclosure(L, live_apply_module_instance_mask_cb, 1);
-  dt_lua_gtk_wrap(L);
-  lua_pushcclosure(L, dt_lua_type_member_common, 1);
-  dt_lua_type_register_const_type(L, my_type, "live_apply_module_instance_mask");
 #endif
 }
 
@@ -2768,19 +184,17 @@ void cleanup(dt_view_t *self)
 
   if(dev->second_wnd)
   {
-    GtkWidget *wnd = dev->second_wnd;
-    
-    if(gtk_widget_is_visible(wnd))
+    if(gtk_widget_is_visible(dev->second_wnd))
     {
       dt_conf_set_bool("second_window/last_visible", TRUE);
-      _darkroom_ui_second_window_write_config(wnd);
+      _darkroom_ui_second_window_write_config(dev->second_wnd);
     }
     else
       dt_conf_set_bool("second_window/last_visible", FALSE);
 
-    _darkroom_ui_second_window_cleanup(dev);
-    gtk_widget_hide(wnd);
-    gtk_widget_destroy(wnd);
+    gtk_window_close(GTK_WINDOW(dev->second_wnd)); // Use close so that _second_window_delete_callback can clean up
+    dev->second_wnd = NULL;
+    dev->preview2.widget = NULL;
   }
   else
   {
@@ -4019,18 +1433,6 @@ static void skip_f_key_accel_callback(dt_action_t *action)
   _dev_jump_image(dt_action_view(action)->data, 1, TRUE);
 }
 
-// Toggles the pinned state in the 2nd window.  Has no effect if the 2nd
-// window is not open.
-static void _toggle_pin_second_window_action(dt_action_t *action)
-{
-  dt_view_t *self = dt_action_view(action);
-  dt_develop_t *dev = self->data;
-
-  if(!dev->second_wnd) return;
-
-  dt_dev_toggle_preview2_pinned(dev);
-}
-
 static void skip_b_key_accel_callback(dt_action_t *action)
 {
   _dev_jump_image(dt_action_view(action)->data, -1, TRUE);
@@ -4102,28 +1504,13 @@ static void _second_window_quickbutton_clicked(GtkWidget *w,
 {
   if(dev->second_wnd && !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w)))
   {
-    GtkWidget *wnd = dev->second_wnd;
+    _darkroom_ui_second_window_write_config(dev->second_wnd);
 
-    // Disable the button for the duration of close+destroy to fix possible
-    // race condition when re-opening the 2nd window while the cleanup code
-    // is still running.
-    gtk_widget_set_sensitive(w, FALSE);
-
-    _darkroom_ui_second_window_write_config(wnd);
-    dt_conf_set_bool("second_window/last_visible", FALSE);
-    _darkroom_ui_second_window_cleanup(dev);
-    gtk_widget_hide(wnd);
-
-    // Flush pending events to let macOS process the hide before destroy
-    while(gtk_events_pending())
-      gtk_main_iteration_do(FALSE);
-
-    gtk_widget_destroy(wnd);
-
-    // Re-enable the button when cleanup is done.
-    gtk_widget_set_sensitive(w, TRUE);
+    gtk_window_close(GTK_WINDOW(dev->second_wnd)); // Use close so that _second_window_delete_callback can clean up
+    dev->second_wnd = NULL;
+    dev->preview2.widget = NULL;
   }
-  else if(dev->second_wnd == NULL && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w)))
+  else if(gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(w)))
     _darkroom_display_second_window(dev);
 }
 
@@ -5059,10 +2446,6 @@ void connect_button_press_release(GtkWidget *w, GtkWidget *p)
 void gui_init(dt_view_t *self)
 {
   dt_develop_t *dev = self->data;
-  dev->full.ppd = darktable.gui->ppd;
-  dev->full.dpi = darktable.gui->dpi;
-  dev->full.dpi_factor = darktable.gui->dpi_factor;
-  dev->full.widget = dt_ui_center(darktable.gui->ui);
 
   dt_action_t *sa = &self->actions, *ac = NULL;
 
@@ -5102,13 +2485,6 @@ void gui_init(dt_view_t *self)
                               _("display a second darkroom image window"));
   dt_view_manager_view_toolbox_add(darktable.view_manager,
                                    dev->second_wnd_button, DT_VIEW_DARKROOM);
-
-  /* Register a toggle-pin action for the second window as a command so the
-     shortcut works independently of the pin button widget.  The pin button
-     is wired to this same action in _darkroom_ui_second_window_init() for
-     right-click shortcut assignment and tooltip display. */
-  dt_action_register(DT_ACTION(self), N_("toggle pinned state in second window"),
-                     _toggle_pin_second_window_action, 0, 0);
 
   /* Enable color assessment conditions */
   {
@@ -5638,15 +3014,6 @@ void enter(dt_view_t *self)
 
   dt_print(DT_DEBUG_CONTROL, "[run_job+] 11 %f in darkroom mode", dt_get_wtime());
   dt_develop_t *dev = self->data;
-  
-  // Reset shutdown flags on all pipes - they may still be set from previous session
-  if(dev->full.pipe)
-    dt_atomic_set_int(&dev->full.pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NO);
-  if(dev->preview_pipe)
-    dt_atomic_set_int(&dev->preview_pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NO);
-  if(dev->preview2.pipe)
-    dt_atomic_set_int(&dev->preview2.pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NO);
-  
   if(!dev->form_gui)
   {
     dev->form_gui = (dt_masks_form_gui_t *)calloc(1, sizeof(dt_masks_form_gui_t));
@@ -5790,23 +3157,6 @@ void leave(dt_view_t *self)
     dt_conf_set_string("plugins/darkroom/active", "");
 
   dt_develop_t *dev = self->data;
-
-  // Close second window when leaving darkroom (save state first)
-  if(dev->second_wnd)
-  {
-    GtkWidget *wnd = dev->second_wnd;
-    
-    if(gtk_widget_is_visible(wnd))
-    {
-      dt_conf_set_bool("second_window/last_visible", TRUE);
-      _darkroom_ui_second_window_write_config(wnd);
-    }
-    
-    _darkroom_ui_second_window_cleanup(dev);
-    gtk_widget_hide(wnd);
-    gtk_widget_destroy(wnd);
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->second_wnd_button), FALSE);
-  }
 
   // reset color assessment mode
   if(dev->full.color_assessment)
@@ -5962,7 +3312,7 @@ void mouse_leave(dt_view_t *self)
     handled = dev->gui_module->mouse_leave(dev->gui_module);
 
   // reset any changes the selected plugin might have made.
-  dt_control_change_cursor("default");
+  dt_control_change_cursor(GDK_LEFT_PTR);
 }
 
 void mouse_enter(dt_view_t *self)
@@ -6010,7 +3360,7 @@ void mouse_moved(dt_view_t *self,
 
     if(sample->size == DT_LIB_COLORPICKER_SIZE_BOX)
     {
-      dt_pickerpoint_t corner;
+      float corner[2];
       dt_color_picker_transform_box(dev, 1, sample->point, corner, TRUE);
 
       pbox[0] = MAX(0.0, MIN(corner[0], zoom_x) - delta_x);
@@ -6059,8 +3409,8 @@ void mouse_moved(dt_view_t *self,
     else
     {
       const int32_t bs = dev->full.border_size;
-      const float dx = MIN(0, x - bs) + MAX(0, x - dev->full.width  - bs);
-      const float dy = MIN(0, y - bs) + MAX(0, y - dev->full.height - bs);
+      float dx = MIN(0, x - bs) + MAX(0, x - dev->full.width  - bs);
+      float dy = MIN(0, y - bs) + MAX(0, y - dev->full.height - bs);
       if(fabsf(dx) + fabsf(dy) > 0.5f)
         dt_dev_zoom_move(&dev->full, DT_ZOOM_MOVE, 1.f, 0, dx, dy, TRUE);
     }
@@ -6089,7 +3439,7 @@ int button_released(dt_view_t *self,
 
   if(darktable.develop->darkroom_skip_mouse_events && which == GDK_BUTTON_PRIMARY)
   {
-    dt_control_change_cursor("default");
+    dt_control_change_cursor(GDK_LEFT_PTR);
     return 1;
   }
 
@@ -6101,7 +3451,7 @@ int button_released(dt_view_t *self,
     {
       dev->preview_pipe->status = DT_DEV_PIXELPIPE_DIRTY;
       dt_control_queue_redraw_center();
-      dt_control_change_cursor("default");
+      dt_control_change_cursor(GDK_LEFT_PTR);
     }
     return 1;
   }
@@ -6132,7 +3482,7 @@ int button_released(dt_view_t *self,
                                                which, state, zoom_scale);
     if(handled) return handled;
   }
-  if(which == GDK_BUTTON_PRIMARY) dt_control_change_cursor("default");
+  if(which == GDK_BUTTON_PRIMARY) dt_control_change_cursor(GDK_LEFT_PTR);
 
   return 1;
 }
@@ -6156,7 +3506,7 @@ int button_pressed(dt_view_t *self,
     if(which == GDK_BUTTON_PRIMARY)
     {
       if(type == GDK_2BUTTON_PRESS) return 0;
-      dt_control_change_cursor("pointer");
+      dt_control_change_cursor(GDK_HAND1);
       return 1;
     }
     else if(which == GDK_BUTTON_SECONDARY && dev->proxy.rotate)
@@ -6172,26 +3522,6 @@ int button_pressed(dt_view_t *self,
   {
     const int procw = dev->preview_pipe->backbuf_width;
     const int proch = dev->preview_pipe->backbuf_height;
-
-    // For a Ctrl+Click we do change the color picker from/to area <-> point
-    if(which == GDK_BUTTON_PRIMARY
-       && dt_modifier_is(state, GDK_CONTROL_MASK))
-    {
-      if(sample->size == DT_LIB_COLORPICKER_SIZE_POINT)
-      {
-        // dt_lib_colorpicker_reset_box_area(sample->box);
-        dt_lib_colorpicker_set_box_area(darktable.lib, sample->box);
-      }
-      else if(sample->size == DT_LIB_COLORPICKER_SIZE_BOX)
-      {
-        dt_lib_colorpicker_set_point(darktable.lib, sample->point);
-      }
-
-      dev->preview_pipe->status = DT_DEV_PIXELPIPE_DIRTY;
-      dt_control_queue_redraw_center();
-
-      return 1;
-    }
 
     if(which == GDK_BUTTON_PRIMARY)
     {
@@ -6228,7 +3558,7 @@ int button_pressed(dt_view_t *self,
                                           zoom_y + dy };
           dt_color_picker_backtransform_box(dev, 2, fbox, sample->box);
         }
-        dt_control_change_cursor("move");
+        dt_control_change_cursor(GDK_FLEUR);
       }
 
       dt_color_picker_backtransform_box(dev, 1, sample->point, sample->point);
@@ -6281,8 +3611,11 @@ int button_pressed(dt_view_t *self,
       }
       if(sample->size == DT_LIB_COLORPICKER_SIZE_BOX)
       {
+        // default is hardcoded this way
+        // FIXME: color_pixer_proxy should have an dt_iop_color_picker_clear_area() function for this
+        dt_boundingbox_t reset = { 0.02f, 0.02f, 0.98f, 0.98f };
         dt_pickerbox_t box;
-        dt_lib_colorpicker_reset_box_area(box);
+        dt_color_picker_backtransform_box(dev, 2, reset, box);
         dt_lib_colorpicker_set_box_area(darktable.lib, box);
         dev->preview_pipe->status = DT_DEV_PIXELPIPE_DIRTY;
         dt_control_queue_redraw_center();
@@ -6313,7 +3646,7 @@ int button_pressed(dt_view_t *self,
   if(which == GDK_BUTTON_PRIMARY && type == GDK_2BUTTON_PRESS) return 0;
   if(which == GDK_BUTTON_PRIMARY)
   {
-    dt_control_change_cursor("pointer");
+    dt_control_change_cursor(GDK_HAND1);
     return 1;
   }
 
@@ -6370,82 +3703,6 @@ void scrolled(dt_view_t *self,
   // free zoom
   const gboolean constrained = !dt_modifier_is(state, GDK_CONTROL_MASK);
   dt_dev_zoom_move(&dev->full, DT_ZOOM_SCROLL, 0.0f, up, x, y, constrained);
-}
-
-gboolean gesture_pan(dt_view_t *self,
-                     const double x,
-                     const double y,
-                     const double dx,
-                     const double dy,
-                     const int state)
-{
-  dt_develop_t *dev = self->data;
-  (void)x;
-  (void)y;
-  (void)state;
-  if(!dev) return FALSE;
-
-  // Mask editing (brush etc.) uses scroll for tool parameters.
-  if(dev->form_visible
-     && !darktable.develop->darkroom_skip_mouse_events)
-    return FALSE;
-
-  // Let active modules consume scroll for their own interactions (e.g. brush size).
-  if(dev->gui_module && dev->gui_module->scrolled
-     && !darktable.develop->darkroom_skip_mouse_events
-     && !dt_iop_color_picker_is_visible(dev)
-     && dt_dev_modulegroups_test_activated(darktable.develop))
-    return FALSE;
-
-  if(dx == 0.0 && dy == 0.0) return FALSE;
-
-  dt_dev_zoom_move(&dev->full, DT_ZOOM_MOVE, 1.0f, 0, dx, dy, TRUE);
-  return TRUE;
-}
-
-gboolean gesture_pinch(dt_view_t *self,
-                       const double x,
-                       const double y,
-                       const int phase,
-                       const double scale,
-                       const int state)
-{
-  dt_develop_t *dev = self->data;
-  if(!dev) return FALSE;
-  const gboolean constrained = !dt_modifier_is(state, GDK_CONTROL_MASK);
-  const double pinch_step_ratio = 1.1;
-
-  static double pinch_last_scale = 0.0;
-
-  if(phase == GDK_TOUCHPAD_GESTURE_PHASE_BEGIN)
-  {
-    pinch_last_scale = scale > 0.0 ? scale : 1.0;
-    return TRUE;
-  }
-  else if(phase == GDK_TOUCHPAD_GESTURE_PHASE_END
-          || phase == GDK_TOUCHPAD_GESTURE_PHASE_CANCEL)
-  {
-    pinch_last_scale = 0.0;
-    return TRUE;
-  }
-
-  if(phase != GDK_TOUCHPAD_GESTURE_PHASE_UPDATE) return FALSE;
-  if(pinch_last_scale <= 0.0 || scale <= 0.0) return FALSE;
-
-  const double ratio = scale / pinch_last_scale;
-  int zoom_step = -1;
-  if(ratio > pinch_step_ratio)
-    zoom_step = 1;
-  else if(ratio < 1.0 / pinch_step_ratio)
-    zoom_step = 0;
-
-  if(zoom_step >= 0)
-  {
-    dt_dev_zoom_move(&dev->full, DT_ZOOM_SCROLL, 0.0f, zoom_step, x, y, constrained);
-    pinch_last_scale = scale;
-  }
-
-  return TRUE;
 }
 
 static void _change_slider_accel_precision(dt_action_t *action)
@@ -6552,79 +3809,19 @@ static gboolean _second_window_draw_callback(GtkWidget *widget,
                                              cairo_t *cri,
                                              dt_develop_t *dev)
 {
-  // Set background
-  dt_gui_gtk_set_source_rgb(cri, DT_GUI_COLOR_DARKROOM_BG);
-  cairo_paint(cri);
+  cairo_set_source_rgb(cri, 0.2, 0.2, 0.2);
 
-  // Early exit if we're in an inconsistent state
-  if(!dev->preview2.widget || dev->gui_leaving)
-    return TRUE;
+  if(dev->preview2.pipe->backbuf)  // do we have an image?
+  {
+    // draw image
+    dt_gui_gtk_set_source_rgb(cri, DT_GUI_COLOR_DARKROOM_BG);
+    cairo_paint(cri);
 
-  // Determine which develop and viewport to use
-  // Take a local copy of the pointer to avoid race conditions
-  dt_develop_t *pinned_dev = dev->preview2_pinned ? dev->preview2_pinned_dev : NULL;
-  dt_develop_t *render_dev = pinned_dev ? pinned_dev : dev;
-  dt_dev_viewport_t *port = &render_dev->preview2;
-  
-  // Check if pinned dev is being cleaned up
-  if(pinned_dev && pinned_dev->gui_leaving)
-  {
-    render_dev = dev;
-    port = &dev->preview2;
-    pinned_dev = NULL;
-  }
-  
-  // For pinned images, sync viewport dimensions from main dev
-  if(pinned_dev)
-  {
-    port->width = dev->preview2.width;
-    port->height = dev->preview2.height;
-    port->orig_width = dev->preview2.orig_width;
-    port->orig_height = dev->preview2.orig_height;
-    port->ppd = dev->preview2.ppd;
-    port->dpi = dev->preview2.dpi;
-    port->dpi_factor = dev->preview2.dpi_factor;
-  }
-
-  if(port->pipe && port->pipe->backbuf)  // do we have a preview image?
-  {
-    // draw the preview image using the appropriate viewport
     _view_paint_surface(cri, dev->preview2.orig_width, dev->preview2.orig_height,
-                       port, DT_WINDOW_SECOND);
-  }
-  else if(pinned_dev)
-  {
-    // Pinned image is still rendering.
-    // Only use the main dev's backbuf as a fallback when the pinned image is
-    // the same as the one in the main view — this avoids flickering when
-    // pinning the currently-edited image.
-    // For a different image, keep the black background rather than flashing
-    // the wrong image while the new pixelpipe processes.
-    if(pinned_dev->image_storage.id == dev->image_storage.id
-       && dev->preview2.pipe && dev->preview2.pipe->backbuf)
-    {
-      _view_paint_surface(cri, dev->preview2.orig_width, dev->preview2.orig_height,
-                         &dev->preview2, DT_WINDOW_SECOND);
-    }
+                        &dev->preview2, DT_WINDOW_SECOND);
   }
 
-  // Request processing if needed
-  if(pinned_dev && !pinned_dev->gui_leaving)
-  {
-    // Process pinned image pipeline - process if no backbuf, pipe dirty, or zoom/pan changed
-    if(!port->pipe->backbuf
-       || port->pipe->status == DT_DEV_PIXELPIPE_DIRTY
-       || port->pipe->status == DT_DEV_PIXELPIPE_INVALID
-       || port->pipe->changed != DT_DEV_PIPE_UNCHANGED)
-    {
-      dt_dev_process_preview2(pinned_dev);
-    }
-  }
-  else if(!pinned_dev)
-  {
-    // Process main dev's preview2 pipeline
-    if(_preview2_request(dev)) dt_dev_process_preview2(dev);
-  }
+  if(_preview2_request(dev)) dt_dev_process_preview2(dev);
 
   return TRUE;
 }
@@ -6633,19 +3830,11 @@ static gboolean _second_window_scrolled_callback(GtkWidget *widget,
                                                  GdkEventScroll *event,
                                                  dt_develop_t *dev)
 {
-  if(dev->gui_leaving) return TRUE;
-  
   int delta_y;
   if(dt_gui_get_scroll_unit_delta(event, &delta_y))
   {
-    // Use pinned viewport if pinned, otherwise main dev's preview2
-    dt_develop_t *pinned_dev = dev->preview2_pinned ? dev->preview2_pinned_dev : NULL;
-    if(pinned_dev && pinned_dev->gui_leaving) pinned_dev = NULL;
-    
-    dt_dev_viewport_t *port = pinned_dev ? &pinned_dev->preview2 : &dev->preview2;
-
     const gboolean constrained = !dt_modifier_is(event->state, GDK_CONTROL_MASK);
-    dt_dev_zoom_move(port, DT_ZOOM_SCROLL, 0.0f, delta_y < 0,
+    dt_dev_zoom_move(&dev->preview2, DT_ZOOM_SCROLL, 0.0f, delta_y < 0,
                      event->x, event->y, constrained);
   }
 
@@ -6656,24 +3845,9 @@ static gboolean _second_window_button_pressed_callback(GtkWidget *w,
                                                        GdkEventButton *event,
                                                        dt_develop_t *dev)
 {
-  if(dev->gui_leaving) return FALSE;
-  
-  // Use pinned viewport if pinned, otherwise main dev's preview2
-  dt_develop_t *pinned_dev = dev->preview2_pinned ? dev->preview2_pinned_dev : NULL;
-  if(pinned_dev && pinned_dev->gui_leaving) pinned_dev = NULL;
-  
-  dt_dev_viewport_t *port = pinned_dev ? &pinned_dev->preview2 : &dev->preview2;
-
-  // Handle double-click to reset zoom and center
-  if(event->type == GDK_2BUTTON_PRESS && event->button == GDK_BUTTON_PRIMARY)
-  {
-    dt_dev_zoom_move(port, DT_ZOOM_FIT, 0.0f, 0,
-                     event->x, event->y, TRUE);
-    return TRUE;
-  }
+  if(event->type == GDK_2BUTTON_PRESS) return 0;
   if(event->button == GDK_BUTTON_PRIMARY)
   {
-    // store coordinates in logical pixels (as delivered by event)
     darktable.control->button_x = event->x;
     darktable.control->button_y = event->y;
     _dt_second_window_change_cursor(dev, "grabbing");
@@ -6681,7 +3855,7 @@ static gboolean _second_window_button_pressed_callback(GtkWidget *w,
   }
   if(event->button == GDK_BUTTON_MIDDLE)
   {
-    dt_dev_zoom_move(port, DT_ZOOM_1, 0.0f, -2,
+    dt_dev_zoom_move(&dev->preview2, DT_ZOOM_1, 0.0f, -2,
                      event->x, event->y, !dt_modifier_is(event->state, GDK_CONTROL_MASK));
     return TRUE;
   }
@@ -6702,19 +3876,10 @@ static gboolean _second_window_mouse_moved_callback(GtkWidget *w,
                                                     GdkEventMotion *event,
                                                     dt_develop_t *dev)
 {
-  if(dev->gui_leaving) return FALSE;
-  
   if(event->state & GDK_BUTTON1_MASK)
   {
     dt_control_t *ctl = darktable.control;
-    
-    // Use pinned viewport if pinned, otherwise main dev's preview2
-    dt_develop_t *pinned_dev = dev->preview2_pinned ? dev->preview2_pinned_dev : NULL;
-    if(pinned_dev && pinned_dev->gui_leaving) pinned_dev = NULL;
-    
-    dt_dev_viewport_t *port = pinned_dev ? &pinned_dev->preview2 : &dev->preview2;
-
-    dt_dev_zoom_move(port, DT_ZOOM_MOVE, -1.f, 0,
+    dt_dev_zoom_move(&dev->preview2, DT_ZOOM_MOVE, -1.f, 0,
                      event->x - ctl->button_x, event->y - ctl->button_y, TRUE);
     ctl->button_x = event->x;
     ctl->button_y = event->y;
@@ -6735,12 +3900,8 @@ static gboolean _second_window_configure_callback(GtkWidget *da,
                                                   GdkEventConfigure *event,
                                                   dt_develop_t *dev)
 {
-  if(dev->gui_leaving) return TRUE;
-  
-  gboolean size_changed = (dev->preview2.orig_width != event->width || 
-                          dev->preview2.orig_height != event->height);
-  
-  if(size_changed)
+  if(dev->preview2.orig_width != event->width
+     || dev->preview2.orig_height != event->height)
   {
     dev->preview2.width = event->width;
     dev->preview2.height = event->height;
@@ -6751,20 +3912,6 @@ static gboolean _second_window_configure_callback(GtkWidget *da,
     dev->preview2.pipe->status = DT_DEV_PIXELPIPE_DIRTY;
     dev->preview2.pipe->changed |= DT_DEV_PIPE_REMOVE;
     dev->preview2.pipe->cache_obsolete = TRUE;
-    
-    // If we have a pinned image, update its viewport dimensions too
-    dt_develop_t *pinned_dev = dev->preview2_pinned ? dev->preview2_pinned_dev : NULL;
-    if(pinned_dev && !pinned_dev->gui_leaving)
-    {
-      dt_dev_viewport_t *pinned_port = &pinned_dev->preview2;
-      pinned_port->width = event->width;
-      pinned_port->height = event->height;
-      pinned_port->orig_width = event->width;
-      pinned_port->orig_height = event->height;
-      pinned_port->pipe->status = DT_DEV_PIXELPIPE_DIRTY;
-      pinned_port->pipe->changed |= DT_DEV_PIPE_REMOVE;
-      pinned_port->pipe->cache_obsolete = TRUE;
-    }
   }
 
   dt_colorspaces_set_display_profile(DT_COLORSPACE_DISPLAY2);
@@ -6774,135 +3921,35 @@ static gboolean _second_window_configure_callback(GtkWidget *da,
 #endif
 
   dt_dev_configure(&dev->preview2);
-  
-  // Also configure pinned viewport if present
-  dt_develop_t *pinned_dev = dev->preview2_pinned ? dev->preview2_pinned_dev : NULL;
-  if(pinned_dev && !pinned_dev->gui_leaving)
-  {
-    dt_dev_viewport_t *pinned_port = &pinned_dev->preview2;
-    pinned_port->ppd = dev->preview2.ppd;
-    pinned_port->dpi = dev->preview2.dpi;
-    pinned_port->dpi_factor = dev->preview2.dpi_factor;
-    dt_dev_configure(pinned_port);
-  }
 
   return TRUE;
 }
 
-static gboolean _second_window_buttons_enter_notify_callback(GtkWidget *widget,
-                                                              GdkEventCrossing *event,
-                                                              GtkWidget *button_box)
-{
-  // Make buttons visible and interactive.  Using opacity instead of hide/show
-  // keeps the GdkWindow (and its NSView tracking areas on macOS) always alive,
-  // which is required for GTK's tooltip mechanism to work correctly.
-  gtk_widget_set_opacity(button_box, 1.0);
-  gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(gtk_widget_get_parent(button_box)),
-                                       button_box, FALSE);
-  return FALSE;
-}
-
-static gboolean _second_window_buttons_leave_notify_callback(GtkWidget *widget,
-                                                              GdkEventCrossing *event,
-                                                              GtkWidget *button_box)
-{
-  // GDK_NOTIFY_INFERIOR means the pointer moved into a child window (still
-  // within the second window); keep the buttons visible in that case.
-  if(event->detail != GDK_NOTIFY_INFERIOR)
-  {
-    gtk_widget_set_opacity(button_box, 0.0);
-    gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(gtk_widget_get_parent(button_box)),
-                                         button_box, TRUE);
-  }
-  return FALSE;
-}
-
-// Callback for the pin button in the overlay
-static void _preview2_pin_button_clicked(GtkToggleButton *button,
-                                         dt_develop_t *dev)
-{
-  dt_dev_toggle_preview2_pinned(dev);
-}
-
-
-static void _darkroom_ui_second_window_init(GtkWidget *overlay,
+static void _darkroom_ui_second_window_init(GtkWidget *widget,
                                             dt_develop_t *dev)
 {
-  // Get the window that contains this overlay
-  GtkWidget *window = gtk_widget_get_toplevel(overlay);
-  
   const int width = MAX(10, dt_conf_get_int("second_window/window_w"));
   const int height = MAX(10, dt_conf_get_int("second_window/window_h"));
+
+  dev->preview2.border_size = 0;
+
   const gint x = MAX(0, dt_conf_get_int("second_window/window_x"));
   const gint y = MAX(0, dt_conf_get_int("second_window/window_y"));
-  
-  // Group buttons in a vertical box for easy future expansion.
-  GtkWidget *button_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-
-  // Create the pin button
-  GtkWidget *pin_button = dtgtk_togglebutton_new(dtgtk_cairo_paint_pin, 0, NULL);
-  gtk_widget_set_name(pin_button, "dt_window2_pin_button");
-  gtk_widget_set_size_request(pin_button, 24, 24);
-  gtk_widget_set_tooltip_text(pin_button, _("pin current image"));
-  g_signal_connect(G_OBJECT(pin_button), "toggled",
-                   G_CALLBACK(_preview2_pin_button_clicked), dev);
-  gtk_box_pack_start(GTK_BOX(button_box), pin_button, FALSE, FALSE, 0);
-
-  // Associate the pin button with the toggle COMMAND action registered in
-  // gui_init().  Passing action_def=NULL leaves the action type and callback
-  // unchanged, but sets the action quark on the widget so right-click
-  // shortcut assignment and shortcut tooltips work on the pin button itself.
-  dt_action_define(DT_ACTION(darktable.view_manager->current_view), NULL,
-                   N_("toggle pinned state in second window"), pin_button, NULL);
-
-  // Wrap the box in a GtkEventBox so that the overlay can toggle pass-through on
-  // a windowed widget, which enables tooltip rendering.
-  GtkWidget *event_box = gtk_event_box_new();
-  gtk_widget_set_halign(event_box, GTK_ALIGN_END);
-  gtk_widget_set_valign(event_box, GTK_ALIGN_START);
-  gtk_widget_set_margin_top(event_box, 10);
-  gtk_widget_set_margin_end(event_box, 10);
-  gtk_container_add(GTK_CONTAINER(event_box), button_box);
-
-  // Add the event box as a single overlay widget.  Start transparent and
-  // non-interactive; the enter/leave callbacks will toggle opacity and
-  // pass-through.  Keeping the widget always mapped (never hidden) preserves
-  // NSView tracking areas on macOS, which is required for GTK's tooltip
-  // mechanism to work.
-  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), event_box);
-  gtk_widget_show_all(event_box);
-  gtk_widget_set_opacity(event_box, 0.0);
-  gtk_overlay_set_overlay_pass_through(GTK_OVERLAY(overlay), event_box, TRUE);
-
-  // Needed to display/hide the widgets.
-  // Must be done before the window is realized.
-  gtk_widget_add_events(window, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
-
-  // Show / hide controls on enter/leave events.
-  g_signal_connect(G_OBJECT(window), "enter-notify-event",
-                   G_CALLBACK(_second_window_buttons_enter_notify_callback), event_box);
-  g_signal_connect(G_OBJECT(window), "leave-notify-event",
-                   G_CALLBACK(_second_window_buttons_leave_notify_callback), event_box);
-
-  dev->preview2.pin_button = pin_button;
-  
-  dev->preview2.border_size = 0;
-  gtk_window_set_default_size(GTK_WINDOW(window), width, height);
-  gtk_window_move(GTK_WINDOW(window), x, y);
-  gtk_window_resize(GTK_WINDOW(window), width, height);
-  
-  // Handle window state (fullscreen/maximized)
+  gtk_window_set_default_size(GTK_WINDOW(widget), width, height);
+  gtk_widget_show_all(widget);
+  gtk_window_move(GTK_WINDOW(widget), x, y);
+  gtk_window_resize(GTK_WINDOW(widget), width, height);
   const int fullscreen = dt_conf_get_bool("second_window/fullscreen");
-  if (fullscreen)
-    gtk_window_fullscreen(GTK_WINDOW(window));
+  if(fullscreen)
+    gtk_window_fullscreen(GTK_WINDOW(widget));
   else
   {
-    gtk_window_unfullscreen(GTK_WINDOW(window));
+    gtk_window_unfullscreen(GTK_WINDOW(widget));
     const int maximized = dt_conf_get_bool("second_window/maximized");
-    if (maximized)
-      gtk_window_maximize(GTK_WINDOW(window));
+    if(maximized)
+      gtk_window_maximize(GTK_WINDOW(widget));
     else
-      gtk_window_unmaximize(GTK_WINDOW(window));
+      gtk_window_unmaximize(GTK_WINDOW(widget));
   }
 }
 
@@ -6922,112 +3969,28 @@ static void _darkroom_ui_second_window_write_config(GtkWidget *widget)
                    (gdk_window_get_state(gtk_widget_get_window(widget)) & GDK_WINDOW_STATE_FULLSCREEN));
 }
 
-// Helper to clean up second window state - called before destroying window
-static void _darkroom_ui_second_window_cleanup(dt_develop_t *dev)
-{
-  // Signal main preview2 pipe to stop and wait for any pending jobs
-  if(dev->preview2.pipe)
-  {
-    dt_atomic_set_int(&dev->preview2.pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NODES);
-    dt_pthread_mutex_lock(&dev->preview2.pipe->mutex);
-    dt_pthread_mutex_unlock(&dev->preview2.pipe->mutex);
-    dt_pthread_mutex_lock(&dev->preview2.pipe->busy_mutex);
-    dt_pthread_mutex_unlock(&dev->preview2.pipe->busy_mutex);
-  }
-
-  // Clean up pinned develop
-  if(dev->preview2_pinned && dev->preview2_pinned_dev)
-  {
-    dt_develop_t *pinned_dev = dev->preview2_pinned_dev;
-    
-    pinned_dev->gui_leaving = TRUE;
-    pinned_dev->preview2.widget = NULL;
-    
-    if(pinned_dev->preview2.pipe)
-      dt_atomic_set_int(&pinned_dev->preview2.pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NODES);
-    if(pinned_dev->preview_pipe)
-      dt_atomic_set_int(&pinned_dev->preview_pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NODES);
-    if(pinned_dev->full.pipe)
-      dt_atomic_set_int(&pinned_dev->full.pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NODES);
-    
-    if(pinned_dev->preview2.pipe)
-    {
-      dt_pthread_mutex_lock(&pinned_dev->preview2.pipe->mutex);
-      dt_pthread_mutex_unlock(&pinned_dev->preview2.pipe->mutex);
-      dt_pthread_mutex_lock(&pinned_dev->preview2.pipe->busy_mutex);
-      dt_pthread_mutex_unlock(&pinned_dev->preview2.pipe->busy_mutex);
-    }
-    
-    dt_dev_cleanup(pinned_dev);
-    free(pinned_dev);
-    dev->preview2_pinned_dev = NULL;
-    dev->preview2_pinned = FALSE;
-  }
-
-  dev->second_wnd = NULL;
-  dev->preview2.widget = NULL;
-  dev->preview2.pin_button = NULL;
-}
-
 static gboolean _second_window_delete_callback(GtkWidget *widget,
                                                GdkEvent *event,
                                                dt_develop_t *dev)
 {
-  // Called when user closes window via window manager (X button)
+  // We need to be careful when using the second window reference from dev. It could be null at this point
   _darkroom_ui_second_window_write_config(widget);
-  dt_conf_set_bool("second_window/last_visible", FALSE);
 
   // There's a bug in GTK+3 where fullscreen GTK window on macOS may cause EXC_BAD_ACCESS.
+  // We need to unfullscreen the window and consume all pending events first before
+  // destroying the window
   gtk_window_unfullscreen(GTK_WINDOW(widget));
 
-  _darkroom_ui_second_window_cleanup(dev);
+  dev->second_wnd = NULL;
+  dev->preview2.widget = NULL;
 
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->second_wnd_button), FALSE);
 
   return FALSE;
 }
 
-static void _second_window_dnd_received(GtkWidget *widget,
-                                        GdkDragContext *context,
-                                        const gint x,
-                                        const gint y,
-                                        GtkSelectionData *selection_data,
-                                        const guint target_type,
-                                        const guint time,
-                                        gpointer user_data)
-{
-  dt_develop_t *dev = (dt_develop_t *)user_data;
-  gboolean success = FALSE;
-
-  if(selection_data != NULL && target_type == DND_TARGET_IMGID)
-  {
-    const int imgs_nb = gtk_selection_data_get_length(selection_data) / sizeof(dt_imgid_t);
-    if(imgs_nb)
-    {
-      const dt_imgid_t *imgs = (const dt_imgid_t *)gtk_selection_data_get_data(selection_data);
-      if(dt_is_valid_imgid(imgs[0]))
-      {
-        dt_dev_pin_image(dev, imgs[0]);
-        success = TRUE;
-      }
-    }
-  }
-
-  gtk_drag_finish(context, success, FALSE, time);
-}
-
 static void _darkroom_display_second_window(dt_develop_t *dev)
 {
-  // Wait for any pending jobs and reset shutdown flag
-  if(dev->preview2.pipe)
-  {
-    dt_pthread_mutex_lock(&dev->preview2.pipe->mutex);
-    dt_pthread_mutex_unlock(&dev->preview2.pipe->mutex);
-    dt_pthread_mutex_lock(&dev->preview2.pipe->busy_mutex);
-    dt_pthread_mutex_unlock(&dev->preview2.pipe->busy_mutex);
-    dt_atomic_set_int(&dev->preview2.pipe->shutdown, DT_DEV_PIXELPIPE_STOP_NO);
-  }
-    
   if(dev->second_wnd == NULL)
   {
     dev->preview2.width = -1;
@@ -7041,23 +4004,8 @@ static void _darkroom_display_second_window(dt_develop_t *dev)
     gtk_window_set_icon_name(GTK_WINDOW(dev->second_wnd), "darktable");
     gtk_window_set_title(GTK_WINDOW(dev->second_wnd), _("darktable - darkroom preview"));
 
-#ifndef GDK_WINDOWING_QUARTZ
-    // On macOS, transient_for is implemented via [NSWindow addChildWindow:ordered:],
-    // which constrains the child to the parent's screen and prevents it from being
-    // moved to a different monitor.  Use keep_above instead (see below, after show_all,
-    // where the NSWindow is already realized).
-    gtk_window_set_transient_for(GTK_WINDOW(dev->second_wnd),
-                                 GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)));
-#endif
-
-    // Create the overlay for the window
-    GtkWidget *overlay = gtk_overlay_new();
-    gtk_widget_add_events(overlay, GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK);
-    gtk_container_add(GTK_CONTAINER(dev->second_wnd), overlay);
-    
-    // Create the drawing area and add it to the overlay
     dev->preview2.widget = gtk_drawing_area_new();
-    gtk_container_add(GTK_CONTAINER(overlay), dev->preview2.widget);
+    gtk_container_add(GTK_CONTAINER(dev->second_wnd), dev->preview2.widget);
     gtk_widget_set_size_request(dev->preview2.widget, DT_PIXEL_APPLY_DPI_2ND_WND(dev, 50), DT_PIXEL_APPLY_DPI_2ND_WND(dev, 200));
     gtk_widget_set_hexpand(dev->preview2.widget, TRUE);
     gtk_widget_set_vexpand(dev->preview2.widget, TRUE);
@@ -7087,30 +4035,15 @@ static void _darkroom_display_second_window(dt_develop_t *dev)
     g_signal_connect(G_OBJECT(dev->preview2.widget), "configure-event",
                      G_CALLBACK(_second_window_configure_callback), dev);
 
-    /* dropping a filmstrip thumbnail pins it in the 2nd window */
-    gtk_drag_dest_set(dev->preview2.widget, GTK_DEST_DEFAULT_ALL,
-                      target_list_internal, n_targets_internal,
-                      GDK_ACTION_COPY | GDK_ACTION_MOVE);
-    g_signal_connect(G_OBJECT(dev->preview2.widget), "drag-data-received",
-                     G_CALLBACK(_second_window_dnd_received), dev);
-
     g_signal_connect(G_OBJECT(dev->second_wnd), "delete-event",
                      G_CALLBACK(_second_window_delete_callback), dev);
     g_signal_connect(G_OBJECT(dev->second_wnd), "event",
                      G_CALLBACK(dt_shortcut_dispatcher), NULL);
 
-    _darkroom_ui_second_window_init(overlay, dev);
+    _darkroom_ui_second_window_init(dev->second_wnd, dev);
   }
 
-  // Show all widgets in the window
   gtk_widget_show_all(dev->second_wnd);
-
-#ifdef GDK_WINDOWING_QUARTZ
-  // keep_above must be set after the window is realized (i.e. after show_all),
-  // because the Quartz backend applies the NSWindow level change only to an
-  // already-existing NSWindow object.
-  gtk_window_set_keep_above(GTK_WINDOW(dev->second_wnd), TRUE);
-#endif
 }
 
 // clang-format off

@@ -31,9 +31,6 @@
 #include "gui/draw.h"
 #include "gui/gtk.h"
 #include "gui/preferences.h"
-#ifdef HAVE_AI
-#include "gui/preferences_ai.h"
-#endif
 #include "gui/presets.h"
 #include "libs/lib.h"
 #include "preferences_gen.h"
@@ -118,14 +115,7 @@ static void load_themes_dir(const char *basedir)
 
     const gchar *d_name;
     while((d_name = g_dir_read_name(dir)))
-    {
-      // we skip files with prefix "chunk-foo.css" as those are partial CSS
-      // files that are not meant to be used as themes, but only included in
-      // other CSS files. This allows us to have a modular structure for our CSS
-      // and avoid code duplication between themes.
-      if(!g_str_has_prefix(d_name, "chunk-"))
-        darktable.themes = g_list_append(darktable.themes, g_strdup(d_name));
-    }
+      darktable.themes = g_list_append(darktable.themes, g_strdup(d_name));
     g_dir_close(dir);
   }
   g_free(themes_dir);
@@ -615,9 +605,6 @@ void dt_gui_preferences_show()
   init_tab_generated(_preferences_dialog, stack);
   init_tab_accels(stack);
   init_tab_presets(stack);
-#ifdef HAVE_AI
-  init_tab_ai(_preferences_dialog, stack);
-#endif
 #ifdef USE_LUA
   GtkGrid* lua_grid = init_tab_lua(_preferences_dialog, stack);
 #endif
@@ -1129,16 +1116,17 @@ static void tree_row_activated_presets(GtkTreeView *tree,
   {
     // For leaf nodes, open editing window if the preset is not writeprotected
     gint rowid;
-    gchar *name;
+    gchar *name, *operation;
     GdkPixbuf *editable;
     gtk_tree_model_get(model, &edited_iter,
                        P_ROWID_COLUMN, &rowid,
                        P_NAME_COLUMN, &name,
+                       P_OPERATION_COLUMN, &operation,
                        P_EDITABLE_COLUMN, &editable,
                        -1);
     if(editable == NULL)
     {
-      dt_gui_presets_show_edit_dialog(name,
+      dt_gui_presets_show_edit_dialog(name, operation,
                                       rowid,
                                       G_CALLBACK(edit_preset_response),
                                       model, TRUE, TRUE, TRUE,
@@ -1149,6 +1137,7 @@ static void tree_row_activated_presets(GtkTreeView *tree,
       g_object_unref(editable);
     }
     g_free(name);
+    g_free(operation);
   }
 }
 
@@ -1377,7 +1366,7 @@ GtkWidget *dt_gui_preferences_bool(GtkGrid *grid,
                                    const gboolean swap)
 {
   GtkWidget *w_label = dt_ui_label_new(_(dt_confgen_get_label(key)));
-  gtk_widget_set_tooltip_markup(w_label, _(dt_confgen_get_tooltip(key)));
+  gtk_widget_set_tooltip_text(w_label, _(dt_confgen_get_tooltip(key)));
   GtkWidget *labelev = gtk_event_box_new();
   gtk_widget_add_events(labelev, GDK_BUTTON_PRESS_MASK);
   gtk_container_add(GTK_CONTAINER(labelev), w_label);
@@ -1435,7 +1424,7 @@ GtkWidget *dt_gui_preferences_int(GtkGrid *grid,
                                   const guint line)
 {
   GtkWidget *w_label = dt_ui_label_new(_(dt_confgen_get_label(key)));
-  gtk_widget_set_tooltip_markup(w_label, _(dt_confgen_get_tooltip(key)));
+  gtk_widget_set_tooltip_text(w_label, _(dt_confgen_get_tooltip(key)));
   GtkWidget *labelev = gtk_event_box_new();
   gtk_widget_add_events(labelev, GDK_BUTTON_PRESS_MASK);
   gtk_container_add(GTK_CONTAINER(labelev), w_label);
@@ -1476,7 +1465,7 @@ GtkWidget *dt_gui_preferences_enum(dt_action_t *action,
                                                  : DT_BAUHAUS_COMBOBOX_ALIGN_LEFT;
   dt_bauhaus_combobox_set_selected_text_align(w, align);
   if(action)
-    gtk_widget_set_tooltip_markup(w, _(dt_confgen_get_tooltip(key)));
+    gtk_widget_set_tooltip_text(w, _(dt_confgen_get_tooltip(key)));
 
   const char *values = dt_confgen_get(key, DT_VALUES);
   const char *defstr = dt_confgen_get(key, DT_DEFAULT);
@@ -1546,7 +1535,7 @@ GtkWidget *dt_gui_preferences_string(GtkGrid *grid,
                                      const guint line)
 {
   GtkWidget *w_label = dt_ui_label_new(_(dt_confgen_get_label(key)));
-  gtk_widget_set_tooltip_markup(w_label, _(dt_confgen_get_tooltip(key)));
+  gtk_widget_set_tooltip_text(w_label, _(dt_confgen_get_tooltip(key)));
   GtkWidget *labelev = gtk_event_box_new();
   gtk_widget_add_events(labelev, GDK_BUTTON_PRESS_MASK);
   gtk_container_add(GTK_CONTAINER(labelev), w_label);

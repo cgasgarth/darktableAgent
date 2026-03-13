@@ -103,11 +103,10 @@ typedef struct dt_dev_proxy_exposure_t
   float (*get_exposure)(struct dt_iop_module_t *exp);
   float (*get_effective_exposure)(struct dt_iop_module_t *exp);
   float (*get_black)(struct dt_iop_module_t *exp);
-  void (*handle_event)(GtkEventController*, int, gdouble, gdouble, const gboolean);
+  void (*handle_event)(gpointer, int, gdouble, const gboolean);
 } dt_dev_proxy_exposure_t;
 
 struct dt_dev_pixelpipe_t;
-struct dt_develop_t;
 typedef struct dt_dev_viewport_t
 {
   GtkWidget *widget; // TODO (#18559): remove gtk stuff from here
@@ -127,12 +126,6 @@ typedef struct dt_dev_viewport_t
 
   // image processing pipeline with caching
   struct dt_dev_pixelpipe_t *pipe;
-  
-  // Pin button for the second window
-  GtkWidget *pin_button;
-  
-  // Back-pointer to the owning develop structure
-  struct dt_develop_t *dev;
 } dt_dev_viewport_t;
 
 /* keep track on what and where we do chromatic adaptation, used
@@ -359,16 +352,12 @@ typedef struct dt_develop_t
   gboolean darkroom_mouse_in_center_area; // TRUE if the mouse cursor is in center area
 
   GList *module_filter_out;
-  
-  // Pinned image for second window: a separate develop structure for the pinned image
-  // When pinned, this holds its own image, history, iop modules, and pipeline
-  gboolean preview2_pinned;                       // Whether the second window is pinned to a specific image
-  struct dt_develop_t *preview2_pinned_dev;       // Separate develop for pinned image (NULL when not pinned)
 } dt_develop_t;
 
 void dt_dev_init(dt_develop_t *dev, gboolean gui_attached);
 void dt_dev_cleanup(dt_develop_t *dev);
 
+float dt_dev_get_preview_downsampling();
 void dt_dev_process_image_job(dt_develop_t *dev,
                               dt_dev_viewport_t *port,
                               struct dt_dev_pixelpipe_t *pipe,
@@ -424,18 +413,9 @@ void dt_dev_invalidate_history_module(GList *list,
 
 void dt_dev_invalidate(dt_develop_t *dev);
 // also invalidates preview (which is unaffected by resize/zoom/pan)
-void dt_dev_invalidate_preview(dt_develop_t *dev);
 void dt_dev_invalidate_all(dt_develop_t *dev);
 void dt_dev_pipe_synch_all(dt_develop_t *dev);
-
-/**
- * Toggle the pinned state of the second preview window.
- * When pinned, the second window will continue to show the current image
- * even when the user navigates to other images.
- */
-void dt_dev_toggle_preview2_pinned(dt_develop_t *dev);
-// Pin a specific image (by imgid) in the second window, loading its history from DB.
-void dt_dev_pin_image(dt_develop_t *dev, dt_imgid_t imgid);
+void dt_dev_set_histogram(dt_develop_t *dev);
 void dt_dev_set_histogram_pre(dt_develop_t *dev);
 void dt_dev_reprocess_all(dt_develop_t *dev);
 void dt_dev_reprocess_center(dt_develop_t *dev);
@@ -495,9 +475,7 @@ float dt_dev_exposure_get_effective_exposure(dt_develop_t *dev);
 /** get exposure black level */
 float dt_dev_exposure_get_black(dt_develop_t *dev);
 
-void dt_dev_exposure_handle_event(GtkEventController *controller,
-                                  int n_press, gdouble x, gdouble delta,
-                                  const gboolean blackwhite);
+void dt_dev_exposure_handle_event(gpointer controller, int n_press, gdouble x, const gboolean blackwhite);
 
 /*
  * modulegroups plugin hooks

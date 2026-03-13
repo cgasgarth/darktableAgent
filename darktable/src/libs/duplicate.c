@@ -157,9 +157,9 @@ static void _lib_duplicate_delete(GtkButton *button, dt_lib_module_t *self)
                              g_list_prepend(NULL, GINT_TO_POINTER(imgid)));
 }
 
-static gboolean _lib_duplicate_thumb_press_callback(GtkWidget *widget,
-                                                    GdkEventButton *event,
-                                                    dt_lib_module_t *self)
+static void _lib_duplicate_thumb_press_callback(GtkWidget *widget,
+                                                GdkEventButton *event,
+                                                dt_lib_module_t *self)
 {
   dt_lib_duplicate_t *d = self->data;
   dt_thumbnail_t *thumb = (dt_thumbnail_t *)g_object_get_data(G_OBJECT(widget), "thumb");
@@ -178,19 +178,16 @@ static gboolean _lib_duplicate_thumb_press_callback(GtkWidget *widget,
       DT_CONTROL_SIGNAL_RAISE(DT_SIGNAL_VIEWMANAGER_THUMBTABLE_ACTIVATE, imgid);
     }
   }
-  return TRUE;
 }
 
-static gboolean _lib_duplicate_thumb_release_callback(GtkWidget *widget,
-                                                      GdkEventButton *event,
-                                                      dt_lib_module_t *self)
+static void _lib_duplicate_thumb_release_callback(GtkWidget *widget,
+                                                  GdkEventButton *event,
+                                                  dt_lib_module_t *self)
 {
   dt_lib_duplicate_t *d = self->data;
 
   d->imgid = NO_IMGID;
   dt_control_queue_redraw_center();
-
-  return TRUE;
 }
 
 void view_leave(struct dt_lib_module_t *self,
@@ -405,10 +402,10 @@ void gui_init(dt_lib_module_t *self)
                                       "plugins/darkroom/duplicate/windowheight"),
                     dt_gui_hbox
                       (dt_action_button_new
-                         (self, N_("duplicate"), _lib_duplicate_duplicate_clicked_callback, self,
+                         (NULL, N_("duplicate"), _lib_duplicate_duplicate_clicked_callback, self,
                           _("create a duplicate of the image with same history stack"), 0, 0),
                        dt_action_button_new
-                         (self, N_("original"),
+                         (NULL, N_("original"),
                           _lib_duplicate_new_clicked_callback, self,
                           _("create a 'virgin' duplicate of the image without any development"), 0, 0)));
   dt_gui_add_class(self->widget, "dt_duplicate_ui");

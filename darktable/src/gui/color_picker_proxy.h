@@ -63,9 +63,8 @@ typedef struct dt_iop_color_picker_t
   // positions are associated with the current picker widget: will set
   // the picker request for the primary picker when this picker is
   // activated, and will remember the most recent picker position
-  dt_pickerpoint_t pick_pos;
+  float pick_pos[2];
   dt_pickerbox_t pick_box;
-  gboolean initialized;
   gboolean changed;
 } dt_iop_color_picker_t;
 

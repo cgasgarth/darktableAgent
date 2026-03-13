@@ -264,7 +264,8 @@ void tiling_callback(dt_iop_module_t *self,
   tiling->overhead = 0;     // number of bytes of fixed overhead
   tiling->overlap = 0;      // how many pixels do we need to access
                             // from the neighboring tile?
-  tiling->align = 1;
+  tiling->xalign = 1;
+  tiling->yalign = 1;
 }
 #endif
 

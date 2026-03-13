@@ -6,6 +6,8 @@ __pycache__/
 
 darktable/build/
 darktable/build-*/
+darktable/.install-*/
 darktable/Testing/
+.darktable-local/
 
 *.log

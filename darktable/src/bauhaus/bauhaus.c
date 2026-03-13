@@ -153,7 +153,7 @@ static const dt_action_def_t _action_def_slider, _action_def_combo,
 
 // INNER_PADDING is the horizontal space between slider and quad
 // and vertical space between labels and slider baseline
-static double INNER_PADDING = 4.0;
+static const double INNER_PADDING = 4.0;
 
 // fwd declare
 static void _popup_reject(void);
@@ -179,7 +179,7 @@ static void _request_focus(dt_bauhaus_widget_t *w)
 static float _widget_get_quad_width(const dt_bauhaus_widget_t *w)
 {
   if(w->show_quad)
-    return darktable.bauhaus->quad_width + INNER_PADDING * 4;
+    return darktable.bauhaus->quad_width + INNER_PADDING;
   else
     return .0f;
 }
@@ -842,32 +842,18 @@ void dt_bauhaus_load_theme()
   cairo_surface_destroy(cst);
 
   bh->line_height = pango_height / PANGO_SCALE;
-
-  const char *shape = dt_conf_get_string_const("bauhaus/marker_shape");
-  bh->marker_shape = !g_strcmp0(shape, "circle")    ? DT_BAUHAUS_MARKER_CIRCLE
-                     : !g_strcmp0(shape, "diamond") ? DT_BAUHAUS_MARKER_DIAMOND
-                     : !g_strcmp0(shape, "bar")     ? DT_BAUHAUS_MARKER_BAR
-                                                    : DT_BAUHAUS_MARKER_TRIANGLE;
+  bh->quad_width = bh->line_height;
 
   // absolute size in Cairo unit:
-  if(dt_conf_get_bool("bauhaus/condensed"))
-  {
-    bh->quad_width = bh->line_height * 0.8;
-    bh->baseline_size = bh->line_height / 4.5f;
-    bh->border_width = 1.0f; // absolute size in Cairo unit
-    bh->marker_size = (bh->baseline_size + bh->border_width)
-      * (bh->marker_shape == DT_BAUHAUS_MARKER_BAR
-        || bh->marker_shape == DT_BAUHAUS_MARKER_TRIANGLE
-        ? 1.2f
-        : 1.1f);
-  }
-  else
-  {
-    bh->quad_width = bh->line_height;
-    bh->baseline_size = bh->line_height / 3.0f;
-    bh->border_width = 2.0f;
-    bh->marker_size = (bh->baseline_size + bh->border_width) * 0.95f;
-  }
+  bh->baseline_size = bh->line_height / 2.5f;
+  bh->border_width = 2.0f; // absolute size in Cairo unit
+  bh->marker_size = (bh->baseline_size + bh->border_width) * 0.9f;
+
+  const char *shape = dt_conf_get_string_const("bauhaus/marker_shape");
+  bh->marker_shape = !g_strcmp0(shape, "circle") ? DT_BAUHAUS_MARKER_CIRCLE
+                   : !g_strcmp0(shape, "diamond") ? DT_BAUHAUS_MARKER_DIAMOND
+                   : !g_strcmp0(shape, "bar") ? DT_BAUHAUS_MARKER_BAR
+                   : DT_BAUHAUS_MARKER_TRIANGLE;
 }
 
 void dt_bauhaus_init()
@@ -875,9 +861,6 @@ void dt_bauhaus_init()
   darktable.bauhaus = (dt_bauhaus_t *)calloc(1, sizeof(dt_bauhaus_t));
   dt_bauhaus_t *bh = darktable.bauhaus;
   dt_bauhaus_popup_t *pop = &bh->popup;
-
-  // honor the condensed setting
-  INNER_PADDING = dt_conf_get_bool("bauhaus/condensed") ? 1.0 : 4.0;
 
   bh->keys_cnt = 0;
   bh->current = NULL;
@@ -1132,12 +1115,10 @@ void dt_bauhaus_widget_set_quad_tooltip(GtkWidget *widget,
 
 static float _widget_width(const dt_bauhaus_widget_t *w)
 {
-  // unallocated widgets have a width of 1, and should keep that width
-  // even when accounting for the quad width
-  return MAX(1.0f, gtk_widget_get_allocated_width(GTK_WIDGET(w))
-                   - w->margin.left - w->padding.left
-                   - w->margin.right - w->padding.right
-                   - _widget_get_quad_width(w));
+  return gtk_widget_get_allocated_width(GTK_WIDGET(w))
+         - w->margin.left - w->padding.left
+         - w->margin.right - w->padding.right
+         - _widget_get_quad_width(w);
 }
 
 gchar *dt_bauhaus_widget_get_tooltip_markup(GtkWidget *widget,
@@ -2053,7 +2034,7 @@ static void _draw_indicator(dt_bauhaus_widget_t *w,
   cairo_scale(cr, 1.0f, -1.0f);
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
 
-  // draw the outer marker
+  // draw the outer triangle
   _draw_indicator_shape(cr, size);
   cairo_set_line_width(cr, border_width);
   set_color(cr, border_color);
@@ -2062,7 +2043,7 @@ static void _draw_indicator(dt_bauhaus_widget_t *w,
   _draw_indicator_shape(cr, size - border_width);
   cairo_clip(cr);
 
-  // draw the inner marker
+  // draw the inner triangle
   _draw_indicator_shape(cr, size - border_width);
   set_color(cr, fg_color);
   cairo_set_line_width(cr, border_width);
@@ -2094,10 +2075,10 @@ static void _draw_quad(dt_bauhaus_widget_t *w,
     set_color(cr, sensitive && (w->quad_paint_flags & CPF_ACTIVE)
                 ? hovering ? bh->color_fg_hover : bh->color_fg
                 : hovering ? bh->color_fg       : bh->color_fg_insensitive);
-    w->quad_paint(cr, width + INNER_PADDING * 4,   // x
-                      0.0,                         // y
-                      bh->quad_width,              // width
-                      bh->quad_width,              // height
+    w->quad_paint(cr, width + INNER_PADDING,   // x
+                      0.0,                     // y
+                      bh->quad_width,          // width
+                      bh->quad_width,          // height
                       w->quad_paint_flags, w->quad_paint_data);
 
     cairo_restore(cr);
@@ -2232,7 +2213,7 @@ static void _draw_baseline(dt_bauhaus_widget_t *w,
 
   dt_bauhaus_t *bh = darktable.bauhaus;
   cairo_save(cr);
-  const dt_bauhaus_slider_data_t *d = &w->slider;
+  dt_bauhaus_slider_data_t *d = &w->slider;
 
   // pos of baseline
   const float htm = bh->line_height + INNER_PADDING;
@@ -2279,10 +2260,9 @@ static void _draw_baseline(dt_bauhaus_widget_t *w,
 
   // get the reference of the slider aka the position of the 0 value
   const float origin =
-    fmaxf(fminf((d->factor > 0
-                 ? -d->min - d->offset/d->factor
+    fmaxf(fminf((d->factor > 0 ? -d->min - d->offset/d->factor
                  :  d->max + d->offset/d->factor)
-                    / (d->max - d->min), 1.0f) * slider_width, 0.0f);
+                / (d->max - d->min), 1.0f) * slider_width, 0.0f);
   const float position = d->pos * slider_width;
   const float delta = position - origin;
 
@@ -2295,8 +2275,31 @@ static void _draw_baseline(dt_bauhaus_widget_t *w,
     set_color(cr, bh->color_fill);
     cairo_rectangle(cr, origin, htm, delta, htM);
     cairo_fill(cr);
+
+    // change back to default cairo operator:
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
   }
 
+  // draw the 0 reference graduation if it's different than the bounds of the slider
+  const float graduation_top = htm + htM + 2.0f * bh->border_width;
+  const float graduation_height = bh->border_width / 2.0f;
+  set_color(cr, bh->color_fg);
+
+  // If the max of the slider is 180 or 360, it is likely a hue slider in degrees
+  // a zero in periodic stuff has not much meaning so we skip it
+  if(d->hard_max != 180.0f && d->hard_max != 360.0f)
+  {
+    // translate the dot if it overflows the widget frame
+    if(origin < graduation_height)
+      cairo_arc(cr, graduation_height, graduation_top, graduation_height, 0, 2 * M_PI);
+    else if(origin > slider_width - graduation_height)
+      cairo_arc(cr, slider_width - graduation_height,
+                graduation_top, graduation_height, 0, 2 * M_PI);
+    else
+      cairo_arc(cr, origin, graduation_top, graduation_height, 0, 2 * M_PI);
+  }
+
+  cairo_fill(cr);
   cairo_restore(cr);
 
   if(d->grad_cnt > 0) cairo_pattern_destroy(gradient);
@@ -3071,54 +3074,41 @@ static void _slider_add_step(GtkWidget *widget,
     dt_bauhaus_slider_set(widget, CLAMP(value + delta, d->min, d->max));
 }
 
-static void _widget_scroll(GtkEventControllerScroll *controller,
-                           double dx, double dy,
-                           GtkWidget *widget)
+static gboolean _widget_scroll(GtkWidget *widget,
+                               GdkEventScroll *event)
 {
-  GdkEvent *event = gtk_get_current_event();
-  if(!event || gdk_event_get_event_type(event) != GDK_SCROLL)
-  {
-    // NOP, should not happen
-  }
-  if(dt_gui_ignore_scroll(&event->scroll))
-  {
-    // hack: GTK3 event controller handlers can't return GDK_EVENT_PROPAGATE
-    GtkWidget *sw = gtk_widget_get_ancestor(widget, GTK_TYPE_SCROLLED_WINDOW);
-    if(sw)
-      gtk_widget_event(sw, event);
-  }
-  else if(darktable.control->mapping_widget)
-  {
-    // handle speed adjustment in mapping mode in dispatcher
-    dt_shortcut_dispatcher(widget, (GdkEvent*)event, NULL);
-  }
-  else
-  {
-    gtk_widget_grab_focus(widget);
+  if(dt_gui_ignore_scroll(event)) return FALSE;
 
-    int delta = dx + dy;
-    if(delta != 0)
+  // handle speed adjustment in mapping mode in dispatcher
+  if(darktable.control->mapping_widget)
+    return dt_shortcut_dispatcher(widget, (GdkEvent*)event, NULL);
+
+  gtk_widget_grab_focus(widget);
+
+  int delta_y = 0;
+  if(dt_gui_get_scroll_unit_delta(event, &delta_y))
+  {
+    if(delta_y == 0) return TRUE;
+
+    dt_bauhaus_widget_t *w = (dt_bauhaus_widget_t *)widget;
+    _request_focus(w);
+
+    if(w->type == DT_BAUHAUS_SLIDER)
     {
-      dt_bauhaus_widget_t *w = (dt_bauhaus_widget_t *)widget;
-      _request_focus(w);
-
-      if(w->type == DT_BAUHAUS_SLIDER)
+      const gboolean force = darktable.control->element == DT_ACTION_ELEMENT_FORCE
+                          && event->window == gtk_widget_get_window(widget);
+      if(force && dt_modifier_is(event->state, GDK_SHIFT_MASK | GDK_CONTROL_MASK))
       {
-        const gboolean force = darktable.control->element == DT_ACTION_ELEMENT_FORCE
-                            && event->scroll.window == gtk_widget_get_window(widget);
-        if(force && dt_modifier_is(event->scroll.state, GDK_SHIFT_MASK | GDK_CONTROL_MASK))
-        {
-          _slider_zoom_range(w, delta);
-          _slider_zoom_toast(w);
-        }
-        else
-          _slider_add_step(widget, - delta, event->scroll.state, force);
+        _slider_zoom_range(w, delta_y);
+        _slider_zoom_toast(w);
       }
       else
-        _combobox_next_sensitive(w, delta, 0, FALSE);
+        _slider_add_step(widget, - delta_y, event->state, force);
     }
+    else
+      _combobox_next_sensitive(w, delta_y, 0, FALSE);
   }
-  gdk_event_free(event);
+  return TRUE; // Ensure that scrolling the combobox cannot move side panel
 }
 
 static gboolean _widget_key_press(GtkWidget *widget, GdkEventKey *event)
@@ -3579,9 +3569,7 @@ static void _widget_button_press(GtkGestureSingle *gesture,
   }
   else if(button == GDK_BUTTON_SECONDARY || w->type == DT_BAUHAUS_COMBOBOX)
   {
-    GdkEvent *const event = gtk_get_current_event();
-    bh->opentime = gdk_event_get_time(event);
-    gdk_event_free(event);
+    bh->opentime = gdk_event_get_time(gtk_get_current_event());
     bh->mouse_x = x;
     bh->mouse_y = y;
     _popup_show(widget);
@@ -3664,10 +3652,8 @@ static void _widget_motion(GtkEventControllerMotion *controller,
       const float scaled_step =
         width * dt_bauhaus_slider_get_step(widget) / (d->max - d->min);
       const float steps = floorf((x - bh->mouse_x) / scaled_step);
-      GdkEvent *const event = gtk_get_current_event(); // TODO cleanup
-      _slider_add_step(widget, copysignf(1, d->factor) * steps,
-                       event->motion.state, FALSE);
-      gdk_event_free(event);
+      GdkEventMotion *event = (GdkEventMotion *)gtk_get_current_event(); // TODO cleanup
+      _slider_add_step(widget, copysignf(1, d->factor) * steps, event->state, FALSE);
 
       bh->mouse_x += steps * scaled_step;
     }
@@ -3698,6 +3684,7 @@ static void dt_bh_class_init(DtBauhausWidgetClass *class)
   GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(class);
   widget_class->draw = _widget_draw;
   // widget_class->snapshot = _widget_snapshot;
+  widget_class->scroll_event = _widget_scroll;
   widget_class->key_press_event = _widget_key_press;
   widget_class->get_preferred_width = _widget_get_preferred_width;
   widget_class->get_preferred_height = _widget_get_preferred_height;
@@ -3725,8 +3712,7 @@ static void dt_bh_init(DtBauhausWidget *w)
   w->show_label = TRUE;
 
   GtkWidget *widget = GTK_WIDGET(w);
-  // FIXME: needed?
-  gtk_widget_add_events(widget, GDK_FOCUS_CHANGE_MASK);
+  gtk_widget_add_events(widget, GDK_FOCUS_CHANGE_MASK | darktable.gui->scroll_mask);
 
   GtkGestureSingle *gesture =
     dt_gui_connect_click(w, _widget_button_press, _widget_button_release, widget);
@@ -3735,9 +3721,9 @@ static void dt_bh_init(DtBauhausWidget *w)
 
   dt_gui_connect_motion(w, _widget_motion, _widget_enter, _widget_leave, widget);
 
-  dt_gui_connect_scroll(w, GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES
-                           | GTK_EVENT_CONTROLLER_SCROLL_DISCRETE,
-                        _widget_scroll, widget);
+  // GtkEventController *controller = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES | GTK_EVENT_CONTROLLER_SCROLL_DISCRETE);
+  // gtk_widget_add_controller(GTK_WIDGET(w), GTK_EVENT_CONTROLLER(controller));
+  // g_signal_connect(controller, "scroll", G_CALLBACK(_widget_scroll), w);
 
   gtk_widget_set_can_focus(widget, TRUE);
   dt_gui_add_class(widget, "dt_bauhaus");

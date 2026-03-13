@@ -1564,15 +1564,7 @@ void gui_post_expose(dt_iop_module_t *self,
     pango_layout_set_font_description(layout, desc);
 
     char dimensions[64] = { '\0' };
-    const double ratio = (double)(width - diff_w)/(height - diff_h);
-    char ratio_str[15] = { '\0' };
-    if(ratio<1)
-      snprintf(ratio_str, sizeof(ratio_str), "(1 : %.2f)", (double)1/ratio);
-    else if(ratio>1)
-      snprintf(ratio_str, sizeof(ratio_str), "(%.2f : 1)", ratio);
-    else
-      snprintf(ratio_str, sizeof(ratio_str), "(1 : 1)");
-    snprintf(dimensions, sizeof(dimensions), "%d x %d %s", width - diff_w, height - diff_h, ratio_str);
+    snprintf(dimensions, sizeof(dimensions), "%d x %d", width - diff_w, height - diff_h);
 
     pango_layout_set_text(layout, dimensions, -1);
     pango_layout_get_pixel_extents(layout, NULL, &ext);
@@ -1793,25 +1785,25 @@ int mouse_moved(dt_iop_module_t *self,
     // hover over active borders, no button pressed
     // change mouse pointer
     if(grab == GRAB_LEFT)
-      dt_control_change_cursor("w-resize");
+      dt_control_change_cursor(GDK_LEFT_SIDE);
     else if(grab == GRAB_TOP)
-      dt_control_change_cursor("n-resize");
+      dt_control_change_cursor(GDK_TOP_SIDE);
     else if(grab == GRAB_RIGHT)
-      dt_control_change_cursor("e-resize");
+      dt_control_change_cursor(GDK_RIGHT_SIDE);
     else if(grab == GRAB_BOTTOM)
-      dt_control_change_cursor("s-resize");
+      dt_control_change_cursor(GDK_BOTTOM_SIDE);
     else if(grab == GRAB_TOP_LEFT)
-      dt_control_change_cursor("nw-resize");
+      dt_control_change_cursor(GDK_TOP_LEFT_CORNER);
     else if(grab == GRAB_TOP_RIGHT)
-      dt_control_change_cursor("ne-resize");
+      dt_control_change_cursor(GDK_TOP_RIGHT_CORNER);
     else if(grab == GRAB_BOTTOM_RIGHT)
-      dt_control_change_cursor("se-resize");
+      dt_control_change_cursor(GDK_BOTTOM_RIGHT_CORNER);
     else if(grab == GRAB_BOTTOM_LEFT)
-      dt_control_change_cursor("sw-resize");
+      dt_control_change_cursor(GDK_BOTTOM_LEFT_CORNER);
     else if(grab == GRAB_NONE)
     {
       dt_control_hinter_message("");
-      dt_control_change_cursor("default");
+      dt_control_change_cursor(GDK_LEFT_PTR);
     }
     if(grab != GRAB_NONE)
       dt_control_hinter_message(_("<b>resize</b>: drag, <b>keep aspect ratio</b>: shift+drag"));
@@ -1819,7 +1811,7 @@ int mouse_moved(dt_iop_module_t *self,
   }
   else
   {
-    dt_control_change_cursor("move");
+    dt_control_change_cursor(GDK_FLEUR);
     g->cropping = GRAB_CENTER;
     dt_control_hinter_message(_("<b>move</b>: drag, <b>move vertically</b>: shift+drag, "
          "<b>move horizontally</b>: ctrl+drag"));
@@ -1845,7 +1837,7 @@ int button_released(dt_iop_module_t *self,
   g->ctrl_hold = FALSE;
   g->cropping = GRAB_CENTER;
 
-  dt_control_change_cursor("default");
+  dt_control_change_cursor(GDK_LEFT_PTR);
 
   // we save the crop into the params now so params are kept in synch with gui settings
   _commit_box(self, g, p, FALSE);
