@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+branch="$(git symbolic-ref --quiet --short HEAD || true)"
+
+if [[ "$branch" == "main" && "${ALLOW_MAIN_COMMIT:-0}" != "1" ]]; then
+  cat >&2 <<'EOF'
+Commits to main are blocked by this repository hook.
+Create a feature branch before committing.
+
+If you need to bypass this intentionally, use:
+  ALLOW_MAIN_COMMIT=1 git commit ...
+EOF
+  exit 1
+fi

@@ -9,5 +9,6 @@ darktable/build-*/
 darktable/.install-*/
 darktable/Testing/
 .darktable-local/
+assets/*.xmp
 
 *.log
