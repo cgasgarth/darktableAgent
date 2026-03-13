@@ -30,6 +30,7 @@ typedef struct dt_agent_action_descriptor_t
   const gchar *capability_id;
   const gchar *label;
   const gchar *action_path;
+  dt_agent_operation_kind_t operation_kind;
   double min_number;
   double max_number;
   double default_number;

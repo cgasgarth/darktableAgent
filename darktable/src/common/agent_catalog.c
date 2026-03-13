@@ -38,6 +38,7 @@ static const dt_agent_action_descriptor_t _agent_catalog[] = {
     .capability_id = "exposure.primary",
     .label = "Exposure",
     .action_path = "iop/exposure/exposure",
+    .operation_kind = DT_AGENT_OPERATION_SET_FLOAT,
     .min_number = -18.0,
     .max_number = 18.0,
     .default_number = 0.0,

@@ -48,6 +48,19 @@ class ImageControl(StrictBaseModel):
     currentNumber: float | None
 
 
+class Capability(StrictBaseModel):
+    capabilityId: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    kind: Literal["set-float"]
+    targetType: Literal["darktable-action"]
+    actionPath: str = Field(min_length=1)
+    supportedModes: list[Literal["delta", "set"]] = Field(min_length=1)
+    minNumber: float
+    maxNumber: float
+    defaultNumber: float
+    stepNumber: float
+
+
 class ImageHistoryItem(StrictBaseModel):
     num: int
     module: str | None
@@ -72,6 +85,7 @@ class RequestEnvelope(StrictBaseModel):
     conversationId: str = Field(min_length=1)
     message: UserMessage
     uiContext: UIContext
+    capabilities: list[Capability] = Field(min_length=1)
     imageState: ImageState
     mockResponseId: str | None = None
 
