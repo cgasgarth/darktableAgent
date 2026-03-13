@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darktableagent.local/schemas/chat-v1.schema.json",
+  "title": "darktableAgent Chat v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "requestId",
+    "conversationId",
+    "message",
+    "uiContext",
+    "mockActionId"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "conversationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "text"
+      ],
+      "properties": {
+        "role": {
+          "const": "user"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "uiContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "view",
+        "imageId",
+        "imageName"
+      ],
+      "properties": {
+        "view": {
+          "type": "string",
+          "minLength": 1
+        },
+        "imageId": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "imageName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "mockActionId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "brighten-exposure",
+        "darken-exposure",
+        null
+      ]
+    }
+  }
+}
