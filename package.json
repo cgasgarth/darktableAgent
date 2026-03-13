@@ -5,6 +5,7 @@
     "darktable:build": "./scripts/build_darktable_local.sh",
     "darktable:start": "./scripts/run_darktable_local.sh",
     "darktable:build-and-start": "npm run darktable:build && npm run darktable:start",
-    "server:start": "./scripts/run_server.sh"
+    "server:start": "./scripts/run_server.sh",
+    "mock:smoke": "./scripts/mock_exposure_smoke.sh"
   }
 }

@@ -56,7 +56,7 @@ def build_error_response(
         conversationId=conversation_id,
         status="error",
         message=AssistantMessage(role="assistant", text=message),
-        actions=[],
+        operations=[],
         error=ErrorInfo(code=code, message=message),
     )
     return JSONResponse(status_code=status_code, content=payload.model_dump())
@@ -111,7 +111,7 @@ async def chat(request: RequestEnvelope) -> ResponseEnvelope:
                 "view": request.uiContext.view,
                 "imageId": request.uiContext.imageId,
                 "imageName": request.uiContext.imageName,
-                "mockActionId": request.mockActionId,
+                "mockResponseId": request.mockResponseId,
                 "messageText": request.message.text,
             }
         },

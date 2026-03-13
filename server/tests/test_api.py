@@ -1,95 +1,99 @@
-from fastapi.testclient import TestClient
+import pytest
+from httpx import ASGITransport, AsyncClient
 
 from server.app import app
 
-client = TestClient(app)
+
+@pytest.fixture
+async def api_client() -> AsyncClient:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        yield client
 
 
-def test_chat_echo_response() -> None:
-    response = client.post(
+@pytest.mark.anyio
+async def test_chat_defaults_to_exposure_mock_response(api_client: AsyncClient) -> None:
+    response = await api_client.post(
         "/v1/chat",
         json={
-            "schemaVersion": "1.0",
-            "requestId": "req-echo",
-            "conversationId": "conv-echo",
+            "schemaVersion": "2.0",
+            "requestId": "req-default",
+            "conversationId": "conv-default",
             "message": {"role": "user", "text": "Hello agent"},
             "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
-            "mockActionId": None,
+            "mockResponseId": None,
         },
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["actions"] == []
-    assert body["message"]["text"].startswith("Echo: Hello agent")
+    assert body["message"]["text"].startswith("Mock agent: increasing the current image exposure")
+    assert body["operations"] == [
+        {
+            "operationId": "op-exposure-plus-0.7",
+            "kind": "set-float",
+            "status": "planned",
+            "target": {
+                "type": "darktable-action",
+                "actionPath": "iop/exposure/exposure",
+            },
+            "value": {"mode": "delta", "number": 0.7},
+        }
+    ]
 
 
-def test_chat_brighten_mock_action() -> None:
-    response = client.post(
+@pytest.mark.anyio
+async def test_chat_ack_response_is_operation_free(api_client: AsyncClient) -> None:
+    response = await api_client.post(
         "/v1/chat",
         json={
-            "schemaVersion": "1.0",
-            "requestId": "req-brighten",
-            "conversationId": "conv-brighten",
-            "message": {"role": "user", "text": "Brighten it"},
+            "schemaVersion": "2.0",
+            "requestId": "req-chat-ack",
+            "conversationId": "conv-chat-ack",
+            "message": {"role": "user", "text": "Ping"},
             "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
-            "mockActionId": "brighten-exposure",
+            "mockResponseId": "chat-echo",
         },
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["message"]["role"] == "assistant"
-    assert body["actions"] == [
-        {
-            "actionId": "adjust-exposure-brighten",
-            "type": "adjust-exposure",
-            "status": "planned",
-            "parameters": {"deltaEv": 0.7},
-        }
-    ]
-    assert body["requestId"] == "req-brighten"
-    assert body["conversationId"] == "conv-brighten"
+    assert body["operations"] == []
+    assert body["message"]["text"].startswith("Echo: Ping")
 
 
-def test_chat_darken_mock_action() -> None:
-    response = client.post(
+@pytest.mark.anyio
+async def test_chat_exposure_minus_mock_response(api_client: AsyncClient) -> None:
+    response = await api_client.post(
         "/v1/chat",
         json={
-            "schemaVersion": "1.0",
+            "schemaVersion": "2.0",
             "requestId": "req-darken",
             "conversationId": "conv-darken",
             "message": {"role": "user", "text": "Darken it"},
             "uiContext": {"view": "darkroom", "imageId": 8, "imageName": "img.jpg"},
-            "mockActionId": "darken-exposure",
+            "mockResponseId": "exposure-minus-0.7",
         },
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["requestId"] == "req-darken"
-    assert body["conversationId"] == "conv-darken"
-    assert body["actions"] == [
-        {
-            "actionId": "adjust-exposure-darken",
-            "type": "adjust-exposure",
-            "status": "planned",
-            "parameters": {"deltaEv": -0.7},
-        }
-    ]
+    assert body["operations"][0]["value"] == {"mode": "delta", "number": -0.7}
 
 
-def test_chat_rejects_malformed_payload() -> None:
-    response = client.post(
+@pytest.mark.anyio
+async def test_chat_rejects_malformed_payload(api_client: AsyncClient) -> None:
+    response = await api_client.post(
         "/v1/chat",
         json={
-            "schemaVersion": "1.0",
+            "schemaVersion": "2.0",
             "requestId": "req-bad",
             "conversationId": "conv-bad",
             "message": {"role": "assistant", "text": "nope"},
             "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
-            "mockActionId": None,
+            "mockResponseId": None,
         },
     )
 
@@ -98,5 +102,5 @@ def test_chat_rejects_malformed_payload() -> None:
     assert body["status"] == "error"
     assert body["requestId"] == "req-bad"
     assert body["conversationId"] == "conv-bad"
-    assert body["actions"] == []
+    assert body["operations"] == []
     assert body["error"]["code"] == "invalid_request"

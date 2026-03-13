@@ -20,6 +20,9 @@
 #include "common/extra_optimizations.h"
 
 #include "bauhaus/bauhaus.h"
+#include "common/agent_actions.h"
+#include "common/agent_client.h"
+#include "common/agent_protocol.h"
 #include "common/collection.h"
 #include "common/colorspaces.h"
 #include "common/darktable.h"
@@ -77,6 +80,14 @@
 
 DT_MODULE(1)
 
+#define DT_AGENT_CHAT_AUTORUN_MESSAGE_ENV "DARKTABLE_AGENT_AUTORUN_MESSAGE"
+#define DT_AGENT_CHAT_EXIT_AFTER_AUTORUN_ENV "DARKTABLE_AGENT_EXIT_AFTER_AUTORUN"
+#define DT_AGENT_CHAT_MOCK_RESPONSE_ENV "DARKTABLE_AGENT_MOCK_RESPONSE_ID"
+#define DT_AGENT_CHAT_TEST_AUTORUN_MESSAGE_ENV "DARKTABLE_AGENT_TEST_AUTORUN_PROMPT"
+#define DT_AGENT_CHAT_TEST_MOCK_RESPONSE_ENV "DARKTABLE_AGENT_TEST_MOCK_RESPONSE_ID"
+#define DT_AGENT_CHAT_TEST_REPORT_ENV "DARKTABLE_AGENT_TEST_RESULT_FILE"
+#define DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV "DARKTABLE_AGENT_TEST_AUTORUN_QUIT_AFTER_MS"
+
 static void _update_softproof_gamut_checking(dt_develop_t *d);
 
 /* signal handler for filmstrip image switching */
@@ -85,6 +96,18 @@ static void _dev_change_image(dt_develop_t *dev, const dt_imgid_t imgid);
 
 static void _darkroom_display_second_window(dt_develop_t *dev);
 static void _darkroom_ui_second_window_write_config(GtkWidget *widget);
+static gboolean _toolbar_show_popup(gpointer user_data);
+
+typedef struct dt_agent_chat_submission_t
+{
+  gchar *request_id;
+  gchar *conversation_id;
+  gboolean has_image_id;
+  dt_imgid_t image_id;
+  gboolean autorun;
+  double exposure_before;
+} dt_agent_chat_submission_t;
+
 const char *name(const dt_view_t *self)
 {
   return _("darkroom");
@@ -199,6 +222,13 @@ void cleanup(dt_view_t *self)
   {
     dt_conf_set_bool("second_window/last_visible", FALSE);
   }
+
+  if(dev->agent_chat.autorun_source_id)
+    g_source_remove(dev->agent_chat.autorun_source_id);
+  g_free(dev->agent_chat.conversation_id);
+  g_free(dev->agent_chat.autorun_message);
+  g_free(dev->agent_chat.mock_response_id);
+  g_free(dev->agent_chat.test_report_path);
 
   dt_dev_cleanup(dev);
   free(dev);
@@ -1547,6 +1577,516 @@ static gboolean _toolbar_show_popup(gpointer user_data)
   return FALSE;
 }
 
+static gboolean _agent_chat_env_enabled(const char *name)
+{
+  const char *value = g_getenv(name);
+  return value && value[0] != '\0';
+}
+
+static gchar *_agent_chat_dup_env(const char *name)
+{
+  const char *value = g_getenv(name);
+  return value && value[0] != '\0' ? g_strdup(value) : NULL;
+}
+
+static gchar *_agent_chat_dup_env_pair(const char *primary, const char *fallback)
+{
+  g_autofree gchar *primary_value = _agent_chat_dup_env(primary);
+  if(primary_value)
+    return g_steal_pointer(&primary_value);
+
+  return _agent_chat_dup_env(fallback);
+}
+
+static void _agent_chat_submission_free(gpointer data)
+{
+  dt_agent_chat_submission_t *submission = data;
+  if(!submission)
+    return;
+
+  g_free(submission->request_id);
+  g_free(submission->conversation_id);
+  g_free(submission);
+}
+
+static double _agent_chat_read_current_exposure(void)
+{
+  const float value = dt_action_process("iop/exposure/exposure", 0, NULL, "set",
+                                        DT_READ_ACTION_ONLY);
+  return DT_ACTION_IS_INVALID(value) ? NAN : value;
+}
+
+static void _agent_chat_write_test_report(dt_develop_t *dev,
+                                          const char *status,
+                                          const dt_agent_client_result_t *result,
+                                          const char *error_message,
+                                          const double exposure_before)
+{
+  if(!dev->agent_chat.test_report_path || !dev->agent_chat.test_report_path[0])
+    return;
+
+  GKeyFile *report = g_key_file_new();
+  g_key_file_set_string(report, "result", "status", status ? status : "unknown");
+
+  if(result)
+  {
+    g_key_file_set_integer(report, "result", "http_status", result->http_status);
+    if(result->endpoint)
+      g_key_file_set_string(report, "result", "endpoint", result->endpoint);
+    if(result->transport_error)
+      g_key_file_set_string(report, "result", "transport_error", result->transport_error);
+
+    if(result->has_response)
+    {
+      const dt_agent_chat_response_t *response = &result->response;
+      if(response->request_id)
+        g_key_file_set_string(report, "result", "request_id", response->request_id);
+      if(response->conversation_id)
+        g_key_file_set_string(report, "result", "conversation_id", response->conversation_id);
+      if(response->status)
+        g_key_file_set_string(report, "result", "response_status", response->status);
+      if(response->message_text)
+        g_key_file_set_string(report, "result", "message", response->message_text);
+      g_key_file_set_integer(report, "result", "operation_count",
+                             response->operations ? (gint)response->operations->len : 0);
+    }
+  }
+
+  if(error_message && error_message[0] != '\0')
+    g_key_file_set_string(report, "result", "error", error_message);
+
+  if(!isnan(exposure_before))
+    g_key_file_set_double(report, "result", "exposure_before", exposure_before);
+
+  const double exposure_after = _agent_chat_read_current_exposure();
+  if(!isnan(exposure_after))
+    g_key_file_set_double(report, "result", "current_exposure", exposure_after);
+
+  gsize length = 0;
+  g_autofree gchar *data = g_key_file_to_data(report, &length, NULL);
+  GError *write_error = NULL;
+  if(!g_file_set_contents(dev->agent_chat.test_report_path, data, length, &write_error))
+  {
+    dt_print(DT_DEBUG_ALWAYS,
+             "[agent-chat] failed to write test report %s: %s",
+             dev->agent_chat.test_report_path,
+             write_error && write_error->message ? write_error->message : "unknown error");
+  }
+  g_clear_error(&write_error);
+  g_key_file_unref(report);
+}
+
+static gboolean _agent_chat_quit_after_autorun(gpointer user_data)
+{
+  dt_develop_t *dev = user_data;
+  if(dev)
+    dev->agent_chat.autorun_source_id = 0;
+
+  dt_control_quit();
+  return G_SOURCE_REMOVE;
+}
+
+static gboolean _agent_chat_should_exit_after_autorun(dt_develop_t *dev)
+{
+  return dev->agent_chat.exit_after_autorun
+      || (dev->agent_chat.test_report_path && dev->agent_chat.test_report_path[0] != '\0');
+}
+
+static void _agent_chat_maybe_schedule_test_quit(dt_develop_t *dev,
+                                                 const gboolean autorun_complete)
+{
+  if(!autorun_complete || !_agent_chat_should_exit_after_autorun(dev))
+    return;
+
+  const char *timeout_value = g_getenv(DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV);
+  const guint timeout_ms = timeout_value && timeout_value[0]
+                             ? MAX(1, (guint)g_ascii_strtoull(timeout_value, NULL, 10))
+                             : 1;
+  if(dev->agent_chat.autorun_source_id)
+    g_source_remove(dev->agent_chat.autorun_source_id);
+  dev->agent_chat.autorun_source_id
+    = g_timeout_add(timeout_ms, _agent_chat_quit_after_autorun, dev);
+}
+
+static dt_develop_t *_agent_chat_get_active_dev(void)
+{
+  if(dt_view_get_current() != DT_VIEW_DARKROOM)
+    return NULL;
+
+  if(!darktable.view_manager
+     || !darktable.view_manager->proxy.darkroom.view
+     || !darktable.view_manager->proxy.darkroom.view->data)
+    return NULL;
+
+  return darktable.view_manager->proxy.darkroom.view->data;
+}
+
+static void _agent_chat_scroll_to_end(dt_develop_t *dev)
+{
+  GtkWidget *scroll
+    = gtk_widget_get_ancestor(dev->agent_chat.conversation_view, GTK_TYPE_SCROLLED_WINDOW);
+  if(!GTK_IS_SCROLLED_WINDOW(scroll))
+    return;
+
+  GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
+  gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+}
+
+static void _agent_chat_append_message(dt_develop_t *dev,
+                                       const char *speaker,
+                                       const char *message)
+{
+  GtkTextBuffer *buffer
+    = gtk_text_view_get_buffer(GTK_TEXT_VIEW(dev->agent_chat.conversation_view));
+  GtkTextIter end;
+  gtk_text_buffer_get_end_iter(buffer, &end);
+
+  if(gtk_text_buffer_get_char_count(buffer) > 0)
+    gtk_text_buffer_insert(buffer, &end, "\n\n", -1);
+
+  gchar *line = g_strdup_printf(_("%s: %s"), speaker, message ? message : "");
+  gtk_text_buffer_insert(buffer, &end, line, -1);
+  g_free(line);
+
+  _agent_chat_scroll_to_end(dev);
+}
+
+static void _agent_chat_set_status(dt_develop_t *dev, const char *status)
+{
+  gtk_label_set_text(GTK_LABEL(dev->agent_chat.status_label), status ? status : "");
+}
+
+static void _agent_chat_set_error(dt_develop_t *dev, const char *error)
+{
+  gtk_label_set_text(GTK_LABEL(dev->agent_chat.error_label), error ? error : "");
+  gtk_widget_set_visible(dev->agent_chat.error_label, error && error[0] != '\0');
+}
+
+static void _agent_chat_update_sensitivity(dt_develop_t *dev)
+{
+  const gboolean sensitive = !dev->agent_chat.is_loading;
+  gtk_widget_set_sensitive(dev->agent_chat.input_entry, sensitive);
+  gtk_widget_set_sensitive(dev->agent_chat.send_button, sensitive);
+}
+
+static void _agent_chat_set_loading(dt_develop_t *dev, const gboolean is_loading)
+{
+  dev->agent_chat.is_loading = is_loading;
+  gtk_widget_set_visible(dev->agent_chat.spinner, is_loading);
+
+  if(is_loading)
+    gtk_spinner_start(GTK_SPINNER(dev->agent_chat.spinner));
+  else
+    gtk_spinner_stop(GTK_SPINNER(dev->agent_chat.spinner));
+
+  _agent_chat_update_sensitivity(dev);
+}
+
+static void _agent_chat_popover_closed(GtkPopover *popover, dt_develop_t *dev)
+{
+  (void)popover;
+  if(dev->agent_chat.button)
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.button), FALSE);
+}
+
+static void _agent_chat_toggle_callback(GtkToggleButton *button, dt_develop_t *dev)
+{
+  if(gtk_toggle_button_get_active(button))
+  {
+    gtk_popover_set_relative_to(GTK_POPOVER(dev->agent_chat.floating_window),
+                                GTK_WIDGET(button));
+    _toolbar_show_popup(dev->agent_chat.floating_window);
+    if(dev->agent_chat.input_entry)
+      gtk_widget_grab_focus(dev->agent_chat.input_entry);
+  }
+  else if(dev->agent_chat.floating_window)
+  {
+    gtk_widget_hide(dev->agent_chat.floating_window);
+  }
+}
+
+static void _agent_chat_fill_ui_context(dt_agent_chat_request_t *request)
+{
+  request->ui_context.view = g_strdup("darkroom");
+
+  if(darktable.develop && darktable.develop->image_storage.id > 0)
+  {
+    request->ui_context.has_image_id = TRUE;
+    request->ui_context.image_id = darktable.develop->image_storage.id;
+  }
+
+  if(darktable.develop && darktable.develop->image_storage.filename[0] != '\0')
+    request->ui_context.image_name = g_strdup(darktable.develop->image_storage.filename);
+}
+
+static gboolean _agent_chat_build_request(dt_develop_t *dev,
+                                          const char *message_text,
+                                          dt_agent_chat_request_t *request,
+                                          GError **error)
+{
+  dt_agent_chat_request_init(request);
+
+  if(!dev->agent_chat.conversation_id)
+    dev->agent_chat.conversation_id = g_uuid_string_random();
+
+  request->request_id = g_uuid_string_random();
+  request->conversation_id = g_strdup(dev->agent_chat.conversation_id);
+  request->message_text = g_strdup(message_text);
+  request->mock_response_id = g_strdup(dev->agent_chat.mock_response_id
+                                         ? dev->agent_chat.mock_response_id
+                                         : DT_AGENT_CHAT_DEFAULT_MOCK_RESPONSE_ID);
+  _agent_chat_fill_ui_context(request);
+
+  if(!request->request_id || !request->conversation_id || !request->message_text)
+  {
+    g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
+                "%s", _("failed to build an agent request"));
+    dt_agent_chat_request_clear(request);
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+static gboolean _agent_chat_active_image_matches(const dt_agent_chat_submission_t *submission)
+{
+  if(!submission->has_image_id)
+    return TRUE;
+
+  return darktable.develop && darktable.develop->image_storage.id == submission->image_id;
+}
+
+static gboolean _agent_chat_is_stale_response(dt_develop_t *dev,
+                                              const dt_agent_chat_submission_t *submission,
+                                              const dt_agent_client_result_t *result)
+{
+  if(g_strcmp0(dev->agent_chat.conversation_id, submission->conversation_id) != 0)
+    return TRUE;
+
+  if(!_agent_chat_active_image_matches(submission))
+    return TRUE;
+
+  if(result && result->has_response)
+  {
+    if(g_strcmp0(result->response.request_id, submission->request_id) != 0)
+      return TRUE;
+    if(g_strcmp0(result->response.conversation_id, submission->conversation_id) != 0)
+      return TRUE;
+  }
+
+  return FALSE;
+}
+
+static void _agent_chat_append_operation_summary(dt_develop_t *dev,
+                                                 const dt_agent_chat_response_t *response)
+{
+  if(!response || !response->operations || response->operations->len == 0)
+    return;
+
+  GString *summary = g_string_new(NULL);
+  for(guint i = 0; i < response->operations->len; i++)
+  {
+    const dt_agent_chat_operation_t *operation = g_ptr_array_index(response->operations, i);
+    if(i > 0)
+      g_string_append(summary, "; ");
+
+    g_string_append_printf(summary, _("%s %.2f via %s"),
+                           dt_agent_value_mode_to_string(operation->value_mode),
+                           operation->number,
+                           operation->action_path ? operation->action_path : _("unknown"));
+  }
+
+  _agent_chat_append_message(dev, _("system"), summary->str);
+  g_string_free(summary, TRUE);
+}
+
+static void _agent_chat_handle_transport_error(dt_develop_t *dev,
+                                               const char *error_message)
+{
+  _agent_chat_set_error(dev, error_message ? error_message : _("agent request failed"));
+  _agent_chat_set_status(dev, _("Request failed"));
+  _agent_chat_append_message(dev, _("assistant"),
+                                           error_message ? error_message
+                                           : _("failed to contact the agent server"));
+}
+
+static gboolean _agent_chat_handle_response(dt_develop_t *dev,
+                                            const dt_agent_chat_response_t *response,
+                                            gchar **out_error_message)
+{
+  if(response->message_text && response->message_text[0] != '\0')
+    _agent_chat_append_message(dev, _("assistant"), response->message_text);
+
+  if(g_strcmp0(response->status, "error") == 0)
+  {
+    const char *error_message
+      = response->error_message ? response->error_message
+                                : _("agent server returned an error");
+    _agent_chat_set_error(dev, error_message);
+    _agent_chat_set_status(dev, _("Server error"));
+    if(out_error_message)
+      *out_error_message = g_strdup(error_message);
+    return FALSE;
+  }
+
+  if(response->operations && response->operations->len > 0)
+  {
+    GError *apply_error = NULL;
+    if(!dt_agent_actions_apply_response(response, &apply_error))
+    {
+      const char *message
+        = apply_error && apply_error->message ? apply_error->message
+                                              : _("failed to apply agent changes");
+      _agent_chat_set_error(dev, message);
+      _agent_chat_set_status(dev, _("Apply failed"));
+      _agent_chat_append_message(dev, _("system"), message);
+      if(out_error_message)
+        *out_error_message = g_strdup(message);
+      g_clear_error(&apply_error);
+      return FALSE;
+    }
+
+    _agent_chat_append_operation_summary(dev, response);
+    _agent_chat_set_status(dev, _("Applied mock edit"));
+    dt_print(DT_DEBUG_ALWAYS,
+             "[agent-chat] applied response request=%s operations=%u",
+             response->request_id ? response->request_id : "",
+             response->operations->len);
+    return TRUE;
+  }
+
+  _agent_chat_set_status(dev, _("Response received"));
+  return TRUE;
+}
+
+static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
+                                         gpointer user_data)
+{
+  dt_agent_chat_submission_t *submission = user_data;
+  dt_develop_t *dev = _agent_chat_get_active_dev();
+  if(!dev)
+    return;
+
+  if(_agent_chat_is_stale_response(dev, submission, result))
+  {
+    _agent_chat_set_loading(dev, FALSE);
+    _agent_chat_set_status(dev, _("Ignored stale response"));
+    _agent_chat_write_test_report(dev, "stale", result, _("ignored stale response"),
+                                  submission ? submission->exposure_before : NAN);
+    return;
+  }
+
+  _agent_chat_set_loading(dev, FALSE);
+
+  if(result->transport_error || !result->has_response)
+  {
+    _agent_chat_handle_transport_error(dev, result->transport_error);
+    _agent_chat_write_test_report(dev, "transport_error", result,
+                                  result->transport_error ? result->transport_error
+                                                          : _("failed to contact the agent server"),
+                                  submission ? submission->exposure_before : NAN);
+  }
+  else
+  {
+    _agent_chat_set_error(dev, NULL);
+    g_autofree gchar *response_error = NULL;
+    const gboolean handled = _agent_chat_handle_response(dev, &result->response, &response_error);
+    const char *status = handled ? "ok"
+                                 : (g_strcmp0(result->response.status, "error") == 0
+                                      ? "server_error"
+                                      : "apply_failed");
+    _agent_chat_write_test_report(dev, status, result, response_error,
+                                  submission ? submission->exposure_before : NAN);
+  }
+
+  _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
+}
+
+static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboolean autorun)
+{
+  g_autofree gchar *message = g_strstrip(g_strdup(prompt ? prompt : ""));
+  if(dev->agent_chat.is_loading || !message[0])
+    return;
+
+  _agent_chat_append_message(dev, _("you"), message);
+  _agent_chat_set_error(dev, NULL);
+  _agent_chat_set_loading(dev, TRUE);
+  _agent_chat_set_status(dev, _("Sending request..."));
+
+  dt_agent_chat_request_t request;
+  GError *error = NULL;
+  if(!_agent_chat_build_request(dev, message, &request, &error))
+  {
+    const char *failure_message = error && error->message ? error->message
+                                                          : _("failed to build request");
+    _agent_chat_set_loading(dev, FALSE);
+    _agent_chat_handle_transport_error(dev, failure_message);
+    _agent_chat_write_test_report(dev, "build_error", NULL, failure_message, NAN);
+    _agent_chat_maybe_schedule_test_quit(dev, autorun);
+    g_clear_error(&error);
+    return;
+  }
+
+  dt_agent_chat_submission_t *submission = g_malloc0(sizeof(*submission));
+  submission->request_id = g_strdup(request.request_id);
+  submission->conversation_id = g_strdup(request.conversation_id);
+  submission->has_image_id = request.ui_context.has_image_id;
+  submission->image_id = request.ui_context.image_id;
+  submission->autorun = autorun;
+  submission->exposure_before = _agent_chat_read_current_exposure();
+
+  dt_job_t *job = dt_agent_client_chat_async(&request, _agent_chat_request_finished,
+                                             submission, _agent_chat_submission_free, &error);
+  dt_agent_chat_request_clear(&request);
+
+  if(!job)
+  {
+    const char *failure_message = error && error->message ? error->message
+                                                          : _("failed to queue the agent request");
+    _agent_chat_set_loading(dev, FALSE);
+    _agent_chat_handle_transport_error(dev, failure_message);
+    _agent_chat_write_test_report(dev, "queue_error", NULL,
+                                  failure_message,
+                                  submission ? submission->exposure_before : NAN);
+    _agent_chat_maybe_schedule_test_quit(dev, autorun);
+    _agent_chat_submission_free(submission);
+    g_clear_error(&error);
+  }
+}
+
+static gboolean _agent_chat_autorun_if_requested(gpointer user_data)
+{
+  dt_develop_t *dev = user_data;
+  dev->agent_chat.autorun_source_id = 0;
+
+  if(dev->agent_chat.autorun_sent || !dev->agent_chat.autorun_message
+     || !dev->agent_chat.autorun_message[0])
+    return G_SOURCE_REMOVE;
+
+  dev->agent_chat.autorun_sent = TRUE;
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.button), TRUE);
+  _agent_chat_append_message(dev, _("system"), _("running autorun mock request"));
+  _agent_chat_submit(dev, dev->agent_chat.autorun_message, TRUE);
+  return G_SOURCE_REMOVE;
+}
+
+static void _agent_chat_send_clicked(GtkButton *button, gpointer user_data)
+{
+  (void)button;
+  dt_develop_t *dev = user_data;
+  const char *text = gtk_entry_get_text(GTK_ENTRY(dev->agent_chat.input_entry));
+
+  _agent_chat_submit(dev, text, FALSE);
+  if(dev->agent_chat.is_loading)
+    gtk_entry_set_text(GTK_ENTRY(dev->agent_chat.input_entry), "");
+}
+
+static void _agent_chat_entry_activate(GtkEntry *entry, gpointer user_data)
+{
+  (void)entry;
+  _agent_chat_send_clicked(NULL, user_data);
+}
+
 static void _full_color_assessment_callback(GtkToggleButton *checkbutton, dt_develop_t *dev)
 {
   dev->full.color_assessment = gtk_toggle_button_get_active(checkbutton);
@@ -2496,10 +3036,23 @@ void gui_init(dt_view_t *self)
     gtk_widget_set_size_request(outer, DT_PIXEL_APPLY_DPI(360), DT_PIXEL_APPLY_DPI(280));
     gtk_container_add(GTK_CONTAINER(dev->agent_chat.floating_window), outer);
 
+    GtkWidget *status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(6));
+    gtk_box_pack_start(GTK_BOX(outer), status_row, FALSE, FALSE, 0);
+
     dev->agent_chat.status_label = gtk_label_new(_("assistant chat scaffold"));
     gtk_label_set_xalign(GTK_LABEL(dev->agent_chat.status_label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(dev->agent_chat.status_label), TRUE);
-    gtk_box_pack_start(GTK_BOX(outer), dev->agent_chat.status_label, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(status_row), dev->agent_chat.status_label, TRUE, TRUE, 0);
+
+    dev->agent_chat.spinner = gtk_spinner_new();
+    gtk_widget_set_visible(dev->agent_chat.spinner, FALSE);
+    gtk_box_pack_start(GTK_BOX(status_row), dev->agent_chat.spinner, FALSE, FALSE, 0);
+
+    dev->agent_chat.error_label = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(dev->agent_chat.error_label), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(dev->agent_chat.error_label), TRUE);
+    gtk_widget_set_visible(dev->agent_chat.error_label, FALSE);
+    gtk_box_pack_start(GTK_BOX(outer), dev->agent_chat.error_label, FALSE, FALSE, 0);
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
@@ -3191,6 +3744,33 @@ void enter(dt_view_t *self)
 
   dt_image_check_camera_missing_sample(&dev->image_storage);
 
+  g_free(dev->agent_chat.autorun_message);
+  g_free(dev->agent_chat.mock_response_id);
+  g_free(dev->agent_chat.test_report_path);
+  dev->agent_chat.autorun_message
+    = _agent_chat_dup_env_pair(DT_AGENT_CHAT_TEST_AUTORUN_MESSAGE_ENV,
+                               DT_AGENT_CHAT_AUTORUN_MESSAGE_ENV);
+  dev->agent_chat.mock_response_id
+    = _agent_chat_dup_env_pair(DT_AGENT_CHAT_TEST_MOCK_RESPONSE_ENV,
+                               DT_AGENT_CHAT_MOCK_RESPONSE_ENV);
+  dev->agent_chat.test_report_path = _agent_chat_dup_env(DT_AGENT_CHAT_TEST_REPORT_ENV);
+  dev->agent_chat.exit_after_autorun
+    = _agent_chat_env_enabled(DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV)
+      || _agent_chat_env_enabled(DT_AGENT_CHAT_EXIT_AFTER_AUTORUN_ENV);
+
+  _agent_chat_set_loading(dev, FALSE);
+  _agent_chat_set_error(dev, NULL);
+  _agent_chat_set_status(dev, _("ready to call the local agent server"));
+
+  if(dev->agent_chat.autorun_source_id)
+  {
+    g_source_remove(dev->agent_chat.autorun_source_id);
+    dev->agent_chat.autorun_source_id = 0;
+  }
+  dev->agent_chat.autorun_sent = FALSE;
+  if(dev->agent_chat.autorun_message && dev->agent_chat.autorun_message[0])
+    dev->agent_chat.autorun_source_id = g_timeout_add(750, _agent_chat_autorun_if_requested, dev);
+
 #ifdef USE_LUA
 
   _fire_darkroom_image_loaded_event(TRUE, dev->image_storage.id);
@@ -3205,6 +3785,13 @@ void leave(dt_view_t *self)
   if(darktable.lib->proxy.colorpicker.picker_proxy)
     dt_iop_color_picker_reset(darktable.lib->proxy.colorpicker.picker_proxy->module, FALSE);
 
+  dt_develop_t *dev = self->data;
+  if(dev->agent_chat.autorun_source_id)
+  {
+    g_source_remove(dev->agent_chat.autorun_source_id);
+    dev->agent_chat.autorun_source_id = 0;
+  }
+
   DT_CONTROL_SIGNAL_DISCONNECT_ALL(self, "darkroom");
 
   // store groups for next time:
@@ -3215,8 +3802,6 @@ void leave(dt_view_t *self)
     dt_conf_set_string("plugins/darkroom/active", darktable.develop->gui_module->op);
   else
     dt_conf_set_string("plugins/darkroom/active", "");
-
-  dt_develop_t *dev = self->data;
 
   // reset color assessment mode
   if(dev->full.color_assessment)

@@ -4,15 +4,21 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
+DEFAULT_MOCK_RESPONSE_ID = "exposure-plus-0.7"
 
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class Message(StrictBaseModel):
+class UserMessage(StrictBaseModel):
     role: Literal["user"]
+    text: str = Field(min_length=1)
+
+
+class AssistantMessage(StrictBaseModel):
+    role: Literal["assistant"]
     text: str = Field(min_length=1)
 
 
@@ -23,28 +29,30 @@ class UIContext(StrictBaseModel):
 
 
 class RequestEnvelope(StrictBaseModel):
-    schemaVersion: Literal["1.0"]
+    schemaVersion: Literal["2.0"]
     requestId: str = Field(min_length=1)
     conversationId: str = Field(min_length=1)
-    message: Message
+    message: UserMessage
     uiContext: UIContext
-    mockActionId: Literal["brighten-exposure", "darken-exposure"] | None
+    mockResponseId: str | None = None
 
 
-class ActionParameters(StrictBaseModel):
-    deltaEv: float
+class OperationTarget(StrictBaseModel):
+    type: Literal["darktable-action"]
+    actionPath: str = Field(min_length=1)
 
 
-class Action(StrictBaseModel):
-    actionId: str = Field(min_length=1)
-    type: Literal["adjust-exposure"]
-    status: Literal["planned"]
-    parameters: ActionParameters
+class OperationValue(StrictBaseModel):
+    mode: Literal["delta", "set"]
+    number: float
 
 
-class AssistantMessage(StrictBaseModel):
-    role: Literal["assistant"]
-    text: str
+class Operation(StrictBaseModel):
+    operationId: str = Field(min_length=1)
+    kind: Literal["set-float"]
+    status: Literal["planned", "applied", "blocked", "failed"]
+    target: OperationTarget
+    value: OperationValue
 
 
 class ErrorInfo(StrictBaseModel):
@@ -53,18 +61,21 @@ class ErrorInfo(StrictBaseModel):
 
 
 class ResponseEnvelope(StrictBaseModel):
-    schemaVersion: Literal["1.0"] = SCHEMA_VERSION
+    schemaVersion: Literal["2.0"] = SCHEMA_VERSION
     requestId: str
     conversationId: str
     status: Literal["ok", "error"]
     message: AssistantMessage
-    actions: list[Action]
+    operations: list[Operation]
     error: ErrorInfo | None
 
     @model_validator(mode="after")
     def validate_status_consistency(self) -> "ResponseEnvelope":
-        if self.status == "error" and self.actions:
-            raise ValueError("error responses must not include actions")
+        if self.status == "error":
+            if self.operations:
+                raise ValueError("error responses must not include operations")
+            if self.error is None:
+                raise ValueError("error responses must include error details")
         if self.status == "ok" and self.error is not None:
             raise ValueError("ok responses must not include error details")
         return self
@@ -78,46 +89,75 @@ class ProtocolError(Exception):
         self.status_code = status_code
 
 
-def build_mock_response(request: RequestEnvelope) -> ResponseEnvelope:
-    if request.mockActionId == "brighten-exposure":
-        return ResponseEnvelope(
-            requestId=request.requestId,
-            conversationId=request.conversationId,
-            status="ok",
-            message=AssistantMessage(
-                role="assistant",
-                text="Planned a +0.7 EV exposure adjustment.",
+def build_mock_response_catalog(request: RequestEnvelope) -> dict[str, ResponseEnvelope]:
+    exposure_up = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text=(
+                "Mock agent: increasing the current image exposure by +0.7 EV "
+                "through the exposure slider."
             ),
-            actions=[
-                Action(
-                    actionId="adjust-exposure-brighten",
-                    type="adjust-exposure",
-                    status="planned",
-                    parameters=ActionParameters(deltaEv=0.7),
-                )
-            ],
-            error=None,
-        )
-    if request.mockActionId == "darken-exposure":
-        return ResponseEnvelope(
-            requestId=request.requestId,
-            conversationId=request.conversationId,
-            status="ok",
-            message=AssistantMessage(
-                role="assistant",
-                text="Planned a -0.7 EV exposure adjustment.",
+        ),
+        operations=[
+            Operation(
+                operationId="op-exposure-plus-0.7",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/exposure",
+                ),
+                value=OperationValue(mode="delta", number=0.7),
+            )
+        ],
+        error=None,
+    )
+
+    exposure_down = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text=(
+                "Mock agent: decreasing the current image exposure by -0.7 EV "
+                "through the exposure slider."
             ),
-            actions=[
-                Action(
-                    actionId="adjust-exposure-darken",
-                    type="adjust-exposure",
-                    status="planned",
-                    parameters=ActionParameters(deltaEv=-0.7),
-                )
-            ],
-            error=None,
-        )
-    return ResponseEnvelope(
+        ),
+        operations=[
+            Operation(
+                operationId="op-exposure-minus-0.7",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/exposure",
+                ),
+                value=OperationValue(mode="delta", number=-0.7),
+            )
+        ],
+        error=None,
+    )
+
+    status_summary = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text=(
+                "Mock agent status: server reachable, chat contract valid, "
+                "and exposure edits are ready to apply."
+            ),
+        ),
+        operations=[],
+        error=None,
+    )
+
+    chat_echo = ResponseEnvelope(
         requestId=request.requestId,
         conversationId=request.conversationId,
         status="ok",
@@ -129,9 +169,22 @@ def build_mock_response(request: RequestEnvelope) -> ResponseEnvelope:
                 f"imageName={request.uiContext.imageName})"
             ),
         ),
-        actions=[],
+        operations=[],
         error=None,
     )
+
+    return {
+        DEFAULT_MOCK_RESPONSE_ID: exposure_up,
+        "exposure-minus-0.7": exposure_down,
+        "status-summary": status_summary,
+        "chat-echo": chat_echo,
+    }
+
+
+def build_mock_response(request: RequestEnvelope) -> ResponseEnvelope:
+    mock_id = request.mockResponseId or DEFAULT_MOCK_RESPONSE_ID
+    catalog = build_mock_response_catalog(request)
+    return catalog.get(mock_id, catalog[DEFAULT_MOCK_RESPONSE_ID])
 
 
 def parse_request_ids(payload: object) -> tuple[str, str]:

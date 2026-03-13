@@ -3,30 +3,30 @@ from pydantic import ValidationError
 from shared.protocol import RequestEnvelope, build_mock_response
 
 
-def test_request_envelope_accepts_v1_payload() -> None:
+def test_request_envelope_accepts_v2_payload() -> None:
     payload = {
-        "schemaVersion": "1.0",
+        "schemaVersion": "2.0",
         "requestId": "req-1",
         "conversationId": "conv-1",
         "message": {"role": "user", "text": "Make it brighter"},
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
-        "mockActionId": "brighten-exposure",
+        "mockResponseId": "exposure-plus-0.7",
     }
 
     envelope = RequestEnvelope.model_validate(payload)
 
-    assert envelope.schemaVersion == "1.0"
-    assert envelope.mockActionId == "brighten-exposure"
+    assert envelope.schemaVersion == "2.0"
+    assert envelope.mockResponseId == "exposure-plus-0.7"
 
 
 def test_request_envelope_rejects_unknown_fields() -> None:
     payload = {
-        "schemaVersion": "1.0",
+        "schemaVersion": "2.0",
         "requestId": "req-1",
         "conversationId": "conv-1",
         "message": {"role": "user", "text": "Make it brighter", "extra": True},
         "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
-        "mockActionId": None,
+        "mockResponseId": None,
     }
 
     try:
@@ -37,20 +37,40 @@ def test_request_envelope_rejects_unknown_fields() -> None:
         raise AssertionError("Expected validation failure")
 
 
-def test_build_mock_response_for_darken() -> None:
+def test_build_mock_response_for_exposure_delta() -> None:
     request = RequestEnvelope.model_validate(
         {
-            "schemaVersion": "1.0",
+            "schemaVersion": "2.0",
             "requestId": "req-2",
             "conversationId": "conv-2",
-            "message": {"role": "user", "text": "Make it darker"},
+            "message": {"role": "user", "text": "Make it brighter"},
             "uiContext": {"view": "lighttable", "imageId": 99, "imageName": "bar.NEF"},
-            "mockActionId": "darken-exposure",
+            "mockResponseId": "exposure-plus-0.7",
         }
     )
 
     response = build_mock_response(request)
 
     assert response.status == "ok"
-    assert response.actions[0].parameters.deltaEv == -0.7
+    assert response.operations[0].target.actionPath == "iop/exposure/exposure"
+    assert response.operations[0].value.mode == "delta"
+    assert response.operations[0].value.number == 0.7
     assert response.error is None
+
+
+def test_build_mock_response_defaults_to_exposure_mock() -> None:
+    request = RequestEnvelope.model_validate(
+        {
+            "schemaVersion": "2.0",
+            "requestId": "req-3",
+            "conversationId": "conv-3",
+            "message": {"role": "user", "text": "Anything"},
+            "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
+            "mockResponseId": None,
+        }
+    )
+
+    response = build_mock_response(request)
+
+    assert response.operations
+    assert response.operations[0].value.number == 0.7

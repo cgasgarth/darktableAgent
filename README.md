@@ -40,7 +40,7 @@ This repository is in its initial setup stage.
 - Directory boundaries are defined.
 - `darktable/` now contains the official darktable 5.4.1 stable source release as plain source files, not a nested git clone.
 - The custom local build installs into `darktable/.install-5.4.1`.
-- `server/` and `shared/` currently contain an early mock protocol slice that is useful as scaffolding, but it should not be treated as the final agent contract.
+- `server/` and `shared/` currently contain a mock chat/edit contract that is useful for wiring darktable to a real local server. The current mock applies exposure through darktable's action system, but it should not be treated as the final agent contract.
 
 ## Planned Priorities
 
@@ -54,7 +54,8 @@ This repository is in its initial setup stage.
 
 - Rebuild the local custom darktable with `./scripts/build_darktable_local.sh`
 - Run the local custom darktable with `./scripts/run_darktable_local.sh`
-- Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, and `npm run darktable:build-and-start`
+- Run the mock server-to-darktable exposure smoke check with `./scripts/mock_exposure_smoke.sh`
+- Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, `npm run darktable:build-and-start`, and `npm run mock:smoke`
 - The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
 - The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
 

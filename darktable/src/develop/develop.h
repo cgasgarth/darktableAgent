@@ -103,6 +103,10 @@ typedef struct dt_dev_proxy_exposure_t
   float (*get_exposure)(struct dt_iop_module_t *exp);
   float (*get_effective_exposure)(struct dt_iop_module_t *exp);
   float (*get_black)(struct dt_iop_module_t *exp);
+  gboolean (*apply_delta)(struct dt_iop_module_t *exp,
+                          float delta_ev,
+                          float *before,
+                          float *after);
   void (*handle_event)(gpointer, int, gdouble, const gboolean);
 } dt_dev_proxy_exposure_t;
 
@@ -329,11 +333,20 @@ typedef struct dt_develop_t
     GtkWidget *floating_window, *button; // TODO (#18559): remove gtk stuff from here
   } color_assessment;
 
-  // agent chat popup scaffold
+  // agent chat popup
   struct
   {
     GtkWidget *floating_window, *button; // TODO (#18559): remove gtk stuff from here
-    GtkWidget *conversation_view, *input_entry, *send_button, *status_label;
+    GtkWidget *conversation_view, *input_entry, *send_button;
+    GtkWidget *status_label, *error_label, *spinner;
+    gchar *conversation_id;
+    gchar *autorun_message;
+    gchar *mock_response_id;
+    gchar *test_report_path;
+    guint autorun_source_id;
+    gboolean is_loading;
+    gboolean autorun_sent;
+    gboolean exit_after_autorun;
   } agent_chat;
 
   // late scaling down from full roi
@@ -481,6 +494,10 @@ float dt_dev_exposure_get_exposure(dt_develop_t *dev);
 float dt_dev_exposure_get_effective_exposure(dt_develop_t *dev);
 /** get exposure black level */
 float dt_dev_exposure_get_black(dt_develop_t *dev);
+gboolean dt_dev_exposure_apply_delta(dt_develop_t *dev,
+                                     float delta_ev,
+                                     float *before,
+                                     float *after);
 
 void dt_dev_exposure_handle_event(gpointer controller, int n_press, gdouble x, const gboolean blackwhite);
 

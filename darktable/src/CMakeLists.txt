@@ -10,6 +10,9 @@ include(CheckCXXSymbolExists)
 FILE(GLOB SOURCE_FILES
   "bauhaus/bauhaus.c"
   "common/act_on.c"
+  "common/agent_actions.c"
+  "common/agent_client.c"
+  "common/agent_protocol.c"
   "common/atomic.c"
   "common/bilateral.c"
   "common/bilateralcl.c"
