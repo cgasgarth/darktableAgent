@@ -329,6 +329,13 @@ typedef struct dt_develop_t
     GtkWidget *floating_window, *button; // TODO (#18559): remove gtk stuff from here
   } color_assessment;
 
+  // agent chat popup scaffold
+  struct
+  {
+    GtkWidget *floating_window, *button; // TODO (#18559): remove gtk stuff from here
+    GtkWidget *conversation_view, *input_entry, *send_button, *status_label;
+  } agent_chat;
+
   // late scaling down from full roi
   struct
   {
