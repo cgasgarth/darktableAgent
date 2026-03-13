@@ -60,6 +60,18 @@ class Capability(StrictBaseModel):
     defaultNumber: float
     stepNumber: float
 
+    @model_validator(mode="after")
+    def validate_number_range(self) -> "Capability":
+        if self.minNumber > self.maxNumber:
+            raise ValueError("capability minNumber must be <= maxNumber")
+        if not (self.minNumber <= self.defaultNumber <= self.maxNumber):
+            raise ValueError("capability defaultNumber must be within min/max range")
+        if self.stepNumber <= 0:
+            raise ValueError("capability stepNumber must be positive")
+        if len(set(self.supportedModes)) != len(self.supportedModes):
+            raise ValueError("capability supportedModes must not contain duplicates")
+        return self
+
 
 class ImageHistoryItem(StrictBaseModel):
     num: int
@@ -88,6 +100,29 @@ class RequestEnvelope(StrictBaseModel):
     capabilities: list[Capability] = Field(min_length=1)
     imageState: ImageState
     mockResponseId: str | None = None
+
+    @model_validator(mode="after")
+    def validate_capability_consistency(self) -> "RequestEnvelope":
+        capability_by_id = {}
+        for capability in self.capabilities:
+            if capability.capabilityId in capability_by_id:
+                raise ValueError(f"duplicate capabilityId: {capability.capabilityId}")
+            capability_by_id[capability.capabilityId] = capability
+
+        for control in self.imageState.controls:
+            capability = capability_by_id.get(control.capabilityId)
+            if capability is None:
+                raise ValueError(
+                    f"imageState control references unknown capabilityId: {control.capabilityId}"
+                )
+            if capability.actionPath != control.actionPath:
+                raise ValueError(
+                    "imageState control actionPath does not match capability manifest"
+                )
+            if capability.label != control.label:
+                raise ValueError("imageState control label does not match capability manifest")
+
+        return self
 
 
 class OperationTarget(StrictBaseModel):

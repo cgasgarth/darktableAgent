@@ -3,6 +3,23 @@ from pydantic import ValidationError
 from shared.protocol import RequestEnvelope, build_mock_response
 
 
+def _sample_capabilities() -> list[dict]:
+    return [
+        {
+            "capabilityId": "exposure.primary",
+            "label": "Exposure",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/exposure/exposure",
+            "supportedModes": ["set", "delta"],
+            "minNumber": -18.0,
+            "maxNumber": 18.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
+        }
+    ]
+
+
 def _sample_image_state() -> dict:
     return {
         "currentExposure": 2.8,
@@ -48,6 +65,7 @@ def test_request_envelope_accepts_v2_payload() -> None:
         "conversationId": "conv-1",
         "message": {"role": "user", "text": "Make it brighter"},
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
+        "capabilities": _sample_capabilities(),
         "imageState": _sample_image_state(),
         "mockResponseId": "exposure-plus-0.7",
     }
@@ -56,6 +74,7 @@ def test_request_envelope_accepts_v2_payload() -> None:
 
     assert envelope.schemaVersion == "2.0"
     assert envelope.mockResponseId == "exposure-plus-0.7"
+    assert envelope.capabilities[0].supportedModes == ["set", "delta"]
     assert envelope.imageState.controls[0].actionPath == "iop/exposure/exposure"
 
 
@@ -66,6 +85,7 @@ def test_request_envelope_rejects_unknown_fields() -> None:
         "conversationId": "conv-1",
         "message": {"role": "user", "text": "Make it brighter", "extra": True},
         "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
+        "capabilities": _sample_capabilities(),
         "imageState": _sample_image_state(),
         "mockResponseId": None,
     }
@@ -86,6 +106,7 @@ def test_build_mock_response_for_exposure_delta() -> None:
             "conversationId": "conv-2",
             "message": {"role": "user", "text": "Make it brighter"},
             "uiContext": {"view": "lighttable", "imageId": 99, "imageName": "bar.NEF"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-plus-0.7",
         }
@@ -108,6 +129,7 @@ def test_build_mock_response_defaults_to_exposure_mock() -> None:
             "conversationId": "conv-3",
             "message": {"role": "user", "text": "Anything"},
             "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": None,
         }
@@ -127,6 +149,7 @@ def test_build_mock_response_supports_ordered_exposure_sequence() -> None:
             "conversationId": "conv-4",
             "message": {"role": "user", "text": "Sequence"},
             "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-sequence-plus-0.7",
         }
@@ -149,6 +172,7 @@ def test_build_mock_response_supports_absolute_exposure_set() -> None:
             "conversationId": "conv-set",
             "message": {"role": "user", "text": "Set exposure"},
             "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-set-1.25",
         }
@@ -168,6 +192,7 @@ def test_build_mock_response_supports_exposure_clamp_fixtures() -> None:
             "conversationId": "conv-clamp",
             "message": {"role": "user", "text": "Clamp exposure"},
             "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-clamp-max",
         }
@@ -190,6 +215,7 @@ def test_build_mock_response_supports_blocked_operation_fixture() -> None:
             "conversationId": "conv-5",
             "message": {"role": "user", "text": "Try something unsupported"},
             "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "unsupported-action",
         }
@@ -208,6 +234,7 @@ def test_request_envelope_rejects_missing_image_state() -> None:
         "conversationId": "conv-missing-state",
         "message": {"role": "user", "text": "Make it brighter"},
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
+        "capabilities": _sample_capabilities(),
         "mockResponseId": "exposure-plus-0.7",
     }
 
@@ -215,5 +242,54 @@ def test_request_envelope_rejects_missing_image_state() -> None:
         RequestEnvelope.model_validate(payload)
     except ValidationError as exc:
         assert "imageState" in str(exc)
+    else:
+        raise AssertionError("Expected validation failure")
+
+
+def test_request_envelope_rejects_missing_capabilities() -> None:
+    payload = {
+        "schemaVersion": "2.0",
+        "requestId": "req-missing-capabilities",
+        "conversationId": "conv-missing-capabilities",
+        "message": {"role": "user", "text": "Make it brighter"},
+        "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
+        "imageState": _sample_image_state(),
+        "mockResponseId": "exposure-plus-0.7",
+    }
+
+    try:
+        RequestEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        assert "capabilities" in str(exc)
+    else:
+        raise AssertionError("Expected validation failure")
+
+
+def test_request_envelope_rejects_control_manifest_mismatch() -> None:
+    payload = {
+        "schemaVersion": "2.0",
+        "requestId": "req-mismatch",
+        "conversationId": "conv-mismatch",
+        "message": {"role": "user", "text": "Make it brighter"},
+        "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
+        "capabilities": _sample_capabilities(),
+        "imageState": {
+            **_sample_image_state(),
+            "controls": [
+                {
+                    "capabilityId": "exposure.primary",
+                    "label": "Exposure",
+                    "actionPath": "iop/exposure/not-real",
+                    "currentNumber": 2.8,
+                }
+            ],
+        },
+        "mockResponseId": "exposure-plus-0.7",
+    }
+
+    try:
+        RequestEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        assert "actionPath does not match capability manifest" in str(exc)
     else:
         raise AssertionError("Expected validation failure")

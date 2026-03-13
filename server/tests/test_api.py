@@ -4,6 +4,23 @@ from httpx import ASGITransport, AsyncClient
 from server.app import app
 
 
+def _sample_capabilities() -> list[dict]:
+    return [
+        {
+            "capabilityId": "exposure.primary",
+            "label": "Exposure",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/exposure/exposure",
+            "supportedModes": ["set", "delta"],
+            "minNumber": -18.0,
+            "maxNumber": 18.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
+        }
+    ]
+
+
 def _sample_image_state() -> dict:
     return {
         "currentExposure": 2.8,
@@ -60,6 +77,7 @@ async def test_chat_defaults_to_exposure_mock_response(api_client: AsyncClient) 
             "conversationId": "conv-default",
             "message": {"role": "user", "text": "Hello agent"},
             "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": None,
         },
@@ -93,6 +111,7 @@ async def test_chat_ack_response_is_operation_free(api_client: AsyncClient) -> N
             "conversationId": "conv-chat-ack",
             "message": {"role": "user", "text": "Ping"},
             "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "chat-echo",
         },
@@ -114,6 +133,7 @@ async def test_chat_exposure_minus_mock_response(api_client: AsyncClient) -> Non
             "conversationId": "conv-darken",
             "message": {"role": "user", "text": "Darken it"},
             "uiContext": {"view": "darkroom", "imageId": 8, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-minus-0.7",
         },
@@ -134,6 +154,7 @@ async def test_chat_preserves_multi_operation_order(api_client: AsyncClient) -> 
             "conversationId": "conv-sequence",
             "message": {"role": "user", "text": "Do the sequence"},
             "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-sequence-plus-0.7",
         },
@@ -158,6 +179,7 @@ async def test_chat_supports_absolute_exposure_set(api_client: AsyncClient) -> N
             "conversationId": "conv-set",
             "message": {"role": "user", "text": "Set exposure"},
             "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-set-1.25",
         },
@@ -178,6 +200,7 @@ async def test_chat_supports_exposure_clamp_fixtures(api_client: AsyncClient) ->
             "conversationId": "conv-clamp-max",
             "message": {"role": "user", "text": "Clamp max"},
             "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "exposure-clamp-max",
         },
@@ -198,6 +221,7 @@ async def test_chat_supports_blocked_operation_fixture(api_client: AsyncClient) 
             "conversationId": "conv-unsupported",
             "message": {"role": "user", "text": "Try something unsupported"},
             "uiContext": {"view": "darkroom", "imageId": 10, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": "unsupported-action",
         },
@@ -229,6 +253,7 @@ async def test_chat_rejects_malformed_payload(api_client: AsyncClient) -> None:
             "conversationId": "conv-bad",
             "message": {"role": "assistant", "text": "nope"},
             "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
+            "capabilities": _sample_capabilities(),
             "imageState": _sample_image_state(),
             "mockResponseId": None,
         },
@@ -253,11 +278,68 @@ async def test_chat_rejects_missing_image_state(api_client: AsyncClient) -> None
             "conversationId": "conv-missing-state",
             "message": {"role": "user", "text": "Ping"},
             "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
             "mockResponseId": "chat-echo",
         },
     )
 
     assert response.status_code == 422
     body = response.json()
+    assert body["status"] == "error"
     assert body["error"]["code"] == "invalid_request"
     assert "imageState" in body["error"]["message"]
+
+
+@pytest.mark.anyio
+async def test_chat_rejects_missing_capabilities(api_client: AsyncClient) -> None:
+    response = await api_client.post(
+        "/v1/chat",
+        json={
+            "schemaVersion": "2.0",
+            "requestId": "req-missing-capabilities",
+            "conversationId": "conv-missing-capabilities",
+            "message": {"role": "user", "text": "Ping"},
+            "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
+            "imageState": _sample_image_state(),
+            "mockResponseId": "chat-echo",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["error"]["code"] == "invalid_request"
+    assert "capabilities" in body["error"]["message"]
+
+
+@pytest.mark.anyio
+async def test_chat_rejects_control_manifest_mismatch(api_client: AsyncClient) -> None:
+    response = await api_client.post(
+        "/v1/chat",
+        json={
+            "schemaVersion": "2.0",
+            "requestId": "req-mismatch",
+            "conversationId": "conv-mismatch",
+            "message": {"role": "user", "text": "Ping"},
+            "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
+            "capabilities": _sample_capabilities(),
+            "imageState": {
+                **_sample_image_state(),
+                "controls": [
+                    {
+                        "capabilityId": "exposure.primary",
+                        "label": "Exposure",
+                        "actionPath": "iop/exposure/not-real",
+                        "currentNumber": 2.8,
+                    }
+                ],
+            },
+            "mockResponseId": "chat-echo",
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["error"]["code"] == "invalid_request"
+    assert "actionPath does not match capability manifest" in body["error"]["message"]

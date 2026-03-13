@@ -18,6 +18,8 @@
 
 #include "common/agent_protocol.h"
 
+#include "common/agent_catalog.h"
+
 #include <json-glib/json-glib.h>
 #include <string.h>
 
@@ -125,6 +127,53 @@ static gboolean _parse_message(JsonObject *object,
   JsonObject *message = json_node_get_object(node);
   return _require_string_member(message, "role", role, error)
       && _require_string_member(message, "text", text, error);
+}
+
+static void _serialize_capabilities(JsonBuilder *builder, const GPtrArray *capabilities)
+{
+  json_builder_set_member_name(builder, "capabilities");
+  json_builder_begin_array(builder);
+
+  if(capabilities)
+  {
+    for(guint i = 0; i < capabilities->len; i++)
+    {
+      const dt_agent_capability_t *capability = g_ptr_array_index((GPtrArray *)capabilities, i);
+      json_builder_begin_object(builder);
+
+      json_builder_set_member_name(builder, "capabilityId");
+      json_builder_add_string_value(builder, capability->capability_id);
+      json_builder_set_member_name(builder, "label");
+      json_builder_add_string_value(builder, capability->label);
+      json_builder_set_member_name(builder, "kind");
+      json_builder_add_string_value(builder, capability->kind);
+      json_builder_set_member_name(builder, "targetType");
+      json_builder_add_string_value(builder, capability->target_type);
+      json_builder_set_member_name(builder, "actionPath");
+      json_builder_add_string_value(builder, capability->action_path);
+
+      json_builder_set_member_name(builder, "supportedModes");
+      json_builder_begin_array(builder);
+      if((capability->supported_modes & DT_AGENT_VALUE_MODE_FLAG_SET) != 0)
+        json_builder_add_string_value(builder, "set");
+      if((capability->supported_modes & DT_AGENT_VALUE_MODE_FLAG_DELTA) != 0)
+        json_builder_add_string_value(builder, "delta");
+      json_builder_end_array(builder);
+
+      json_builder_set_member_name(builder, "minNumber");
+      json_builder_add_double_value(builder, capability->min_number);
+      json_builder_set_member_name(builder, "maxNumber");
+      json_builder_add_double_value(builder, capability->max_number);
+      json_builder_set_member_name(builder, "defaultNumber");
+      json_builder_add_double_value(builder, capability->default_number);
+      json_builder_set_member_name(builder, "stepNumber");
+      json_builder_add_double_value(builder, capability->step_number);
+
+      json_builder_end_object(builder);
+    }
+  }
+
+  json_builder_end_array(builder);
 }
 
 static void _serialize_image_state(JsonBuilder *builder,
@@ -381,6 +430,7 @@ void dt_agent_chat_request_init(dt_agent_chat_request_t *request)
 
   memset(request, 0, sizeof(*request));
   request->schema_version = g_strdup(DT_AGENT_CHAT_SCHEMA_VERSION);
+  request->capabilities = g_ptr_array_new_with_free_func(dt_agent_capability_free);
 }
 
 void dt_agent_chat_request_clear(dt_agent_chat_request_t *request)
@@ -393,6 +443,8 @@ void dt_agent_chat_request_clear(dt_agent_chat_request_t *request)
   g_free(request->conversation_id);
   g_free(request->message_text);
   dt_agent_ui_context_clear(&request->ui_context);
+  if(request->capabilities)
+    g_ptr_array_unref(request->capabilities);
   dt_agent_image_state_clear(&request->image_state);
   g_free(request->mock_response_id);
   memset(request, 0, sizeof(*request));
@@ -411,6 +463,11 @@ void dt_agent_chat_request_copy(dt_agent_chat_request_t *dest,
   dest->ui_context.has_image_id = src->ui_context.has_image_id;
   dest->ui_context.image_id = src->ui_context.image_id;
   dest->ui_context.image_name = g_strdup(src->ui_context.image_name);
+  for(guint i = 0; src->capabilities && i < src->capabilities->len; i++)
+  {
+    const dt_agent_capability_t *capability = g_ptr_array_index(src->capabilities, i);
+    g_ptr_array_add(dest->capabilities, dt_agent_capability_copy(capability));
+  }
   dt_agent_image_state_copy(&dest->image_state, &src->image_state);
   dest->mock_response_id = g_strdup(src->mock_response_id);
 }
@@ -505,7 +562,8 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
                                        GError **error)
 {
   if(!request || !request->request_id || !request->conversation_id
-     || !request->message_text || !request->ui_context.view)
+     || !request->message_text || !request->ui_context.view
+     || !request->capabilities || request->capabilities->len == 0)
   {
     g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
                 "request is incomplete");
@@ -550,6 +608,7 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
     json_builder_add_null_value(builder);
   json_builder_end_object(builder);
 
+  _serialize_capabilities(builder, request->capabilities);
   _serialize_image_state(builder, &request->image_state);
 
   json_builder_set_member_name(builder, "mockResponseId");

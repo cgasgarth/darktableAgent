@@ -16,6 +16,7 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_SERVER_TESTS="${SKIP_SERVER_TESTS:-0}"
 CLEAN_RUNTIME="${CLEAN_RUNTIME:-0}"
 REQUIRE_IMAGE_STATE="${REQUIRE_IMAGE_STATE:-0}"
+REQUIRE_CAPABILITIES="${REQUIRE_CAPABILITIES:-0}"
 
 REPORT_FILE="${REPORT_FILE:-$(mktemp "${TMPDIR:-/tmp}/darktable-agent-report.XXXXXX.ini")}"
 SERVER_LOG="${SERVER_LOG:-$(mktemp "${TMPDIR:-/tmp}/darktable-agent-server.XXXXXX.log")}"
@@ -186,8 +187,8 @@ print(
 )
 PY
 
-if [[ "$REQUIRE_IMAGE_STATE" == "1" ]]; then
-  "$PYTHON_BIN" - "$SERVER_LOG" <<'PY'
+if [[ "$REQUIRE_IMAGE_STATE" == "1" || "$REQUIRE_CAPABILITIES" == "1" ]]; then
+  "$PYTHON_BIN" - "$SERVER_LOG" "$REQUIRE_IMAGE_STATE" "$REQUIRE_CAPABILITIES" <<'PY'
 import json
 import sys
 
@@ -204,18 +205,50 @@ with open(sys.argv[1], "r", encoding="utf-8") as handle:
 if not rows:
     raise SystemExit("Expected at least one accepted_request log entry")
 
-image_state = rows[-1].get("imageState")
-if not isinstance(image_state, dict):
-    raise SystemExit("Missing imageState in accepted_request log entry")
+accepted_request = rows[-1]
+image_state = accepted_request.get("imageState")
+capabilities = accepted_request.get("capabilities")
 
-if "currentExposure" not in image_state:
-    raise SystemExit("Missing currentExposure in imageState")
-if not isinstance(image_state.get("controls"), list) or not image_state["controls"]:
-    raise SystemExit("Missing controls in imageState")
-if not isinstance(image_state.get("history"), list):
-    raise SystemExit("Missing history in imageState")
+if image_state is not None:
+    if not isinstance(image_state, dict):
+        raise SystemExit("Missing imageState in accepted_request log entry")
+    if "currentExposure" not in image_state:
+        raise SystemExit("Missing currentExposure in imageState")
+    if not isinstance(image_state.get("controls"), list) or not image_state["controls"]:
+        raise SystemExit("Missing controls in imageState")
+    if not isinstance(image_state.get("history"), list):
+        raise SystemExit("Missing history in imageState")
 
-print("Image-state snapshot validated from server log")
+if capabilities is not None:
+    if not isinstance(capabilities, list) or not capabilities:
+        raise SystemExit("Missing capabilities in accepted_request log entry")
+    capability = capabilities[0]
+    expected = {
+        "capabilityId": "exposure.primary",
+        "label": "Exposure",
+        "kind": "set-float",
+        "targetType": "darktable-action",
+        "actionPath": "iop/exposure/exposure",
+    }
+    for key, value in expected.items():
+        if capability.get(key) != value:
+            raise SystemExit(f"Capability field {key} expected {value!r}, got {capability.get(key)!r}")
+    if capability.get("supportedModes") != ["set", "delta"]:
+        raise SystemExit(f"Unexpected supportedModes: {capability.get('supportedModes')!r}")
+
+require_image_state = bool(int(sys.argv[2]))
+require_capabilities = bool(int(sys.argv[3]))
+if require_image_state and image_state is None:
+    raise SystemExit("Expected imageState in accepted_request log entry")
+if require_capabilities and capabilities is None:
+    raise SystemExit("Expected capabilities in accepted_request log entry")
+
+messages = []
+if require_image_state:
+    messages.append("image-state snapshot")
+if require_capabilities:
+    messages.append("capability manifest")
+print(f"{' and '.join(messages).capitalize()} validated from server log")
 PY
 fi
 

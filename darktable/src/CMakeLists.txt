@@ -11,6 +11,7 @@ FILE(GLOB SOURCE_FILES
   "bauhaus/bauhaus.c"
   "common/act_on.c"
   "common/agent_actions.c"
+  "common/agent_capabilities.c"
   "common/agent_catalog.c"
   "common/agent_client.c"
   "common/agent_execute.c"

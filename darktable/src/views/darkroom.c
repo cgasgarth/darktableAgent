@@ -20,6 +20,7 @@
 #include "common/extra_optimizations.h"
 
 #include "bauhaus/bauhaus.h"
+#include "common/agent_capabilities.h"
 #include "common/agent_client.h"
 #include "common/agent_execute.h"
 #include "common/agent_protocol.h"
@@ -1850,6 +1851,11 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
                                          ? dev->agent_chat.mock_response_id
                                          : DT_AGENT_CHAT_DEFAULT_MOCK_RESPONSE_ID);
   _agent_chat_fill_ui_context(request);
+  if(!dt_agent_capabilities_collect(request->capabilities, error))
+  {
+    dt_agent_chat_request_clear(request);
+    return FALSE;
+  }
   if(!dt_agent_image_state_collect_from_dev(dev, &request->image_state, error))
   {
     dt_agent_chat_request_clear(request);

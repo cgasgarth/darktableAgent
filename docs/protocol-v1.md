@@ -23,6 +23,20 @@ through its action system.
     "imageId": 42,
     "imageName": "IMG_0042.CR3"
   },
+  "capabilities": [
+    {
+      "capabilityId": "exposure.primary",
+      "label": "Exposure",
+      "kind": "set-float",
+      "targetType": "darktable-action",
+      "actionPath": "iop/exposure/exposure",
+      "supportedModes": ["set", "delta"],
+      "minNumber": -18.0,
+      "maxNumber": 18.0,
+      "defaultNumber": 0.0,
+      "stepNumber": 0.01
+    }
+  ],
   "imageState": {
     "currentExposure": 2.8,
     "historyPosition": 1,
@@ -70,6 +84,8 @@ through its action system.
 - `uiContext.view`: required non-empty string
 - `uiContext.imageId`: integer or `null`
 - `uiContext.imageName`: string or `null`
+- `capabilities`: required array of writable agent capabilities declared by darktable
+- `capabilities[].supportedModes`: ordered list of allowed write modes for that target
 - `imageState`: required object containing the current darkroom snapshot
 - `imageState.currentExposure`: number or `null`
 - `imageState.metadata`: required object with current image metadata
@@ -136,13 +152,16 @@ The first concrete target is exposure via `iop/exposure/exposure`.
 
 Darktable now sends a live image snapshot with every chat request:
 
+- `capabilities`: write manifest sourced from the execution catalog, including range limits and supported modes
 - `metadata`: camera/file identity and EXIF values from the active darkroom image
 - `controls`: current readable agent control values, sourced from the execution catalog
 - `history`: applied darkroom history items up to the current history position
 
-This snapshot is the server-side read API for the current image. It is still
-scaffolding, but it is intended to scale into richer agent planning instead of
-special-casing exposure forever.
+This request shape separates what darktable can do from the current image
+state. `capabilities` is the server-side write manifest, while `imageState` is
+the server-side read API for the active image. It is still scaffolding, but it
+is intended to scale into richer agent planning instead of special-casing
+exposure forever.
 
 ## Mock behavior
 
