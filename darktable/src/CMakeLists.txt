@@ -15,6 +15,7 @@ FILE(GLOB SOURCE_FILES
   "common/agent_client.c"
   "common/agent_execute.c"
   "common/agent_protocol.c"
+  "common/agent_state.c"
   "common/atomic.c"
   "common/bilateral.c"
   "common/bilateralcl.c"

@@ -28,12 +28,51 @@ class UIContext(StrictBaseModel):
     imageName: str | None
 
 
+class ImageMetadata(StrictBaseModel):
+    imageId: int | None
+    imageName: str | None
+    cameraMaker: str | None
+    cameraModel: str | None
+    width: int
+    height: int
+    exifExposureSeconds: float
+    exifAperture: float
+    exifIso: float
+    exifFocalLength: float
+
+
+class ImageControl(StrictBaseModel):
+    capabilityId: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    actionPath: str = Field(min_length=1)
+    currentNumber: float | None
+
+
+class ImageHistoryItem(StrictBaseModel):
+    num: int
+    module: str | None
+    enabled: bool
+    multiPriority: int
+    instanceName: str | None
+    iopOrder: int
+
+
+class ImageState(StrictBaseModel):
+    currentExposure: float | None
+    historyPosition: int
+    historyCount: int
+    metadata: ImageMetadata
+    controls: list[ImageControl]
+    history: list[ImageHistoryItem]
+
+
 class RequestEnvelope(StrictBaseModel):
     schemaVersion: Literal["2.0"]
     requestId: str = Field(min_length=1)
     conversationId: str = Field(min_length=1)
     message: UserMessage
     uiContext: UIContext
+    imageState: ImageState
     mockResponseId: str | None = None
 
 

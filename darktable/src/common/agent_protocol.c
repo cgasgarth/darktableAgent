@@ -127,6 +127,112 @@ static gboolean _parse_message(JsonObject *object,
       && _require_string_member(message, "text", text, error);
 }
 
+static void _serialize_image_state(JsonBuilder *builder,
+                                   const dt_agent_image_state_t *state)
+{
+  json_builder_set_member_name(builder, "imageState");
+  json_builder_begin_object(builder);
+
+  json_builder_set_member_name(builder, "currentExposure");
+  if(state->has_current_exposure)
+    json_builder_add_double_value(builder, state->current_exposure);
+  else
+    json_builder_add_null_value(builder);
+
+  json_builder_set_member_name(builder, "historyPosition");
+  json_builder_add_int_value(builder, state->history_position);
+
+  json_builder_set_member_name(builder, "historyCount");
+  json_builder_add_int_value(builder, state->history_count);
+
+  json_builder_set_member_name(builder, "metadata");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "imageId");
+  if(state->metadata.has_image_id)
+    json_builder_add_int_value(builder, state->metadata.image_id);
+  else
+    json_builder_add_null_value(builder);
+  json_builder_set_member_name(builder, "imageName");
+  if(state->metadata.image_name)
+    json_builder_add_string_value(builder, state->metadata.image_name);
+  else
+    json_builder_add_null_value(builder);
+  json_builder_set_member_name(builder, "cameraMaker");
+  if(state->metadata.camera_maker)
+    json_builder_add_string_value(builder, state->metadata.camera_maker);
+  else
+    json_builder_add_null_value(builder);
+  json_builder_set_member_name(builder, "cameraModel");
+  if(state->metadata.camera_model)
+    json_builder_add_string_value(builder, state->metadata.camera_model);
+  else
+    json_builder_add_null_value(builder);
+  json_builder_set_member_name(builder, "width");
+  json_builder_add_int_value(builder, state->metadata.width);
+  json_builder_set_member_name(builder, "height");
+  json_builder_add_int_value(builder, state->metadata.height);
+  json_builder_set_member_name(builder, "exifExposureSeconds");
+  json_builder_add_double_value(builder, state->metadata.exif_exposure_seconds);
+  json_builder_set_member_name(builder, "exifAperture");
+  json_builder_add_double_value(builder, state->metadata.exif_aperture);
+  json_builder_set_member_name(builder, "exifIso");
+  json_builder_add_double_value(builder, state->metadata.exif_iso);
+  json_builder_set_member_name(builder, "exifFocalLength");
+  json_builder_add_double_value(builder, state->metadata.exif_focal_length);
+  json_builder_end_object(builder);
+
+  json_builder_set_member_name(builder, "controls");
+  json_builder_begin_array(builder);
+  for(guint i = 0; i < state->controls->len; i++)
+  {
+    const dt_agent_image_control_t *control = g_ptr_array_index(state->controls, i);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "capabilityId");
+    json_builder_add_string_value(builder, control->capability_id);
+    json_builder_set_member_name(builder, "label");
+    json_builder_add_string_value(builder, control->label);
+    json_builder_set_member_name(builder, "actionPath");
+    json_builder_add_string_value(builder, control->action_path);
+    json_builder_set_member_name(builder, "currentNumber");
+    if(control->has_current_number)
+      json_builder_add_double_value(builder, control->current_number);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_array(builder);
+
+  json_builder_set_member_name(builder, "history");
+  json_builder_begin_array(builder);
+  for(guint i = 0; i < state->history->len; i++)
+  {
+    const dt_agent_history_item_t *item = g_ptr_array_index(state->history, i);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "num");
+    json_builder_add_int_value(builder, item->num);
+    json_builder_set_member_name(builder, "module");
+    if(item->module)
+      json_builder_add_string_value(builder, item->module);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "enabled");
+    json_builder_add_boolean_value(builder, item->enabled);
+    json_builder_set_member_name(builder, "multiPriority");
+    json_builder_add_int_value(builder, item->multi_priority);
+    json_builder_set_member_name(builder, "instanceName");
+    if(item->instance_name)
+      json_builder_add_string_value(builder, item->instance_name);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "iopOrder");
+    json_builder_add_int_value(builder, item->iop_order);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_array(builder);
+
+  json_builder_end_object(builder);
+}
+
 static gboolean _parse_error(JsonObject *object,
                              char **error_code,
                              char **error_message,
@@ -287,6 +393,7 @@ void dt_agent_chat_request_clear(dt_agent_chat_request_t *request)
   g_free(request->conversation_id);
   g_free(request->message_text);
   dt_agent_ui_context_clear(&request->ui_context);
+  dt_agent_image_state_clear(&request->image_state);
   g_free(request->mock_response_id);
   memset(request, 0, sizeof(*request));
 }
@@ -304,6 +411,7 @@ void dt_agent_chat_request_copy(dt_agent_chat_request_t *dest,
   dest->ui_context.has_image_id = src->ui_context.has_image_id;
   dest->ui_context.image_id = src->ui_context.image_id;
   dest->ui_context.image_name = g_strdup(src->ui_context.image_name);
+  dt_agent_image_state_copy(&dest->image_state, &src->image_state);
   dest->mock_response_id = g_strdup(src->mock_response_id);
 }
 
@@ -441,6 +549,8 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
   else
     json_builder_add_null_value(builder);
   json_builder_end_object(builder);
+
+  _serialize_image_state(builder, &request->image_state);
 
   json_builder_set_member_name(builder, "mockResponseId");
   if(request->mock_response_id)

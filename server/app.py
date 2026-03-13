@@ -111,6 +111,7 @@ async def chat(request: RequestEnvelope) -> ResponseEnvelope:
                 "view": request.uiContext.view,
                 "imageId": request.uiContext.imageId,
                 "imageName": request.uiContext.imageName,
+                "imageState": request.imageState.model_dump(),
                 "mockResponseId": request.mockResponseId,
                 "messageText": request.message.text,
             }

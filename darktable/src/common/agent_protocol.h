@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "common/agent_state.h"
+
 #include <glib.h>
 
 G_BEGIN_DECLS
@@ -56,6 +58,7 @@ typedef struct dt_agent_chat_request_t
   gchar *conversation_id;
   gchar *message_text;
   dt_agent_ui_context_t ui_context;
+  dt_agent_image_state_t image_state;
   gchar *mock_response_id;
 } dt_agent_chat_request_t;
 

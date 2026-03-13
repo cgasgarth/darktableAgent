@@ -23,6 +23,7 @@
 #include "common/agent_client.h"
 #include "common/agent_execute.h"
 #include "common/agent_protocol.h"
+#include "common/agent_state.h"
 #include "common/collection.h"
 #include "common/colorspaces.h"
 #include "common/darktable.h"
@@ -1849,6 +1850,11 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
                                          ? dev->agent_chat.mock_response_id
                                          : DT_AGENT_CHAT_DEFAULT_MOCK_RESPONSE_ID);
   _agent_chat_fill_ui_context(request);
+  if(!dt_agent_image_state_collect_from_dev(dev, &request->image_state, error))
+  {
+    dt_agent_chat_request_clear(request);
+    return FALSE;
+  }
 
   if(!request->request_id || !request->conversation_id || !request->message_text)
   {

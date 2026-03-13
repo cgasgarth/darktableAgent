@@ -23,6 +23,41 @@ through its action system.
     "imageId": 42,
     "imageName": "IMG_0042.CR3"
   },
+  "imageState": {
+    "currentExposure": 2.8,
+    "historyPosition": 1,
+    "historyCount": 1,
+    "metadata": {
+      "imageId": 42,
+      "imageName": "IMG_0042.CR3",
+      "cameraMaker": "Sony",
+      "cameraModel": "ILCE-7RM5",
+      "width": 9504,
+      "height": 6336,
+      "exifExposureSeconds": 0.01,
+      "exifAperture": 4.0,
+      "exifIso": 100.0,
+      "exifFocalLength": 35.0
+    },
+    "controls": [
+      {
+        "capabilityId": "exposure.primary",
+        "label": "Exposure",
+        "actionPath": "iop/exposure/exposure",
+        "currentNumber": 2.8
+      }
+    ],
+    "history": [
+      {
+        "num": 0,
+        "module": "exposure",
+        "enabled": true,
+        "multiPriority": 0,
+        "instanceName": "exposure",
+        "iopOrder": 20
+      }
+    ]
+  },
   "mockResponseId": "exposure-plus-0.7"
 }
 ```
@@ -35,6 +70,11 @@ through its action system.
 - `uiContext.view`: required non-empty string
 - `uiContext.imageId`: integer or `null`
 - `uiContext.imageName`: string or `null`
+- `imageState`: required object containing the current darkroom snapshot
+- `imageState.currentExposure`: number or `null`
+- `imageState.metadata`: required object with current image metadata
+- `imageState.controls`: required array of readable agent control values
+- `imageState.history`: required array of applied history items up to `historyPosition`
 - `mockResponseId`: `"chat-echo"`, `"exposure-plus-0.7"`, `"exposure-minus-0.7"`, `"exposure-sequence-plus-0.7"`, `"unsupported-action"`, `"status-summary"`, or `null`
 
 `null` currently defaults to the exposure-increase mock so every darktable chat
@@ -91,6 +131,18 @@ The current operation model is intentionally generic enough to scale:
 - `value.mode: "set"` means assign `number` directly
 
 The first concrete target is exposure via `iop/exposure/exposure`.
+
+## Request snapshot
+
+Darktable now sends a live image snapshot with every chat request:
+
+- `metadata`: camera/file identity and EXIF values from the active darkroom image
+- `controls`: current readable agent control values, sourced from the execution catalog
+- `history`: applied darkroom history items up to the current history position
+
+This snapshot is the server-side read API for the current image. It is still
+scaffolding, but it is intended to scale into richer agent planning instead of
+special-casing exposure forever.
 
 ## Mock behavior
 

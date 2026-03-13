@@ -10,6 +10,7 @@
     "conversationId",
     "message",
     "uiContext",
+    "imageState",
     "mockResponseId"
   ],
   "properties": {
@@ -65,6 +66,97 @@
             "string",
             "null"
           ]
+        }
+      }
+    },
+    "imageState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currentExposure",
+        "historyPosition",
+        "historyCount",
+        "metadata",
+        "controls",
+        "history"
+      ],
+      "properties": {
+        "currentExposure": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "historyPosition": {
+          "type": "integer"
+        },
+        "historyCount": {
+          "type": "integer"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "imageId",
+            "imageName",
+            "cameraMaker",
+            "cameraModel",
+            "width",
+            "height",
+            "exifExposureSeconds",
+            "exifAperture",
+            "exifIso",
+            "exifFocalLength"
+          ],
+          "properties": {
+            "imageId": { "type": ["integer", "null"] },
+            "imageName": { "type": ["string", "null"] },
+            "cameraMaker": { "type": ["string", "null"] },
+            "cameraModel": { "type": ["string", "null"] },
+            "width": { "type": "integer" },
+            "height": { "type": "integer" },
+            "exifExposureSeconds": { "type": "number" },
+            "exifAperture": { "type": "number" },
+            "exifIso": { "type": "number" },
+            "exifFocalLength": { "type": "number" }
+          }
+        },
+        "controls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["capabilityId", "label", "actionPath", "currentNumber"],
+            "properties": {
+              "capabilityId": { "type": "string", "minLength": 1 },
+              "label": { "type": "string", "minLength": 1 },
+              "actionPath": { "type": "string", "minLength": 1 },
+              "currentNumber": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "num",
+              "module",
+              "enabled",
+              "multiPriority",
+              "instanceName",
+              "iopOrder"
+            ],
+            "properties": {
+              "num": { "type": "integer" },
+              "module": { "type": ["string", "null"] },
+              "enabled": { "type": "boolean" },
+              "multiPriority": { "type": "integer" },
+              "instanceName": { "type": ["string", "null"] },
+              "iopOrder": { "type": "integer" }
+            }
+          }
         }
       }
     },

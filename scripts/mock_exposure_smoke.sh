@@ -15,6 +15,7 @@ KEEP_ARTIFACTS="${KEEP_ARTIFACTS:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_SERVER_TESTS="${SKIP_SERVER_TESTS:-0}"
 CLEAN_RUNTIME="${CLEAN_RUNTIME:-0}"
+REQUIRE_IMAGE_STATE="${REQUIRE_IMAGE_STATE:-0}"
 
 REPORT_FILE="${REPORT_FILE:-$(mktemp "${TMPDIR:-/tmp}/darktable-agent-report.XXXXXX.ini")}"
 SERVER_LOG="${SERVER_LOG:-$(mktemp "${TMPDIR:-/tmp}/darktable-agent-server.XXXXXX.log")}"
@@ -171,6 +172,39 @@ print(
     f"before={exposure_before:.3f} after={exposure_after:.3f}"
 )
 PY
+
+if [[ "$REQUIRE_IMAGE_STATE" == "1" ]]; then
+  "$PYTHON_BIN" - "$SERVER_LOG" <<'PY'
+import json
+import sys
+
+rows = []
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    for line in handle:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("event") == "accepted_request":
+            rows.append(payload)
+
+if not rows:
+    raise SystemExit("Expected at least one accepted_request log entry")
+
+image_state = rows[-1].get("imageState")
+if not isinstance(image_state, dict):
+    raise SystemExit("Missing imageState in accepted_request log entry")
+
+if "currentExposure" not in image_state:
+    raise SystemExit("Missing currentExposure in imageState")
+if not isinstance(image_state.get("controls"), list) or not image_state["controls"]:
+    raise SystemExit("Missing controls in imageState")
+if not isinstance(image_state.get("history"), list):
+    raise SystemExit("Missing history in imageState")
+
+print("Image-state snapshot validated from server log")
+PY
+fi
 
 if [[ "$KEEP_ARTIFACTS" == "1" ]]; then
   echo "Artifacts kept:"
