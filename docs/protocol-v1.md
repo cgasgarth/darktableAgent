@@ -1,6 +1,10 @@
 # Protocol v1
 
-This document locks the first backend slice contract for `POST /v1/chat`.
+This document describes the current temporary scaffold for `POST /v1/chat`.
+
+It is not the final darktable agent contract.
+
+The `mockActionId` field and the brighten/darken mock behavior are only placeholders from the initial backend slice. As the real Python agent harness and darktable edit execution path are implemented, this document should be replaced by a protocol that reflects actual planning, execution, and state readback.
 
 ## Request
 
