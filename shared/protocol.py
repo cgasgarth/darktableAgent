@@ -142,6 +142,68 @@ def build_mock_response_catalog(request: RequestEnvelope) -> dict[str, ResponseE
         error=None,
     )
 
+    exposure_sequence = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text=(
+                "Mock agent: running an ordered two-step exposure edit "
+                "(+0.2 EV, then +0.5 EV)."
+            ),
+        ),
+        operations=[
+            Operation(
+                operationId="op-exposure-plus-0.2",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/exposure",
+                ),
+                value=OperationValue(mode="delta", number=0.2),
+            ),
+            Operation(
+                operationId="op-exposure-plus-0.5",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/exposure",
+                ),
+                value=OperationValue(mode="delta", number=0.5),
+            ),
+        ],
+        error=None,
+    )
+
+    unsupported_action = ResponseEnvelope(
+        requestId=request.requestId,
+        conversationId=request.conversationId,
+        status="ok",
+        message=AssistantMessage(
+            role="assistant",
+            text=(
+                "Mock agent: attempting one unsupported action so darktable "
+                "can report a blocked operation cleanly."
+            ),
+        ),
+        operations=[
+            Operation(
+                operationId="op-unsupported-action",
+                kind="set-float",
+                status="planned",
+                target=OperationTarget(
+                    type="darktable-action",
+                    actionPath="iop/exposure/not-real",
+                ),
+                value=OperationValue(mode="delta", number=0.7),
+            )
+        ],
+        error=None,
+    )
+
     status_summary = ResponseEnvelope(
         requestId=request.requestId,
         conversationId=request.conversationId,
@@ -176,6 +238,8 @@ def build_mock_response_catalog(request: RequestEnvelope) -> dict[str, ResponseE
     return {
         DEFAULT_MOCK_RESPONSE_ID: exposure_up,
         "exposure-minus-0.7": exposure_down,
+        "exposure-sequence-plus-0.7": exposure_sequence,
+        "unsupported-action": unsupported_action,
         "status-summary": status_summary,
         "chat-echo": chat_echo,
     }

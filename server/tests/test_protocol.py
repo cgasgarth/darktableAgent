@@ -74,3 +74,42 @@ def test_build_mock_response_defaults_to_exposure_mock() -> None:
 
     assert response.operations
     assert response.operations[0].value.number == 0.7
+
+
+def test_build_mock_response_supports_ordered_exposure_sequence() -> None:
+    request = RequestEnvelope.model_validate(
+        {
+            "schemaVersion": "2.0",
+            "requestId": "req-4",
+            "conversationId": "conv-4",
+            "message": {"role": "user", "text": "Sequence"},
+            "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "mockResponseId": "exposure-sequence-plus-0.7",
+        }
+    )
+
+    response = build_mock_response(request)
+
+    assert [operation.operationId for operation in response.operations] == [
+        "op-exposure-plus-0.2",
+        "op-exposure-plus-0.5",
+    ]
+    assert sum(operation.value.number for operation in response.operations) == 0.7
+
+
+def test_build_mock_response_supports_blocked_operation_fixture() -> None:
+    request = RequestEnvelope.model_validate(
+        {
+            "schemaVersion": "2.0",
+            "requestId": "req-5",
+            "conversationId": "conv-5",
+            "message": {"role": "user", "text": "Try something unsupported"},
+            "uiContext": {"view": "darkroom", "imageId": 1, "imageName": "_DSC8809.ARW"},
+            "mockResponseId": "unsupported-action",
+        }
+    )
+
+    response = build_mock_response(request)
+
+    assert response.operations[0].operationId == "op-unsupported-action"
+    assert response.operations[0].target.actionPath == "iop/exposure/not-real"

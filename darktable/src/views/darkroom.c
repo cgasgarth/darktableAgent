@@ -20,8 +20,8 @@
 #include "common/extra_optimizations.h"
 
 #include "bauhaus/bauhaus.h"
-#include "common/agent_actions.h"
 #include "common/agent_client.h"
+#include "common/agent_execute.h"
 #include "common/agent_protocol.h"
 #include "common/collection.h"
 #include "common/colorspaces.h"
@@ -1619,6 +1619,7 @@ static double _agent_chat_read_current_exposure(void)
 static void _agent_chat_write_test_report(dt_develop_t *dev,
                                           const char *status,
                                           const dt_agent_client_result_t *result,
+                                          const dt_agent_execution_report_t *execution_report,
                                           const char *error_message,
                                           const double exposure_before)
 {
@@ -1650,6 +1651,18 @@ static void _agent_chat_write_test_report(dt_develop_t *dev,
       g_key_file_set_integer(report, "result", "operation_count",
                              response->operations ? (gint)response->operations->len : 0);
     }
+  }
+
+  if(execution_report)
+  {
+    g_key_file_set_integer(report, "result", "execution_result_count",
+                           execution_report->results ? (gint)execution_report->results->len : 0);
+    g_key_file_set_integer(report, "result", "execution_applied_count",
+                           (gint)execution_report->applied_count);
+    g_key_file_set_integer(report, "result", "execution_blocked_count",
+                           (gint)execution_report->blocked_count);
+    g_key_file_set_integer(report, "result", "execution_failed_count",
+                           (gint)execution_report->failed_count);
   }
 
   if(error_message && error_message[0] != '\0')
@@ -1878,22 +1891,27 @@ static gboolean _agent_chat_is_stale_response(dt_develop_t *dev,
 }
 
 static void _agent_chat_append_operation_summary(dt_develop_t *dev,
-                                                 const dt_agent_chat_response_t *response)
+                                                 const dt_agent_execution_report_t *report)
 {
-  if(!response || !response->operations || response->operations->len == 0)
+  if(!report || !report->results || report->results->len == 0)
     return;
 
   GString *summary = g_string_new(NULL);
-  for(guint i = 0; i < response->operations->len; i++)
+  for(guint i = 0; i < report->results->len; i++)
   {
-    const dt_agent_chat_operation_t *operation = g_ptr_array_index(response->operations, i);
+    const dt_agent_execution_result_t *result = g_ptr_array_index(report->results, i);
     if(i > 0)
       g_string_append(summary, "; ");
 
-    g_string_append_printf(summary, _("%s %.2f via %s"),
-                           dt_agent_value_mode_to_string(operation->value_mode),
-                           operation->number,
-                           operation->action_path ? operation->action_path : _("unknown"));
+    g_string_append_printf(summary, _("%s %s"),
+                           dt_agent_execution_status_to_string(result->status),
+                           result->action_path ? result->action_path : _("unknown"));
+
+    if(result->has_value_before && result->has_value_after)
+      g_string_append_printf(summary, _(" %.2f -> %.2f"),
+                             result->value_before, result->value_after);
+    else if(result->message && result->message[0] != '\0')
+      g_string_append_printf(summary, _(" (%s)"), result->message);
   }
 
   _agent_chat_append_message(dev, _("system"), summary->str);
@@ -1912,6 +1930,7 @@ static void _agent_chat_handle_transport_error(dt_develop_t *dev,
 
 static gboolean _agent_chat_handle_response(dt_develop_t *dev,
                                             const dt_agent_chat_response_t *response,
+                                            dt_agent_execution_report_t *execution_report,
                                             gchar **out_error_message)
 {
   if(response->message_text && response->message_text[0] != '\0')
@@ -1932,13 +1951,14 @@ static gboolean _agent_chat_handle_response(dt_develop_t *dev,
   if(response->operations && response->operations->len > 0)
   {
     GError *apply_error = NULL;
-    if(!dt_agent_actions_apply_response(response, &apply_error))
+    if(!dt_agent_execute_response(response, execution_report, &apply_error))
     {
       const char *message
         = apply_error && apply_error->message ? apply_error->message
                                               : _("failed to apply agent changes");
       _agent_chat_set_error(dev, message);
       _agent_chat_set_status(dev, _("Apply failed"));
+      _agent_chat_append_operation_summary(dev, execution_report);
       _agent_chat_append_message(dev, _("system"), message);
       if(out_error_message)
         *out_error_message = g_strdup(message);
@@ -1946,12 +1966,17 @@ static gboolean _agent_chat_handle_response(dt_develop_t *dev,
       return FALSE;
     }
 
-    _agent_chat_append_operation_summary(dev, response);
-    _agent_chat_set_status(dev, _("Applied mock edit"));
+    _agent_chat_append_operation_summary(dev, execution_report);
+    gchar *status = g_strdup_printf(ngettext("Applied %u operation", "Applied %u operations",
+                                             execution_report->applied_count),
+                                    execution_report->applied_count);
+    _agent_chat_set_status(dev, status);
+    g_free(status);
     dt_print(DT_DEBUG_ALWAYS,
-             "[agent-chat] applied response request=%s operations=%u",
+             "[agent-chat] applied response request=%s operations=%u applied=%u",
              response->request_id ? response->request_id : "",
-             response->operations->len);
+             response->operations->len,
+             execution_report ? execution_report->applied_count : 0);
     return TRUE;
   }
 
@@ -1971,7 +1996,8 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
   {
     _agent_chat_set_loading(dev, FALSE);
     _agent_chat_set_status(dev, _("Ignored stale response"));
-    _agent_chat_write_test_report(dev, "stale", result, _("ignored stale response"),
+    _agent_chat_write_test_report(dev, "stale", result, NULL,
+                                  _("ignored stale response"),
                                   submission ? submission->exposure_before : NAN);
     return;
   }
@@ -1981,7 +2007,7 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
   if(result->transport_error || !result->has_response)
   {
     _agent_chat_handle_transport_error(dev, result->transport_error);
-    _agent_chat_write_test_report(dev, "transport_error", result,
+    _agent_chat_write_test_report(dev, "transport_error", result, NULL,
                                   result->transport_error ? result->transport_error
                                                           : _("failed to contact the agent server"),
                                   submission ? submission->exposure_before : NAN);
@@ -1989,14 +2015,18 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
   else
   {
     _agent_chat_set_error(dev, NULL);
+    dt_agent_execution_report_t execution_report;
+    dt_agent_execution_report_init(&execution_report);
     g_autofree gchar *response_error = NULL;
-    const gboolean handled = _agent_chat_handle_response(dev, &result->response, &response_error);
+    const gboolean handled = _agent_chat_handle_response(dev, &result->response,
+                                                         &execution_report, &response_error);
     const char *status = handled ? "ok"
                                  : (g_strcmp0(result->response.status, "error") == 0
                                       ? "server_error"
                                       : "apply_failed");
-    _agent_chat_write_test_report(dev, status, result, response_error,
+    _agent_chat_write_test_report(dev, status, result, &execution_report, response_error,
                                   submission ? submission->exposure_before : NAN);
+    dt_agent_execution_report_clear(&execution_report);
   }
 
   _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
@@ -2021,7 +2051,7 @@ static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboo
                                                           : _("failed to build request");
     _agent_chat_set_loading(dev, FALSE);
     _agent_chat_handle_transport_error(dev, failure_message);
-    _agent_chat_write_test_report(dev, "build_error", NULL, failure_message, NAN);
+    _agent_chat_write_test_report(dev, "build_error", NULL, NULL, failure_message, NAN);
     _agent_chat_maybe_schedule_test_quit(dev, autorun);
     g_clear_error(&error);
     return;
@@ -2045,7 +2075,7 @@ static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboo
                                                           : _("failed to queue the agent request");
     _agent_chat_set_loading(dev, FALSE);
     _agent_chat_handle_transport_error(dev, failure_message);
-    _agent_chat_write_test_report(dev, "queue_error", NULL,
+    _agent_chat_write_test_report(dev, "queue_error", NULL, NULL,
                                   failure_message,
                                   submission ? submission->exposure_before : NAN);
     _agent_chat_maybe_schedule_test_quit(dev, autorun);

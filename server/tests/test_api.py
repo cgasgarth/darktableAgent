@@ -84,6 +84,59 @@ async def test_chat_exposure_minus_mock_response(api_client: AsyncClient) -> Non
 
 
 @pytest.mark.anyio
+async def test_chat_preserves_multi_operation_order(api_client: AsyncClient) -> None:
+    response = await api_client.post(
+        "/v1/chat",
+        json={
+            "schemaVersion": "2.0",
+            "requestId": "req-sequence",
+            "conversationId": "conv-sequence",
+            "message": {"role": "user", "text": "Do the sequence"},
+            "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
+            "mockResponseId": "exposure-sequence-plus-0.7",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [operation["operationId"] for operation in body["operations"]] == [
+        "op-exposure-plus-0.2",
+        "op-exposure-plus-0.5",
+    ]
+    assert [operation["value"]["number"] for operation in body["operations"]] == [0.2, 0.5]
+
+
+@pytest.mark.anyio
+async def test_chat_supports_blocked_operation_fixture(api_client: AsyncClient) -> None:
+    response = await api_client.post(
+        "/v1/chat",
+        json={
+            "schemaVersion": "2.0",
+            "requestId": "req-unsupported",
+            "conversationId": "conv-unsupported",
+            "message": {"role": "user", "text": "Try something unsupported"},
+            "uiContext": {"view": "darkroom", "imageId": 10, "imageName": "img.jpg"},
+            "mockResponseId": "unsupported-action",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operations"] == [
+        {
+            "operationId": "op-unsupported-action",
+            "kind": "set-float",
+            "status": "planned",
+            "target": {
+                "type": "darktable-action",
+                "actionPath": "iop/exposure/not-real",
+            },
+            "value": {"mode": "delta", "number": 0.7},
+        }
+    ]
+
+
+@pytest.mark.anyio
 async def test_chat_rejects_malformed_payload(api_client: AsyncClient) -> None:
     response = await api_client.post(
         "/v1/chat",

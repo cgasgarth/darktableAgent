@@ -35,7 +35,7 @@ through its action system.
 - `uiContext.view`: required non-empty string
 - `uiContext.imageId`: integer or `null`
 - `uiContext.imageName`: string or `null`
-- `mockResponseId`: `"chat-echo"`, `"exposure-plus-0.7"`, `"exposure-minus-0.7"`, `"status-summary"`, or `null`
+- `mockResponseId`: `"chat-echo"`, `"exposure-plus-0.7"`, `"exposure-minus-0.7"`, `"exposure-sequence-plus-0.7"`, `"unsupported-action"`, `"status-summary"`, or `null`
 
 `null` currently defaults to the exposure-increase mock so every darktable chat
 submission exercises the same edit path.
@@ -97,6 +97,8 @@ The first concrete target is exposure via `iop/exposure/exposure`.
 - `mockResponseId == "chat-echo"`: assistant text only, no operations
 - `mockResponseId == "exposure-plus-0.7"`: one planned `set-float` delta operation for `+0.7`
 - `mockResponseId == "exposure-minus-0.7"`: one planned `set-float` delta operation for `-0.7`
+- `mockResponseId == "exposure-sequence-plus-0.7"`: two ordered planned `set-float` delta operations for `+0.2` then `+0.5`
+- `mockResponseId == "unsupported-action"`: one planned operation with an unsupported action path so darktable can report a blocked execution result
 - `mockResponseId == "status-summary"`: assistant status text only, no operations
 - `mockResponseId == null`: defaults to `exposure-plus-0.7`
 

@@ -111,8 +111,15 @@ if not config.read(report_path):
 
 result = config["result"]
 status = result.get("status", "")
-if status != "ok":
-    raise SystemExit(f"Unexpected darktable status {status!r}: {result.get('error', '')}")
+expected_statuses = {
+    "unsupported-action": "apply_failed",
+}
+expected_status = expected_statuses.get(mock_response_id, "ok")
+if status != expected_status:
+    raise SystemExit(
+        f"Unexpected darktable status {status!r}, expected {expected_status!r}: "
+        f"{result.get('error', '')}"
+    )
 
 operation_count = int(result.get("operation_count", "0"))
 if operation_count < 1:
@@ -129,6 +136,7 @@ if math.isnan(exposure_before):
 expected_deltas = {
     "exposure-plus-0.7": 0.7,
     "exposure-minus-0.7": -0.7,
+    "exposure-sequence-plus-0.7": 0.7,
 }
 if mock_response_id in expected_deltas:
     actual_delta = exposure_after - exposure_before
@@ -136,6 +144,25 @@ if mock_response_id in expected_deltas:
     if abs(actual_delta - expected_delta) > 0.05:
         raise SystemExit(
             f"Expected exposure delta {expected_delta}, got {actual_delta} "
+            f"(before={exposure_before}, after={exposure_after})"
+        )
+
+blocked_expectations = {
+    "unsupported-action": 1,
+}
+if mock_response_id in blocked_expectations:
+    blocked_count = int(result.get("execution_blocked_count", "0"))
+    failed_count = int(result.get("execution_failed_count", "0"))
+    if blocked_count != blocked_expectations[mock_response_id]:
+        raise SystemExit(
+            f"Expected blocked count {blocked_expectations[mock_response_id]}, "
+            f"found {blocked_count}"
+        )
+    if failed_count != 0:
+        raise SystemExit(f"Expected failed count 0, found {failed_count}")
+    if abs(exposure_after - exposure_before) > 0.05:
+        raise SystemExit(
+            f"Unsupported action should not change exposure "
             f"(before={exposure_before}, after={exposure_after})"
         )
 
