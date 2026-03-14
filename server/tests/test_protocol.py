@@ -125,8 +125,22 @@ def _sample_image_snapshot() -> dict:
                 "iopOrder": 20,
             }
         ],
-        "preview": None,
-        "histogram": None,
+        "preview": {
+            "previewId": "preview-12-1000w",
+            "mimeType": "image/jpeg",
+            "width": 1000,
+            "height": 666,
+            "base64Data": "ZmFrZS1wcmV2aWV3",
+        },
+        "histogram": {
+            "binCount": 4,
+            "channels": {
+                "red": {"bins": [1, 2, 3, 4]},
+                "green": {"bins": [4, 3, 2, 1]},
+                "blue": {"bins": [0, 1, 0, 1]},
+                "luma": {"bins": [2, 2, 2, 2]},
+            },
+        },
     }
 
 
@@ -162,6 +176,8 @@ def test_request_envelope_accepts_v3_payload() -> None:
     )
     assert envelope.imageSnapshot.editableSettings[1].currentBool is True
     assert envelope.imageSnapshot.editableSettings[2].currentChoiceId == "rgb"
+    assert envelope.imageSnapshot.preview.width == 1000
+    assert envelope.imageSnapshot.histogram.binCount == 4
 
 
 def test_request_envelope_rejects_unknown_fields() -> None:

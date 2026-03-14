@@ -239,6 +239,8 @@ static dt_agent_action_descriptor_t *_descriptor_for_widget(dt_iop_module_t *mod
 {
   if(!module || !referral || !referral->action || !referral->target)
     return NULL;
+  if(!GTK_IS_WIDGET(referral->target))
+    return NULL;
 
   GtkWidget *widget = GTK_WIDGET(referral->target);
   dt_introspection_field_t *field = _find_field_for_widget(module, widget);
@@ -429,7 +431,7 @@ gboolean dt_agent_catalog_collect_descriptors(const dt_develop_t *dev,
     dt_agent_action_descriptor_t *toggle_descriptor = _descriptor_for_module_toggle(module);
     _add_descriptor_unique(descriptors, seen_setting_ids, toggle_descriptor);
 
-    for(GSList *widget_iter = module->widget_list_bh; widget_iter; widget_iter = g_slist_next(widget_iter))
+    for(GSList *widget_iter = module->widget_list; widget_iter; widget_iter = g_slist_next(widget_iter))
     {
       dt_action_target_t *referral = widget_iter->data;
       dt_agent_action_descriptor_t *descriptor = _descriptor_for_widget(module, referral);

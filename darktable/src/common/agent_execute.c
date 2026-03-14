@@ -92,16 +92,14 @@ static dt_agent_execution_result_t *_execution_result_new(const dt_agent_chat_op
   return result;
 }
 
-static double _read_action_float_value(const char *action_path, GError **error)
+static double _read_descriptor_float_value(const dt_agent_action_descriptor_t *descriptor,
+                                           GError **error)
 {
-  dt_agent_action_descriptor_t *descriptor
-    = dt_agent_catalog_find_descriptor(darktable.develop, action_path, NULL, error);
   if(!descriptor)
     return NAN;
 
   double value = NAN;
   const gboolean ok = dt_agent_catalog_read_current_number(descriptor, &value, error);
-  dt_agent_action_descriptor_free(descriptor);
   if(!ok)
     return NAN;
 
@@ -158,9 +156,12 @@ static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *op
   }
 
   result->has_value_before = TRUE;
-  result->value_before = _read_action_float_value(operation->action_path, error);
+  result->value_before = _read_descriptor_float_value(descriptor, error);
   if(dt_isnan(result->value_before))
+  {
+    dt_agent_action_descriptor_free(descriptor);
     return _execution_result_set_failed(report, result, error);
+  }
 
   double target = operation->number;
   if(operation->value_mode == DT_AGENT_VALUE_MODE_DELTA)
