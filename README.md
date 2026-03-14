@@ -42,14 +42,28 @@ This repository is in its initial agent-integration stage.
 - The custom local build installs into `darktable/.install-5.4.1`.
 - `server/` now bridges darktable requests into the Codex app server and returns structured operation plans back to darktable.
 - `shared/` defines the live chat/edit contract used between darktable and the local Python server.
+- darktable now sends a 1k rendered preview, histogram, metadata, history, and dynamically discovered editable controls with each request.
+- chat sessions are now image-scoped in darkroom, with one conversation surface per image plus a `new chat` reset action.
 
 ## Planned Priorities
 
-- establish the shared client/server protocol
-- build the Python orchestration service
-- integrate an in-UI chat surface inside darktable
-- add structured action execution and readback flows
-- expand into richer editing, masking, and workflow automation features
+- keep expanding the editable control surface beyond the first working operations
+- improve the persistent chat UI and make it easier to keep open while editing
+- add richer multi-step plans, previews, and safer apply/revert flows
+- expand into masking, local adjustments, and broader workflow automation
+
+## Current Request Payload
+
+Each live `POST /v1/chat` request now includes:
+
+- app, image, conversation, and turn session IDs
+- the active image metadata and history state
+- a 1k rendered JPEG preview of the current darkroom output when available
+- a histogram derived from the same rendered output
+- a capability manifest of writable darktable controls
+- a matching list of current editable settings, including float, choice, and bool controls
+
+The current protocol details live in [docs/protocol-v1.md](docs/protocol-v1.md).
 
 ## Local darktable workflow
 
@@ -60,6 +74,7 @@ This repository is in its initial agent-integration stage.
 - The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
 - The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
 - The server expects a working local `codex` CLI login because it uses `codex app-server` as the planning backend
+- The smoke script now validates preview, histogram, capability coverage, and darktable session identifiers in the generated report
 
 ## License
 
