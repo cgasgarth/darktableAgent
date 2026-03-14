@@ -1,11 +1,10 @@
-# Protocol Mock Contract
+# Protocol Contract
 
-This document describes the current temporary mock contract for `POST /v1/chat`.
+This document describes the current live contract for `POST /v1/chat`.
 
-It is still scaffolding, but it now matches the first real desktop integration:
-darktable sends a chat request, the Python server returns a user-visible message
-plus a list of structured operations, and darktable applies those operations
-through its action system.
+darktable sends structured editing context to the local Python server. The
+Python server forwards that context into the Codex app server, receives a
+structured plan, and returns a stable response envelope to darktable.
 
 ## Request
 
@@ -16,7 +15,7 @@ through its action system.
   "conversationId": "conv-456",
   "message": {
     "role": "user",
-    "text": "Please brighten this image"
+    "text": "Increase exposure by exactly 0.7 EV."
   },
   "uiContext": {
     "view": "darkroom",
@@ -71,8 +70,7 @@ through its action system.
         "iopOrder": 20
       }
     ]
-  },
-  "mockResponseId": "exposure-plus-0.7"
+  }
 }
 ```
 
@@ -81,20 +79,9 @@ through its action system.
 - `conversationId`: required non-empty string
 - `message.role`: required string, must be `"user"`
 - `message.text`: required non-empty string
-- `uiContext.view`: required non-empty string
-- `uiContext.imageId`: integer or `null`
-- `uiContext.imageName`: string or `null`
+- `uiContext`: required UI state for the active view/image
 - `capabilities`: required array of writable agent capabilities declared by darktable
-- `capabilities[].supportedModes`: ordered list of allowed write modes for that target
 - `imageState`: required object containing the current darkroom snapshot
-- `imageState.currentExposure`: number or `null`
-- `imageState.metadata`: required object with current image metadata
-- `imageState.controls`: required array of readable agent control values
-- `imageState.history`: required array of applied history items up to `historyPosition`
-- `mockResponseId`: `"chat-echo"`, `"exposure-plus-0.7"`, `"exposure-minus-0.7"`, `"exposure-sequence-plus-0.7"`, `"exposure-set-1.25"`, `"exposure-clamp-max"`, `"exposure-clamp-min"`, `"unsupported-action"`, `"status-summary"`, or `null`
-
-`null` currently defaults to the exposure-increase mock so every darktable chat
-submission exercises the same edit path.
 
 ## Response
 
@@ -106,17 +93,17 @@ submission exercises the same edit path.
   "status": "ok",
   "message": {
     "role": "assistant",
-    "text": "Mock agent: increasing the current image exposure by +0.7 EV through the exposure slider."
+    "text": "Increasing exposure by +0.7 EV."
   },
   "operations": [
     {
       "operationId": "op-exposure-plus-0.7",
       "kind": "set-float",
       "status": "planned",
-        "target": {
-          "type": "darktable-action",
-          "actionPath": "iop/exposure/exposure"
-        },
+      "target": {
+        "type": "darktable-action",
+        "actionPath": "iop/exposure/exposure"
+      },
       "value": {
         "mode": "delta",
         "number": 0.7
@@ -127,57 +114,32 @@ submission exercises the same edit path.
 }
 ```
 
-- `schemaVersion`: required string, always `"2.0"`
-- `requestId`: required string, echoed from the request when present
-- `conversationId`: required string, echoed from the request when present
-- `status`: required string, `"ok"` or `"error"`
-- `message.role`: required string, always `"assistant"`
-- `message.text`: required string
-- `operations`: required array of planned darktable operations
-- `error`: object or `null`
+- `status`: `"ok"` or `"error"`
+- `message`: user-visible assistant text
+- `operations`: ordered list of planned darktable operations
+- `error`: present only when `status == "error"`
 
 ## Operation model
 
-The current operation model is intentionally generic enough to scale:
-
-- `kind: "set-float"` means the desktop should write a numeric value
+- `kind: "set-float"` means write a numeric value
 - `target.type: "darktable-action"` means the target is a darktable action path
-- `target.actionPath` identifies the control to read/write
-- `value.mode: "delta"` means read the current value and add `number`
+- `value.mode: "delta"` means add `number` to the current value
 - `value.mode: "set"` means assign `number` directly
 
-The first concrete target is exposure via `iop/exposure/exposure`.
+## Codex app server flow
 
-## Request snapshot
+The local Python server uses `codex app-server` over `stdio://` JSON-RPC.
 
-Darktable now sends a live image snapshot with every chat request:
+For each darktable conversation:
 
-- `capabilities`: write manifest sourced from the execution catalog, including range limits and supported modes
-- `metadata`: camera/file identity and EXIF values from the active darkroom image
-- `controls`: current readable agent control values, sourced from the execution catalog
-- `history`: applied darkroom history items up to the current history position
-
-This request shape separates what darktable can do from the current image
-state. `capabilities` is the server-side write manifest, while `imageState` is
-the server-side read API for the active image. It is still scaffolding, but it
-is intended to scale into richer agent planning instead of special-casing
-exposure forever.
-
-## Mock behavior
-
-- `mockResponseId == "chat-echo"`: assistant text only, no operations
-- `mockResponseId == "exposure-plus-0.7"`: one planned `set-float` delta operation for `+0.7`
-- `mockResponseId == "exposure-minus-0.7"`: one planned `set-float` delta operation for `-0.7`
-- `mockResponseId == "exposure-sequence-plus-0.7"`: two ordered planned `set-float` delta operations for `+0.2` then `+0.5`
-- `mockResponseId == "exposure-set-1.25"`: one planned `set-float` absolute set operation to `1.25`
-- `mockResponseId == "exposure-clamp-max"`: one planned `set-float` absolute set above the supported range so darktable clamps to the exposure max
-- `mockResponseId == "exposure-clamp-min"`: one planned `set-float` absolute set below the supported range so darktable clamps to the exposure min
-- `mockResponseId == "unsupported-action"`: one planned operation with an unsupported action path so darktable can report a blocked execution result
-- `mockResponseId == "status-summary"`: assistant status text only, no operations
-- `mockResponseId == null`: defaults to `exposure-plus-0.7`
+1. The server initializes a local Codex app-server client.
+2. The server starts or reuses a Codex thread mapped to `conversationId`.
+3. The server submits the current request snapshot as turn input.
+4. Codex returns structured JSON constrained by the local output schema.
+5. The Python server wraps that plan into the stable darktable response envelope.
 
 ## Validation and errors
 
 - The server validates the full request body and rejects unknown fields.
-- Malformed payloads return `4xx` with `status: "error"`, an empty `operations` array, and an `error` object.
-- If `requestId` or `conversationId` cannot be read from an invalid payload, the server returns empty strings for those fields so the response envelope stays structurally stable.
+- The server rejects image-state controls that do not match the capability manifest.
+- Backend failures from the Codex app server return `status: "error"` with an empty `operations` array.

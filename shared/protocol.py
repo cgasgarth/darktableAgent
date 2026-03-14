@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = "2.0"
-DEFAULT_MOCK_RESPONSE_ID = "exposure-plus-0.7"
 
 
 class StrictBaseModel(BaseModel):
@@ -99,11 +98,10 @@ class RequestEnvelope(StrictBaseModel):
     uiContext: UIContext
     capabilities: list[Capability] = Field(min_length=1)
     imageState: ImageState
-    mockResponseId: str | None = None
 
     @model_validator(mode="after")
     def validate_capability_consistency(self) -> "RequestEnvelope":
-        capability_by_id = {}
+        capability_by_id: dict[str, Capability] = {}
         for capability in self.capabilities:
             if capability.capabilityId in capability_by_id:
                 raise ValueError(f"duplicate capabilityId: {capability.capabilityId}")
@@ -133,6 +131,25 @@ class OperationTarget(StrictBaseModel):
 class OperationValue(StrictBaseModel):
     mode: Literal["delta", "set"]
     number: float
+
+
+class PlannedOperationDraft(StrictBaseModel):
+    operationId: str = Field(min_length=1)
+    kind: Literal["set-float"]
+    target: OperationTarget
+    value: OperationValue
+
+
+class AgentPlan(StrictBaseModel):
+    assistantText: str = Field(min_length=1)
+    operations: list[PlannedOperationDraft]
+
+    @model_validator(mode="after")
+    def validate_operation_ids(self) -> "AgentPlan":
+        operation_ids = [operation.operationId for operation in self.operations]
+        if len(operation_ids) != len(set(operation_ids)):
+            raise ValueError("operationId values must be unique")
+        return self
 
 
 class Operation(StrictBaseModel):
@@ -177,241 +194,27 @@ class ProtocolError(Exception):
         self.status_code = status_code
 
 
-def build_mock_response_catalog(request: RequestEnvelope) -> dict[str, ResponseEnvelope]:
-    exposure_up = ResponseEnvelope(
+def build_response_from_plan(request: RequestEnvelope, plan: AgentPlan) -> ResponseEnvelope:
+    return ResponseEnvelope(
         requestId=request.requestId,
         conversationId=request.conversationId,
         status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text=(
-                "Mock agent: increasing the current image exposure by +0.7 EV "
-                "through the exposure slider."
-            ),
-        ),
+        message=AssistantMessage(role="assistant", text=plan.assistantText),
         operations=[
             Operation(
-                operationId="op-exposure-plus-0.7",
-                kind="set-float",
+                operationId=operation.operationId,
+                kind=operation.kind,
                 status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/exposure",
-                ),
-                value=OperationValue(mode="delta", number=0.7),
+                target=operation.target,
+                value=operation.value,
             )
+            for operation in plan.operations
         ],
         error=None,
     )
 
-    exposure_down = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text=(
-                "Mock agent: decreasing the current image exposure by -0.7 EV "
-                "through the exposure slider."
-            ),
-        ),
-        operations=[
-            Operation(
-                operationId="op-exposure-minus-0.7",
-                kind="set-float",
-                status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/exposure",
-                ),
-                value=OperationValue(mode="delta", number=-0.7),
-            )
-        ],
-        error=None,
-    )
 
-    exposure_sequence = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text=(
-                "Mock agent: running an ordered two-step exposure edit "
-                "(+0.2 EV, then +0.5 EV)."
-            ),
-        ),
-        operations=[
-            Operation(
-                operationId="op-exposure-plus-0.2",
-                kind="set-float",
-                status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/exposure",
-                ),
-                value=OperationValue(mode="delta", number=0.2),
-            ),
-            Operation(
-                operationId="op-exposure-plus-0.5",
-                kind="set-float",
-                status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/exposure",
-                ),
-                value=OperationValue(mode="delta", number=0.5),
-            ),
-        ],
-        error=None,
-    )
-
-    exposure_set = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text="Mock agent: setting exposure to exactly +1.25 EV.",
-        ),
-        operations=[
-            Operation(
-                operationId="op-exposure-set-1.25",
-                kind="set-float",
-                status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/exposure",
-                ),
-                value=OperationValue(mode="set", number=1.25),
-            )
-        ],
-        error=None,
-    )
-
-    exposure_clamp_max = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text="Mock agent: pushing exposure above the supported range to test max clamping.",
-        ),
-        operations=[
-            Operation(
-                operationId="op-exposure-clamp-max",
-                kind="set-float",
-                status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/exposure",
-                ),
-                value=OperationValue(mode="set", number=99.0),
-            )
-        ],
-        error=None,
-    )
-
-    exposure_clamp_min = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text="Mock agent: pushing exposure below the supported range to test min clamping.",
-        ),
-        operations=[
-            Operation(
-                operationId="op-exposure-clamp-min",
-                kind="set-float",
-                status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/exposure",
-                ),
-                value=OperationValue(mode="set", number=-99.0),
-            )
-        ],
-        error=None,
-    )
-
-    unsupported_action = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text=(
-                "Mock agent: attempting one unsupported action so darktable "
-                "can report a blocked operation cleanly."
-            ),
-        ),
-        operations=[
-            Operation(
-                operationId="op-unsupported-action",
-                kind="set-float",
-                status="planned",
-                target=OperationTarget(
-                    type="darktable-action",
-                    actionPath="iop/exposure/not-real",
-                ),
-                value=OperationValue(mode="delta", number=0.7),
-            )
-        ],
-        error=None,
-    )
-
-    status_summary = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text=(
-                "Mock agent status: server reachable, chat contract valid, "
-                "and exposure edits are ready to apply."
-            ),
-        ),
-        operations=[],
-        error=None,
-    )
-
-    chat_echo = ResponseEnvelope(
-        requestId=request.requestId,
-        conversationId=request.conversationId,
-        status="ok",
-        message=AssistantMessage(
-            role="assistant",
-            text=(
-                f"Echo: {request.message.text} "
-                f"(view={request.uiContext.view}, imageId={request.uiContext.imageId}, "
-                f"imageName={request.uiContext.imageName})"
-            ),
-        ),
-        operations=[],
-        error=None,
-    )
-
-    return {
-        DEFAULT_MOCK_RESPONSE_ID: exposure_up,
-        "exposure-minus-0.7": exposure_down,
-        "exposure-sequence-plus-0.7": exposure_sequence,
-        "exposure-set-1.25": exposure_set,
-        "exposure-clamp-max": exposure_clamp_max,
-        "exposure-clamp-min": exposure_clamp_min,
-        "unsupported-action": unsupported_action,
-        "status-summary": status_summary,
-        "chat-echo": chat_echo,
-    }
-
-
-def build_mock_response(request: RequestEnvelope) -> ResponseEnvelope:
-    mock_id = request.mockResponseId or DEFAULT_MOCK_RESPONSE_ID
-    catalog = build_mock_response_catalog(request)
-    return catalog.get(mock_id, catalog[DEFAULT_MOCK_RESPONSE_ID])
-
-
-def parse_request_ids(payload: object) -> tuple[str, str]:
+def parse_request_ids(payload: Any) -> tuple[str, str]:
     if not isinstance(payload, dict):
         return "", ""
     request_id = payload.get("requestId")

@@ -341,7 +341,6 @@ typedef struct dt_develop_t
     GtkWidget *status_label, *error_label, *spinner;
     gchar *conversation_id;
     gchar *autorun_message;
-    gchar *mock_response_id;
     gchar *test_report_path;
     guint autorun_source_id;
     gboolean is_loading;

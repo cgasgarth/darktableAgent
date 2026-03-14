@@ -28,19 +28,20 @@ The current intended flow is:
 
 1. A user interacts with the agent inside darktable.
 2. darktable sends structured chat and editing context to the Python server.
-3. The Python server calls the model backend and decides what actions should be taken.
+3. The Python server calls the Codex app server and decides what actions should be taken.
 4. The server returns structured responses describing requested edits, execution status, and readback state.
 5. darktable applies or displays those results inside the integrated UI.
 
 ## Project Status
 
-This repository is in its initial setup stage.
+This repository is in its initial agent-integration stage.
 
 - The monorepo structure is in place.
 - Directory boundaries are defined.
 - `darktable/` now contains the official darktable 5.4.1 stable source release as plain source files, not a nested git clone.
 - The custom local build installs into `darktable/.install-5.4.1`.
-- `server/` and `shared/` currently contain a mock chat/edit contract that is useful for wiring darktable to a real local server. The current mock applies exposure through darktable's action system, but it should not be treated as the final agent contract.
+- `server/` now bridges darktable requests into the Codex app server and returns structured operation plans back to darktable.
+- `shared/` defines the live chat/edit contract used between darktable and the local Python server.
 
 ## Planned Priorities
 
@@ -54,10 +55,11 @@ This repository is in its initial setup stage.
 
 - Rebuild the local custom darktable with `./scripts/build_darktable_local.sh`
 - Run the local custom darktable with `./scripts/run_darktable_local.sh`
-- Run the mock server-to-darktable exposure smoke check with `./scripts/mock_exposure_smoke.sh`
-- Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, `npm run darktable:build-and-start`, and `npm run mock:smoke`
+- Run the live Codex server-to-darktable exposure smoke check with `./scripts/agent_exposure_smoke.sh`
+- Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, `npm run darktable:build-and-start`, `npm run server:start`, and `npm run agent:smoke`
 - The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
 - The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
+- The server expects a working local `codex` CLI login because it uses `codex app-server` as the planning backend
 
 ## License
 

@@ -446,7 +446,6 @@ void dt_agent_chat_request_clear(dt_agent_chat_request_t *request)
   if(request->capabilities)
     g_ptr_array_unref(request->capabilities);
   dt_agent_image_state_clear(&request->image_state);
-  g_free(request->mock_response_id);
   memset(request, 0, sizeof(*request));
 }
 
@@ -469,7 +468,6 @@ void dt_agent_chat_request_copy(dt_agent_chat_request_t *dest,
     g_ptr_array_add(dest->capabilities, dt_agent_capability_copy(capability));
   }
   dt_agent_image_state_copy(&dest->image_state, &src->image_state);
-  dest->mock_response_id = g_strdup(src->mock_response_id);
 }
 
 void dt_agent_chat_operation_free(gpointer data)
@@ -610,12 +608,6 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
 
   _serialize_capabilities(builder, request->capabilities);
   _serialize_image_state(builder, &request->image_state);
-
-  json_builder_set_member_name(builder, "mockResponseId");
-  if(request->mock_response_id)
-    json_builder_add_string_value(builder, request->mock_response_id);
-  else
-    json_builder_add_null_value(builder);
 
   json_builder_end_object(builder);
 

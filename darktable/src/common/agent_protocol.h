@@ -29,7 +29,6 @@ G_BEGIN_DECLS
 #define DT_AGENT_CHAT_SERVER_URL_CONF "plugins/ai/agent/server_url"
 #define DT_AGENT_CHAT_TIMEOUT_SECONDS_CONF "plugins/ai/agent/timeout_seconds"
 #define DT_AGENT_CHAT_DEFAULT_ENDPOINT "http://127.0.0.1:8001/v1/chat"
-#define DT_AGENT_CHAT_DEFAULT_MOCK_RESPONSE_ID "exposure-plus-0.7"
 
 typedef enum dt_agent_operation_kind_t
 {
@@ -61,7 +60,6 @@ typedef struct dt_agent_chat_request_t
   dt_agent_ui_context_t ui_context;
   GPtrArray *capabilities;
   dt_agent_image_state_t image_state;
-  gchar *mock_response_id;
 } dt_agent_chat_request_t;
 
 typedef struct dt_agent_chat_operation_t

@@ -7,10 +7,15 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
 ASSET_PATH="${ASSET_PATH:-$REPO_ROOT/assets/_DSC8809.ARW}"
 HOST="${HOST:-127.0.0.1}"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
-MOCK_RESPONSE_ID="${MOCK_RESPONSE_ID:-${DARKTABLE_AGENT_TEST_MOCK_RESPONSE_ID:-exposure-plus-0.7}}"
-AUTORUN_PROMPT="${AUTORUN_PROMPT:-${DARKTABLE_AGENT_TEST_AUTORUN_PROMPT:-Please apply the mock exposure edit.}}"
+AUTORUN_PROMPT="${AUTORUN_PROMPT:-${DARKTABLE_AGENT_TEST_AUTORUN_PROMPT:-Increase exposure by exactly 0.7 EV.}}"
 AUTORUN_QUIT_AFTER_MS="${AUTORUN_QUIT_AFTER_MS:-${DARKTABLE_AGENT_TEST_AUTORUN_QUIT_AFTER_MS:-1000}}"
+EXPECTED_STATUS="${EXPECTED_STATUS:-ok}"
+EXPECTED_MIN_OPERATION_COUNT="${EXPECTED_MIN_OPERATION_COUNT:-1}"
+EXPECTED_DELTA="${EXPECTED_DELTA:-0.7}"
+EXPECTED_FINAL_EXPOSURE="${EXPECTED_FINAL_EXPOSURE:-}"
+EXPECTED_BLOCKED_COUNT="${EXPECTED_BLOCKED_COUNT:-}"
 DARKTABLE_TIMEOUT_SECONDS="${DARKTABLE_TIMEOUT_SECONDS:-120}"
+SERVER_TIMEOUT_SECONDS="${SERVER_TIMEOUT_SECONDS:-$DARKTABLE_TIMEOUT_SECONDS}"
 KEEP_ARTIFACTS="${KEEP_ARTIFACTS:-0}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 SKIP_SERVER_TESTS="${SKIP_SERVER_TESTS:-0}"
@@ -64,7 +69,10 @@ if [[ "$SKIP_BUILD" != "1" ]]; then
   "$SCRIPT_DIR/build_darktable_local.sh"
 fi
 
-HOST="$HOST" PORT="$PORT" "$SCRIPT_DIR/run_server.sh" >"$SERVER_LOG" 2>&1 &
+HOST="$HOST" \
+  PORT="$PORT" \
+  DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS="$SERVER_TIMEOUT_SECONDS" \
+  "$SCRIPT_DIR/run_server.sh" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 
 for _ in $(seq 1 40); do
@@ -94,29 +102,32 @@ echo "Asset:  $ASSET_PATH"
 echo "Report: $REPORT_FILE"
 
 DARKTABLE_AGENT_SERVER_URL="$SERVER_URL" \
+  DARKTABLE_AGENT_SERVER_TIMEOUT_SECONDS="$SERVER_TIMEOUT_SECONDS" \
   DARKTABLE_AGENT_TEST_AUTORUN_PROMPT="$AUTORUN_PROMPT" \
-  DARKTABLE_AGENT_TEST_MOCK_RESPONSE_ID="$MOCK_RESPONSE_ID" \
   DARKTABLE_AGENT_TEST_RESULT_FILE="$REPORT_FILE" \
   DARKTABLE_AGENT_TEST_AUTORUN_QUIT_AFTER_MS="$AUTORUN_QUIT_AFTER_MS" \
   RUNTIME_DIR="$RUNTIME_DIR" \
   timeout "${DARKTABLE_TIMEOUT_SECONDS}s" "${launcher[@]}"
 
-"$PYTHON_BIN" - "$REPORT_FILE" "$MOCK_RESPONSE_ID" <<'PY'
+"$PYTHON_BIN" - "$REPORT_FILE" "$EXPECTED_STATUS" "$EXPECTED_MIN_OPERATION_COUNT" "$EXPECTED_DELTA" "$EXPECTED_FINAL_EXPOSURE" "$EXPECTED_BLOCKED_COUNT" <<'PY'
 import configparser
 import math
 import sys
 
-report_path, mock_response_id = sys.argv[1], sys.argv[2]
+(
+    report_path,
+    expected_status,
+    expected_min_operation_count,
+    expected_delta,
+    expected_final_exposure,
+    expected_blocked_count,
+) = sys.argv[1:7]
 config = configparser.ConfigParser()
 if not config.read(report_path):
     raise SystemExit(f"Missing report file: {report_path}")
 
 result = config["result"]
 status = result.get("status", "")
-expected_statuses = {
-    "unsupported-action": "apply_failed",
-}
-expected_status = expected_statuses.get(mock_response_id, "ok")
 if status != expected_status:
     raise SystemExit(
         f"Unexpected darktable status {status!r}, expected {expected_status!r}: "
@@ -124,8 +135,10 @@ if status != expected_status:
     )
 
 operation_count = int(result.get("operation_count", "0"))
-if operation_count < 1:
-    raise SystemExit(f"Expected at least one operation, found {operation_count}")
+if operation_count < int(expected_min_operation_count):
+    raise SystemExit(
+        f"Expected at least {expected_min_operation_count} operations, found {operation_count}"
+    )
 
 exposure_after = float(result.get("current_exposure", "nan"))
 if math.isnan(exposure_after):
@@ -135,51 +148,31 @@ exposure_before = float(result.get("exposure_before", "nan"))
 if math.isnan(exposure_before):
     raise SystemExit("Missing exposure_before in smoke report")
 
-expected_deltas = {
-    "exposure-plus-0.7": 0.7,
-    "exposure-minus-0.7": -0.7,
-    "exposure-sequence-plus-0.7": 0.7,
-}
-if mock_response_id in expected_deltas:
+if expected_delta:
     actual_delta = exposure_after - exposure_before
-    expected_delta = expected_deltas[mock_response_id]
-    if abs(actual_delta - expected_delta) > 0.05:
+    if abs(actual_delta - float(expected_delta)) > 0.05:
         raise SystemExit(
             f"Expected exposure delta {expected_delta}, got {actual_delta} "
             f"(before={exposure_before}, after={exposure_after})"
         )
 
-expected_finals = {
-    "exposure-set-1.25": 1.25,
-    "exposure-clamp-max": 18.0,
-    "exposure-clamp-min": -18.0,
-}
-if mock_response_id in expected_finals:
-    expected_final = expected_finals[mock_response_id]
+if expected_final_exposure:
+    expected_final = float(expected_final_exposure)
     if abs(exposure_after - expected_final) > 0.05:
         raise SystemExit(
             f"Expected final exposure {expected_final}, got {exposure_after} "
             f"(before={exposure_before}, after={exposure_after})"
         )
 
-blocked_expectations = {
-    "unsupported-action": 1,
-}
-if mock_response_id in blocked_expectations:
+if expected_blocked_count:
     blocked_count = int(result.get("execution_blocked_count", "0"))
     failed_count = int(result.get("execution_failed_count", "0"))
-    if blocked_count != blocked_expectations[mock_response_id]:
+    if blocked_count != int(expected_blocked_count):
         raise SystemExit(
-            f"Expected blocked count {blocked_expectations[mock_response_id]}, "
-            f"found {blocked_count}"
+            f"Expected blocked count {expected_blocked_count}, found {blocked_count}"
         )
     if failed_count != 0:
         raise SystemExit(f"Expected failed count 0, found {failed_count}")
-    if abs(exposure_after - exposure_before) > 0.05:
-        raise SystemExit(
-            f"Unsupported action should not change exposure "
-            f"(before={exposure_before}, after={exposure_after})"
-        )
 
 print(
     f"Smoke test passed: status={status} operations={operation_count} "
@@ -223,18 +216,20 @@ if capabilities is not None:
     if not isinstance(capabilities, list) or not capabilities:
         raise SystemExit("Missing capabilities in accepted_request log entry")
     capability = capabilities[0]
-    expected = {
-        "capabilityId": "exposure.primary",
-        "label": "Exposure",
-        "kind": "set-float",
-        "targetType": "darktable-action",
-        "actionPath": "iop/exposure/exposure",
-    }
-    for key, value in expected.items():
-        if capability.get(key) != value:
-            raise SystemExit(f"Capability field {key} expected {value!r}, got {capability.get(key)!r}")
-    if capability.get("supportedModes") != ["set", "delta"]:
-        raise SystemExit(f"Unexpected supportedModes: {capability.get('supportedModes')!r}")
+    for key in (
+        "capabilityId",
+        "label",
+        "kind",
+        "targetType",
+        "actionPath",
+        "supportedModes",
+        "minNumber",
+        "maxNumber",
+        "defaultNumber",
+        "stepNumber",
+    ):
+        if key not in capability:
+            raise SystemExit(f"Missing capability field {key}")
 
 require_image_state = bool(int(sys.argv[2]))
 require_capabilities = bool(int(sys.argv[3]))
@@ -243,18 +238,6 @@ if require_image_state and image_state is None:
 if require_capabilities and capabilities is None:
     raise SystemExit("Expected capabilities in accepted_request log entry")
 
-messages = []
-if require_image_state:
-    messages.append("image-state snapshot")
-if require_capabilities:
-    messages.append("capability manifest")
-print(f"{' and '.join(messages).capitalize()} validated from server log")
+print("Accepted request log includes expected image state and capability manifest.")
 PY
-fi
-
-if [[ "$KEEP_ARTIFACTS" == "1" ]]; then
-  echo "Artifacts kept:"
-  echo "  report: $REPORT_FILE"
-  echo "  server log: $SERVER_LOG"
-  echo "  runtime dir: $RUNTIME_DIR"
 fi

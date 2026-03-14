@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -7,13 +8,14 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from server.codex_app_server import CodexAppServerBridge, CodexAppServerError
 from shared.protocol import (
     AssistantMessage,
     ErrorInfo,
     ProtocolError,
     RequestEnvelope,
     ResponseEnvelope,
-    build_mock_response,
+    build_response_from_plan,
     parse_request_ids,
 )
 
@@ -40,7 +42,12 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 logger.propagate = False
 
-app = FastAPI(title="darktableAgent server", version="0.1.0")
+app = FastAPI(title="darktableAgent server", version="0.2.0")
+_codex_bridge = CodexAppServerBridge()
+
+
+def get_codex_bridge() -> CodexAppServerBridge:
+    return _codex_bridge
 
 
 def build_error_response(
@@ -114,9 +121,35 @@ async def chat(request: RequestEnvelope) -> ResponseEnvelope:
                 "capabilityCount": len(request.capabilities),
                 "capabilities": [capability.model_dump() for capability in request.capabilities],
                 "imageState": request.imageState.model_dump(),
-                "mockResponseId": request.mockResponseId,
                 "messageText": request.message.text,
             }
         },
     )
-    return build_mock_response(request)
+
+    try:
+        turn_result = await asyncio.to_thread(get_codex_bridge().plan, request)
+    except CodexAppServerError as exc:
+        return build_error_response(
+            request_id=request.requestId,
+            conversation_id=request.conversationId,
+            code=exc.code,
+            message=exc.message,
+            status_code=exc.status_code,
+        )
+
+    response = build_response_from_plan(request, turn_result.plan)
+    logger.info(
+        "fulfilled_request",
+        extra={
+            "structured": {
+                "event": "fulfilled_request",
+                "requestId": request.requestId,
+                "conversationId": request.conversationId,
+                "codexThreadId": turn_result.thread_id,
+                "codexTurnId": turn_result.turn_id,
+                "operationCount": len(response.operations),
+                "assistantText": response.message.text,
+            }
+        },
+    )
+    return response

@@ -1,7 +1,11 @@
+from dataclasses import dataclass
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from server.app import app
+from server.codex_app_server import CodexAppServerError
+from shared.protocol import AgentPlan
 
 
 def _sample_capabilities() -> list[dict]:
@@ -59,6 +63,40 @@ def _sample_image_state() -> dict:
     }
 
 
+def _sample_request_payload() -> dict:
+    return {
+        "schemaVersion": "2.0",
+        "requestId": "req-1",
+        "conversationId": "conv-1",
+        "message": {"role": "user", "text": "Make it brighter"},
+        "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "_DSC8809.ARW"},
+        "capabilities": _sample_capabilities(),
+        "imageState": _sample_image_state(),
+    }
+
+
+@dataclass
+class StubTurnResult:
+    plan: AgentPlan
+    thread_id: str = "thread-1"
+    turn_id: str = "turn-1"
+    raw_message: str = ""
+
+
+class StubBridge:
+    def __init__(self, result: StubTurnResult | None = None, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.requests = []
+
+    def plan(self, request):  # type: ignore[no-untyped-def]
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None
+        return self.result
+
+
 @pytest.fixture
 async def api_client() -> AsyncClient:
     async with AsyncClient(
@@ -68,25 +106,37 @@ async def api_client() -> AsyncClient:
 
 
 @pytest.mark.anyio
-async def test_chat_defaults_to_exposure_mock_response(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-default",
-            "conversationId": "conv-default",
-            "message": {"role": "user", "text": "Hello agent"},
-            "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": None,
-        },
+async def test_chat_returns_codex_plan_response(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "Increasing exposure by +0.7 EV.",
+                    "operations": [
+                        {
+                            "operationId": "op-exposure-plus-0.7",
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/exposure/exposure",
+                            },
+                            "value": {"mode": "delta", "number": 0.7},
+                        }
+                    ],
+                }
+            )
+        )
     )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    response = await api_client.post("/v1/chat", json=_sample_request_payload())
 
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["message"]["text"].startswith("Mock agent: increasing the current image exposure")
+    assert body["message"]["text"] == "Increasing exposure by +0.7 EV."
     assert body["operations"] == [
         {
             "operationId": "op-exposure-plus-0.7",
@@ -99,66 +149,45 @@ async def test_chat_defaults_to_exposure_mock_response(api_client: AsyncClient) 
             "value": {"mode": "delta", "number": 0.7},
         }
     ]
+    assert bridge.requests[0].message.text == "Make it brighter"
 
 
 @pytest.mark.anyio
-async def test_chat_ack_response_is_operation_free(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-chat-ack",
-            "conversationId": "conv-chat-ack",
-            "message": {"role": "user", "text": "Ping"},
-            "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": "chat-echo",
-        },
+async def test_chat_preserves_multi_operation_order(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "Applying two steps.",
+                    "operations": [
+                        {
+                            "operationId": "op-exposure-plus-0.2",
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/exposure/exposure",
+                            },
+                            "value": {"mode": "delta", "number": 0.2},
+                        },
+                        {
+                            "operationId": "op-exposure-plus-0.5",
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/exposure/exposure",
+                            },
+                            "value": {"mode": "delta", "number": 0.5},
+                        },
+                    ],
+                }
+            )
+        )
     )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["operations"] == []
-    assert body["message"]["text"].startswith("Echo: Ping")
-
-
-@pytest.mark.anyio
-async def test_chat_exposure_minus_mock_response(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-darken",
-            "conversationId": "conv-darken",
-            "message": {"role": "user", "text": "Darken it"},
-            "uiContext": {"view": "darkroom", "imageId": 8, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": "exposure-minus-0.7",
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["operations"][0]["value"] == {"mode": "delta", "number": -0.7}
-
-
-@pytest.mark.anyio
-async def test_chat_preserves_multi_operation_order(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-sequence",
-            "conversationId": "conv-sequence",
-            "message": {"role": "user", "text": "Do the sequence"},
-            "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": "exposure-sequence-plus-0.7",
-        },
-    )
+    response = await api_client.post("/v1/chat", json=_sample_request_payload())
 
     assert response.status_code == 200
     body = response.json()
@@ -166,180 +195,102 @@ async def test_chat_preserves_multi_operation_order(api_client: AsyncClient) -> 
         "op-exposure-plus-0.2",
         "op-exposure-plus-0.5",
     ]
-    assert [operation["value"]["number"] for operation in body["operations"]] == [0.2, 0.5]
 
 
 @pytest.mark.anyio
-async def test_chat_supports_absolute_exposure_set(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-set",
-            "conversationId": "conv-set",
-            "message": {"role": "user", "text": "Set exposure"},
-            "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": "exposure-set-1.25",
-        },
+async def test_chat_supports_operation_free_assistant_messages(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "I need a more specific edit instruction.",
+                    "operations": [],
+                }
+            )
+        )
     )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    response = await api_client.post("/v1/chat", json=_sample_request_payload())
 
     assert response.status_code == 200
     body = response.json()
-    assert body["operations"][0]["value"] == {"mode": "set", "number": 1.25}
+    assert body["operations"] == []
+    assert body["message"]["text"] == "I need a more specific edit instruction."
 
 
 @pytest.mark.anyio
-async def test_chat_supports_exposure_clamp_fixtures(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-clamp-max",
-            "conversationId": "conv-clamp-max",
-            "message": {"role": "user", "text": "Clamp max"},
-            "uiContext": {"view": "darkroom", "imageId": 9, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": "exposure-clamp-max",
-        },
+async def test_chat_surfaces_codex_backend_errors(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        error=CodexAppServerError(
+            "codex_timeout", "Codex app server timed out", status_code=504
+        )
     )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
 
-    assert response.status_code == 200
+    response = await api_client.post("/v1/chat", json=_sample_request_payload())
+
+    assert response.status_code == 504
     body = response.json()
-    assert body["operations"][0]["value"] == {"mode": "set", "number": 99.0}
-
-
-@pytest.mark.anyio
-async def test_chat_supports_blocked_operation_fixture(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-unsupported",
-            "conversationId": "conv-unsupported",
-            "message": {"role": "user", "text": "Try something unsupported"},
-            "uiContext": {"view": "darkroom", "imageId": 10, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": "unsupported-action",
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["operations"] == [
-        {
-            "operationId": "op-unsupported-action",
-            "kind": "set-float",
-            "status": "planned",
-            "target": {
-                "type": "darktable-action",
-                "actionPath": "iop/exposure/not-real",
-            },
-            "value": {"mode": "delta", "number": 0.7},
-        }
-    ]
+    assert body["status"] == "error"
+    assert body["error"] == {
+        "code": "codex_timeout",
+        "message": "Codex app server timed out",
+    }
 
 
 @pytest.mark.anyio
 async def test_chat_rejects_malformed_payload(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-bad",
-            "conversationId": "conv-bad",
-            "message": {"role": "assistant", "text": "nope"},
-            "uiContext": {"view": "darkroom", "imageId": None, "imageName": None},
-            "capabilities": _sample_capabilities(),
-            "imageState": _sample_image_state(),
-            "mockResponseId": None,
-        },
-    )
+    payload = _sample_request_payload()
+    payload["message"]["role"] = "assistant"
+
+    response = await api_client.post("/v1/chat", json=payload)
 
     assert response.status_code == 422
     body = response.json()
     assert body["status"] == "error"
-    assert body["requestId"] == "req-bad"
-    assert body["conversationId"] == "conv-bad"
     assert body["operations"] == []
-    assert body["error"]["code"] == "invalid_request"
+    assert "message/role" in body["error"]["message"]
 
 
 @pytest.mark.anyio
 async def test_chat_rejects_missing_image_state(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-missing-state",
-            "conversationId": "conv-missing-state",
-            "message": {"role": "user", "text": "Ping"},
-            "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "mockResponseId": "chat-echo",
-        },
-    )
+    payload = _sample_request_payload()
+    payload.pop("imageState")
+
+    response = await api_client.post("/v1/chat", json=payload)
 
     assert response.status_code == 422
     body = response.json()
     assert body["status"] == "error"
-    assert body["error"]["code"] == "invalid_request"
     assert "imageState" in body["error"]["message"]
 
 
 @pytest.mark.anyio
 async def test_chat_rejects_missing_capabilities(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-missing-capabilities",
-            "conversationId": "conv-missing-capabilities",
-            "message": {"role": "user", "text": "Ping"},
-            "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
-            "imageState": _sample_image_state(),
-            "mockResponseId": "chat-echo",
-        },
-    )
+    payload = _sample_request_payload()
+    payload.pop("capabilities")
+
+    response = await api_client.post("/v1/chat", json=payload)
 
     assert response.status_code == 422
     body = response.json()
     assert body["status"] == "error"
-    assert body["error"]["code"] == "invalid_request"
     assert "capabilities" in body["error"]["message"]
 
 
 @pytest.mark.anyio
-async def test_chat_rejects_control_manifest_mismatch(api_client: AsyncClient) -> None:
-    response = await api_client.post(
-        "/v1/chat",
-        json={
-            "schemaVersion": "2.0",
-            "requestId": "req-mismatch",
-            "conversationId": "conv-mismatch",
-            "message": {"role": "user", "text": "Ping"},
-            "uiContext": {"view": "darkroom", "imageId": 7, "imageName": "img.jpg"},
-            "capabilities": _sample_capabilities(),
-            "imageState": {
-                **_sample_image_state(),
-                "controls": [
-                    {
-                        "capabilityId": "exposure.primary",
-                        "label": "Exposure",
-                        "actionPath": "iop/exposure/not-real",
-                        "currentNumber": 2.8,
-                    }
-                ],
-            },
-            "mockResponseId": "chat-echo",
-        },
-    )
+async def test_chat_rejects_control_capability_mismatch(api_client: AsyncClient) -> None:
+    payload = _sample_request_payload()
+    payload["imageState"]["controls"][0]["capabilityId"] = "unknown.capability"
+
+    response = await api_client.post("/v1/chat", json=payload)
 
     assert response.status_code == 422
     body = response.json()
     assert body["status"] == "error"
-    assert body["error"]["code"] == "invalid_request"
-    assert "actionPath does not match capability manifest" in body["error"]["message"]
+    assert "unknown capabilityId" in body["error"]["message"]

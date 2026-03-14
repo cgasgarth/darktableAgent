@@ -84,9 +84,7 @@ DT_MODULE(1)
 
 #define DT_AGENT_CHAT_AUTORUN_MESSAGE_ENV "DARKTABLE_AGENT_AUTORUN_MESSAGE"
 #define DT_AGENT_CHAT_EXIT_AFTER_AUTORUN_ENV "DARKTABLE_AGENT_EXIT_AFTER_AUTORUN"
-#define DT_AGENT_CHAT_MOCK_RESPONSE_ENV "DARKTABLE_AGENT_MOCK_RESPONSE_ID"
 #define DT_AGENT_CHAT_TEST_AUTORUN_MESSAGE_ENV "DARKTABLE_AGENT_TEST_AUTORUN_PROMPT"
-#define DT_AGENT_CHAT_TEST_MOCK_RESPONSE_ENV "DARKTABLE_AGENT_TEST_MOCK_RESPONSE_ID"
 #define DT_AGENT_CHAT_TEST_REPORT_ENV "DARKTABLE_AGENT_TEST_RESULT_FILE"
 #define DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV "DARKTABLE_AGENT_TEST_AUTORUN_QUIT_AFTER_MS"
 
@@ -229,7 +227,6 @@ void cleanup(dt_view_t *self)
     g_source_remove(dev->agent_chat.autorun_source_id);
   g_free(dev->agent_chat.conversation_id);
   g_free(dev->agent_chat.autorun_message);
-  g_free(dev->agent_chat.mock_response_id);
   g_free(dev->agent_chat.test_report_path);
 
   dt_dev_cleanup(dev);
@@ -1847,9 +1844,6 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
   request->request_id = g_uuid_string_random();
   request->conversation_id = g_strdup(dev->agent_chat.conversation_id);
   request->message_text = g_strdup(message_text);
-  request->mock_response_id = g_strdup(dev->agent_chat.mock_response_id
-                                         ? dev->agent_chat.mock_response_id
-                                         : DT_AGENT_CHAT_DEFAULT_MOCK_RESPONSE_ID);
   _agent_chat_fill_ui_context(request);
   if(!dt_agent_capabilities_collect(request->capabilities, error))
   {
@@ -2107,7 +2101,7 @@ static gboolean _agent_chat_autorun_if_requested(gpointer user_data)
 
   dev->agent_chat.autorun_sent = TRUE;
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.button), TRUE);
-  _agent_chat_append_message(dev, _("system"), _("running autorun mock request"));
+  _agent_chat_append_message(dev, _("system"), _("running autorun agent request"));
   _agent_chat_submit(dev, dev->agent_chat.autorun_message, TRUE);
   return G_SOURCE_REMOVE;
 }
@@ -3787,14 +3781,10 @@ void enter(dt_view_t *self)
   dt_image_check_camera_missing_sample(&dev->image_storage);
 
   g_free(dev->agent_chat.autorun_message);
-  g_free(dev->agent_chat.mock_response_id);
   g_free(dev->agent_chat.test_report_path);
   dev->agent_chat.autorun_message
     = _agent_chat_dup_env_pair(DT_AGENT_CHAT_TEST_AUTORUN_MESSAGE_ENV,
                                DT_AGENT_CHAT_AUTORUN_MESSAGE_ENV);
-  dev->agent_chat.mock_response_id
-    = _agent_chat_dup_env_pair(DT_AGENT_CHAT_TEST_MOCK_RESPONSE_ENV,
-                               DT_AGENT_CHAT_MOCK_RESPONSE_ENV);
   dev->agent_chat.test_report_path = _agent_chat_dup_env(DT_AGENT_CHAT_TEST_REPORT_ENV);
   dev->agent_chat.exit_after_autorun
     = _agent_chat_env_enabled(DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV)
