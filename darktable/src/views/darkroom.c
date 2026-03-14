@@ -1980,25 +1980,70 @@ static void _agent_chat_set_loading(dt_develop_t *dev, const gboolean is_loading
   _agent_chat_update_sensitivity(dev);
 }
 
-static void _agent_chat_popover_closed(GtkPopover *popover, dt_develop_t *dev)
+static void _agent_chat_window_init(GtkWidget *widget)
 {
-  (void)popover;
+  const gint width = MAX(DT_PIXEL_APPLY_DPI(420),
+                         dt_conf_get_int("plugins/darkroom/agent_chat/window_w"));
+  const gint height = MAX(DT_PIXEL_APPLY_DPI(520),
+                          dt_conf_get_int("plugins/darkroom/agent_chat/window_h"));
+  const gint x = MAX(0, dt_conf_get_int("plugins/darkroom/agent_chat/window_x"));
+  const gint y = MAX(0, dt_conf_get_int("plugins/darkroom/agent_chat/window_y"));
+
+  gtk_window_set_default_size(GTK_WINDOW(widget), width, height);
+  gtk_window_move(GTK_WINDOW(widget), x, y);
+  gtk_window_resize(GTK_WINDOW(widget), width, height);
+}
+
+static void _agent_chat_window_write_config(GtkWidget *widget)
+{
+  if(!widget || !gtk_widget_get_window(widget))
+    return;
+
+  GtkAllocation allocation;
+  gtk_widget_get_allocation(widget, &allocation);
+  gint x = 0, y = 0;
+  gtk_window_get_position(GTK_WINDOW(widget), &x, &y);
+  dt_conf_set_int("plugins/darkroom/agent_chat/window_x", x);
+  dt_conf_set_int("plugins/darkroom/agent_chat/window_y", y);
+  dt_conf_set_int("plugins/darkroom/agent_chat/window_w", allocation.width);
+  dt_conf_set_int("plugins/darkroom/agent_chat/window_h", allocation.height);
+}
+
+static gboolean _agent_chat_window_delete_callback(GtkWidget *widget,
+                                                   GdkEvent *event,
+                                                   dt_develop_t *dev)
+{
+  (void)event;
+  _agent_chat_window_write_config(widget);
+  gtk_widget_hide(widget);
   if(dev->agent_chat.button)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.button), FALSE);
+  return TRUE;
+}
+
+static void _agent_chat_display_window(dt_develop_t *dev)
+{
+  if(!dev || !dev->agent_chat.floating_window)
+    return;
+
+  if(!gtk_widget_get_realized(dev->agent_chat.floating_window))
+    _agent_chat_window_init(dev->agent_chat.floating_window);
+
+  gtk_widget_show_all(dev->agent_chat.floating_window);
+  gtk_window_present(GTK_WINDOW(dev->agent_chat.floating_window));
 }
 
 static void _agent_chat_toggle_callback(GtkToggleButton *button, dt_develop_t *dev)
 {
   if(gtk_toggle_button_get_active(button))
   {
-    gtk_popover_set_relative_to(GTK_POPOVER(dev->agent_chat.floating_window),
-                                GTK_WIDGET(button));
-    _toolbar_show_popup(dev->agent_chat.floating_window);
+    _agent_chat_display_window(dev);
     if(dev->agent_chat.input_entry)
       gtk_widget_grab_focus(dev->agent_chat.input_entry);
   }
   else if(dev->agent_chat.floating_window)
   {
+    _agent_chat_window_write_config(dev->agent_chat.floating_window);
     gtk_widget_hide(dev->agent_chat.floating_window);
   }
 }
@@ -3280,16 +3325,26 @@ void gui_init(dt_view_t *self)
     dt_view_manager_module_toolbox_add(darktable.view_manager,
                                        dev->agent_chat.button, DT_VIEW_DARKROOM);
 
-    dev->agent_chat.floating_window = gtk_popover_new(dev->agent_chat.button);
-    gtk_popover_set_position(GTK_POPOVER(dev->agent_chat.floating_window), GTK_POS_LEFT);
-    gtk_popover_set_modal(GTK_POPOVER(dev->agent_chat.floating_window), TRUE);
-    g_signal_connect(G_OBJECT(dev->agent_chat.floating_window), "closed",
-                     G_CALLBACK(_agent_chat_popover_closed), dev);
+    dev->agent_chat.floating_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_widget_set_name(dev->agent_chat.floating_window, "agent_chat_window");
+    gtk_window_set_icon_name(GTK_WINDOW(dev->agent_chat.floating_window), "darktable");
+    gtk_window_set_title(GTK_WINDOW(dev->agent_chat.floating_window), _("darktable - assistant chat"));
+    gtk_window_set_transient_for(GTK_WINDOW(dev->agent_chat.floating_window),
+                                 GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)));
+    g_signal_connect(G_OBJECT(dev->agent_chat.floating_window), "delete-event",
+                     G_CALLBACK(_agent_chat_window_delete_callback), dev);
+    g_signal_connect(G_OBJECT(dev->agent_chat.floating_window), "event",
+                     G_CALLBACK(dt_shortcut_dispatcher), NULL);
 
     GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_PIXEL_APPLY_DPI(6));
-    gtk_container_set_border_width(GTK_CONTAINER(outer), DT_PIXEL_APPLY_DPI(10));
-    gtk_widget_set_size_request(outer, DT_PIXEL_APPLY_DPI(360), DT_PIXEL_APPLY_DPI(280));
+    gtk_container_set_border_width(GTK_CONTAINER(outer), DT_PIXEL_APPLY_DPI(14));
+    gtk_widget_set_size_request(outer, DT_PIXEL_APPLY_DPI(480), DT_PIXEL_APPLY_DPI(560));
     gtk_container_add(GTK_CONTAINER(dev->agent_chat.floating_window), outer);
+
+    GtkWidget *title_label = gtk_label_new(_("Assistant chat"));
+    gtk_widget_set_halign(title_label, GTK_ALIGN_START);
+    gtk_style_context_add_class(gtk_widget_get_style_context(title_label), "heading");
+    gtk_box_pack_start(GTK_BOX(outer), title_label, FALSE, FALSE, 0);
 
     GtkWidget *status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(6));
     gtk_box_pack_start(GTK_BOX(outer), status_row, FALSE, FALSE, 0);
@@ -3320,6 +3375,7 @@ void gui_init(dt_view_t *self)
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_widget_set_hexpand(scroll, TRUE);
     gtk_box_pack_start(GTK_BOX(outer), scroll, TRUE, TRUE, 0);
 
     dev->agent_chat.conversation_view = gtk_text_view_new();
