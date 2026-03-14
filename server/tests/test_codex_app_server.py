@@ -65,3 +65,17 @@ def test_task_complete_marks_turn_complete() -> None:
 
     assert turn_state["final_message"] == '{"assistantText":"Done","operations":[]}'
     assert turn_state["completed"] is True
+
+
+def test_output_schema_marks_nullable_object_fields_as_required() -> None:
+    schema = CodexAppServerBridge._build_output_schema()
+
+    operation_value = schema["$defs"]["OperationValue"]
+
+    assert operation_value["required"] == [
+        "mode",
+        "number",
+        "choiceValue",
+        "choiceId",
+        "boolValue",
+    ]

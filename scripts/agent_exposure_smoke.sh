@@ -22,6 +22,9 @@ SKIP_SERVER_TESTS="${SKIP_SERVER_TESTS:-0}"
 CLEAN_RUNTIME="${CLEAN_RUNTIME:-0}"
 REQUIRE_IMAGE_STATE="${REQUIRE_IMAGE_STATE:-0}"
 REQUIRE_CAPABILITIES="${REQUIRE_CAPABILITIES:-0}"
+EXPECTED_MIN_EDITABLE_SETTINGS="${EXPECTED_MIN_EDITABLE_SETTINGS:-20}"
+REQUIRE_PREVIEW="${REQUIRE_PREVIEW:-0}"
+REQUIRE_HISTOGRAM="${REQUIRE_HISTOGRAM:-0}"
 
 REPORT_FILE="${REPORT_FILE:-$(mktemp "${TMPDIR:-/tmp}/darktable-agent-report.XXXXXX.ini")}"
 SERVER_LOG="${SERVER_LOG:-$(mktemp "${TMPDIR:-/tmp}/darktable-agent-server.XXXXXX.log")}"
@@ -180,8 +183,8 @@ print(
 )
 PY
 
-if [[ "$REQUIRE_IMAGE_STATE" == "1" || "$REQUIRE_CAPABILITIES" == "1" ]]; then
-  "$PYTHON_BIN" - "$SERVER_LOG" "$REQUIRE_IMAGE_STATE" "$REQUIRE_CAPABILITIES" <<'PY'
+if [[ "$REQUIRE_IMAGE_STATE" == "1" || "$REQUIRE_CAPABILITIES" == "1" || "$REQUIRE_PREVIEW" == "1" || "$REQUIRE_HISTOGRAM" == "1" ]]; then
+  "$PYTHON_BIN" - "$SERVER_LOG" "$REQUIRE_IMAGE_STATE" "$REQUIRE_CAPABILITIES" "$REQUIRE_PREVIEW" "$REQUIRE_HISTOGRAM" "$EXPECTED_MIN_EDITABLE_SETTINGS" <<'PY'
 import json
 import sys
 
@@ -209,11 +212,36 @@ if image_snapshot is not None:
         raise SystemExit("Missing imageRevisionId in imageSnapshot")
     if not isinstance(image_snapshot.get("editableSettings"), list) or not image_snapshot["editableSettings"]:
         raise SystemExit("Missing editableSettings in imageSnapshot")
+    if len(image_snapshot["editableSettings"]) < int(sys.argv[6]):
+        raise SystemExit(
+            f"Expected at least {sys.argv[6]} editableSettings, found {len(image_snapshot['editableSettings'])}"
+        )
     if not isinstance(image_snapshot.get("history"), list):
         raise SystemExit("Missing history in imageSnapshot")
     metadata = image_snapshot.get("metadata")
     if not isinstance(metadata, dict):
         raise SystemExit("Missing metadata in imageSnapshot")
+    preview = image_snapshot.get("preview")
+    histogram = image_snapshot.get("histogram")
+    if preview is not None:
+        for key in ("previewId", "mimeType", "width", "height", "base64Data"):
+            if key not in preview:
+                raise SystemExit(f"Missing preview field {key}")
+    if histogram is not None:
+        if histogram.get("binCount", 0) <= 0:
+            raise SystemExit("Histogram binCount must be positive")
+        channels = histogram.get("channels")
+        if not isinstance(channels, dict) or not channels:
+            raise SystemExit("Histogram channels are missing")
+        for channel_name in ("red", "green", "blue", "luma"):
+            channel = channels.get(channel_name)
+            if not isinstance(channel, dict) or "bins" not in channel:
+                raise SystemExit(f"Missing histogram channel {channel_name}")
+            if len(channel["bins"]) != histogram["binCount"]:
+                raise SystemExit(
+                    f"Histogram channel {channel_name} length mismatch: "
+                    f"{len(channel['bins'])} != {histogram['binCount']}"
+                )
 
 if capabilities is not None:
     if not isinstance(capabilities, list) or not capabilities:
@@ -236,10 +264,16 @@ if capabilities is not None:
 
 require_image_state = bool(int(sys.argv[2]))
 require_capabilities = bool(int(sys.argv[3]))
+require_preview = bool(int(sys.argv[4]))
+require_histogram = bool(int(sys.argv[5]))
 if require_image_state and image_snapshot is None:
     raise SystemExit("Expected imageSnapshot in accepted_request log entry")
 if require_capabilities and capabilities is None:
     raise SystemExit("Expected capabilities in accepted_request log entry")
+if require_preview and (image_snapshot is None or image_snapshot.get("preview") is None):
+    raise SystemExit("Expected preview in accepted_request log entry")
+if require_histogram and (image_snapshot is None or image_snapshot.get("histogram") is None):
+    raise SystemExit("Expected histogram in accepted_request log entry")
 
 print("Accepted request log includes expected image snapshot and capability manifest.")
 PY

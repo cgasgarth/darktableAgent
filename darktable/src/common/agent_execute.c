@@ -19,6 +19,7 @@
 #include "common/agent_execute.h"
 
 #include "common/agent_catalog.h"
+#include "common/darktable.h"
 #include "control/control.h"
 #include "views/view.h"
 
@@ -93,17 +94,15 @@ static dt_agent_execution_result_t *_execution_result_new(const dt_agent_chat_op
 
 static double _read_action_float_value(const char *action_path, GError **error)
 {
-  const dt_agent_action_descriptor_t *descriptor = dt_agent_catalog_get_descriptor(action_path);
+  dt_agent_action_descriptor_t *descriptor
+    = dt_agent_catalog_find_descriptor(darktable.develop, action_path, NULL, error);
   if(!descriptor)
-  {
-    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
-                _("unsupported action path: %s"),
-                action_path ? action_path : _("unknown"));
     return NAN;
-  }
 
   double value = NAN;
-  if(!dt_agent_catalog_read_current_number(descriptor, &value, error))
+  const gboolean ok = dt_agent_catalog_read_current_number(descriptor, &value, error);
+  dt_agent_action_descriptor_free(descriptor);
+  if(!ok)
     return NAN;
 
   return value;
@@ -145,8 +144,11 @@ static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *op
                                              dt_agent_execution_result_t *result,
                                              GError **error)
 {
-  const dt_agent_action_descriptor_t *descriptor
-    = dt_agent_catalog_get_descriptor(operation->action_path);
+  dt_agent_action_descriptor_t *descriptor
+    = dt_agent_catalog_find_descriptor(darktable.develop,
+                                       operation->action_path,
+                                       operation->setting_id,
+                                       error);
   if(!descriptor)
   {
     return _execution_result_set_blocked(report, result, error,
@@ -165,9 +167,11 @@ static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *op
   {
     if(!dt_agent_catalog_supports_mode(descriptor, DT_AGENT_VALUE_MODE_DELTA))
     {
-      return _execution_result_set_blocked(report, result, error,
-                                           _("unsupported value mode for action path: %s"),
-                                           descriptor->action_path);
+      const gboolean blocked = _execution_result_set_blocked(report, result, error,
+                                                             _("unsupported value mode for action path: %s"),
+                                                             descriptor->action_path);
+      dt_agent_action_descriptor_free(descriptor);
+      return blocked;
     }
     target = result->value_before + operation->number;
   }
@@ -175,23 +179,107 @@ static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *op
   {
     if(!dt_agent_catalog_supports_mode(descriptor, DT_AGENT_VALUE_MODE_SET))
     {
-      return _execution_result_set_blocked(report, result, error,
-                                           _("unsupported value mode for action path: %s"),
-                                           descriptor->action_path);
+      const gboolean blocked = _execution_result_set_blocked(report, result, error,
+                                                             _("unsupported value mode for action path: %s"),
+                                                             descriptor->action_path);
+      dt_agent_action_descriptor_free(descriptor);
+      return blocked;
     }
   }
   else
   {
-    return _execution_result_set_blocked(report, result, error,
-                                         "%s", _("unsupported numeric value mode"));
+    const gboolean blocked = _execution_result_set_blocked(report, result, error,
+                                                           "%s", _("unsupported numeric value mode"));
+    dt_agent_action_descriptor_free(descriptor);
+    return blocked;
   }
 
   double applied = NAN;
   if(!dt_agent_catalog_write_number(descriptor, target, &applied, error))
+  {
+    dt_agent_action_descriptor_free(descriptor);
     return _execution_result_set_failed(report, result, error);
+  }
 
   result->has_value_after = TRUE;
   result->value_after = applied;
+  dt_agent_action_descriptor_free(descriptor);
+  return TRUE;
+}
+
+static gboolean _execute_set_choice_operation(const dt_agent_chat_operation_t *operation,
+                                              dt_agent_execution_report_t *report,
+                                              dt_agent_execution_result_t *result,
+                                              GError **error)
+{
+  dt_agent_action_descriptor_t *descriptor
+    = dt_agent_catalog_find_descriptor(darktable.develop,
+                                       operation->action_path,
+                                       operation->setting_id,
+                                       error);
+  if(!descriptor)
+  {
+    return _execution_result_set_blocked(report, result, error,
+                                         _("unsupported action path: %s"),
+                                         operation->action_path ? operation->action_path
+                                                                : _("unknown"));
+  }
+
+  if(operation->value_mode != DT_AGENT_VALUE_MODE_SET || !operation->has_choice_value)
+  {
+    const gboolean blocked = _execution_result_set_blocked(report, result, error,
+                                                           "%s", _("unsupported choice value mode"));
+    dt_agent_action_descriptor_free(descriptor);
+    return blocked;
+  }
+
+  gint applied_choice_value = 0;
+  if(!dt_agent_catalog_write_choice(descriptor, operation->choice_value, &applied_choice_value, error))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return _execution_result_set_failed(report, result, error);
+  }
+
+  result->message = g_strdup_printf(_("applied choice %d"), applied_choice_value);
+  dt_agent_action_descriptor_free(descriptor);
+  return TRUE;
+}
+
+static gboolean _execute_set_bool_operation(const dt_agent_chat_operation_t *operation,
+                                            dt_agent_execution_report_t *report,
+                                            dt_agent_execution_result_t *result,
+                                            GError **error)
+{
+  dt_agent_action_descriptor_t *descriptor
+    = dt_agent_catalog_find_descriptor(darktable.develop,
+                                       operation->action_path,
+                                       operation->setting_id,
+                                       error);
+  if(!descriptor)
+  {
+    return _execution_result_set_blocked(report, result, error,
+                                         _("unsupported action path: %s"),
+                                         operation->action_path ? operation->action_path
+                                                                : _("unknown"));
+  }
+
+  if(operation->value_mode != DT_AGENT_VALUE_MODE_SET || !operation->has_bool_value)
+  {
+    const gboolean blocked = _execution_result_set_blocked(report, result, error,
+                                                           "%s", _("unsupported bool value mode"));
+    dt_agent_action_descriptor_free(descriptor);
+    return blocked;
+  }
+
+  gboolean applied_bool_value = FALSE;
+  if(!dt_agent_catalog_write_bool(descriptor, operation->bool_value, &applied_bool_value, error))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return _execution_result_set_failed(report, result, error);
+  }
+
+  result->message = g_strdup(applied_bool_value ? _("applied on") : _("applied off"));
+  dt_agent_action_descriptor_free(descriptor);
   return TRUE;
 }
 
@@ -223,6 +311,12 @@ static gboolean _execute_operation(const dt_agent_chat_operation_t *operation,
     case DT_AGENT_OPERATION_SET_FLOAT:
       ok = _execute_set_float_operation(operation, report, result, error);
       break;
+    case DT_AGENT_OPERATION_SET_CHOICE:
+      ok = _execute_set_choice_operation(operation, report, result, error);
+      break;
+    case DT_AGENT_OPERATION_SET_BOOL:
+      ok = _execute_set_bool_operation(operation, report, result, error);
+      break;
     case DT_AGENT_OPERATION_UNKNOWN:
     default:
       return _execution_result_set_blocked(report, result, error,
@@ -235,7 +329,8 @@ static gboolean _execute_operation(const dt_agent_chat_operation_t *operation,
   if(ok)
   {
     result->status = DT_AGENT_EXECUTION_STATUS_APPLIED;
-    result->message = g_strdup(_("applied"));
+    if(!result->message)
+      result->message = g_strdup(_("applied"));
     report->applied_count++;
     dt_print(DT_DEBUG_CONTROL,
              "[agent_execute] applied operation id=%s path=%s before=%.3f after=%.3f",

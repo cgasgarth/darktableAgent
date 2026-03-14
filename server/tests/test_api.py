@@ -21,6 +21,28 @@ def _sample_capabilities() -> list[dict]:
             "maxNumber": 18.0,
             "defaultNumber": 0.0,
             "stepNumber": 0.01,
+        },
+        {
+            "capabilityId": "filmic.preserve-highlights",
+            "label": "Preserve highlights",
+            "kind": "set-bool",
+            "targetType": "darktable-action",
+            "actionPath": "iop/filmicrgb/preserve_highlights",
+            "supportedModes": ["set"],
+            "defaultBool": False,
+        },
+        {
+            "capabilityId": "colorbalancergb.saturation-formula",
+            "label": "Saturation formula",
+            "kind": "set-choice",
+            "targetType": "darktable-action",
+            "actionPath": "iop/colorbalancergb/saturation_formula",
+            "supportedModes": ["set"],
+            "choices": [
+                {"choiceValue": 0, "choiceId": "jzazbz", "label": "JzAzBz"},
+                {"choiceValue": 1, "choiceId": "rgb", "label": "RGB"},
+            ],
+            "defaultChoiceValue": 0,
         }
     ]
 
@@ -48,12 +70,38 @@ def _sample_image_snapshot() -> dict:
                 "capabilityId": "exposure.primary",
                 "label": "Exposure",
                 "actionPath": "iop/exposure/exposure",
+                "kind": "set-float",
                 "currentNumber": 2.8,
                 "supportedModes": ["set", "delta"],
                 "minNumber": -18.0,
                 "maxNumber": 18.0,
                 "defaultNumber": 0.0,
                 "stepNumber": 0.01,
+            },
+            {
+                "settingId": "setting.filmic.preserve-highlights",
+                "capabilityId": "filmic.preserve-highlights",
+                "label": "Preserve highlights",
+                "actionPath": "iop/filmicrgb/preserve_highlights",
+                "kind": "set-bool",
+                "supportedModes": ["set"],
+                "currentBool": True,
+                "defaultBool": False,
+            },
+            {
+                "settingId": "setting.colorbalancergb.saturation-formula",
+                "capabilityId": "colorbalancergb.saturation-formula",
+                "label": "Saturation formula",
+                "actionPath": "iop/colorbalancergb/saturation_formula",
+                "kind": "set-choice",
+                "supportedModes": ["set"],
+                "currentChoiceValue": 1,
+                "currentChoiceId": "rgb",
+                "choices": [
+                    {"choiceValue": 0, "choiceId": "jzazbz", "label": "JzAzBz"},
+                    {"choiceValue": 1, "choiceId": "rgb", "label": "RGB"},
+                ],
+                "defaultChoiceValue": 0,
             }
         ],
         "history": [
@@ -170,7 +218,13 @@ async def test_chat_returns_codex_plan_response(
                 "actionPath": "iop/exposure/exposure",
                 "settingId": "setting.exposure.primary",
             },
-            "value": {"mode": "delta", "number": 0.7},
+            "value": {
+                "mode": "delta",
+                "number": 0.7,
+                "choiceValue": None,
+                "choiceId": None,
+                "boolValue": None,
+            },
             "reason": None,
             "constraints": {
                 "onOutOfRange": "clamp",
@@ -199,7 +253,7 @@ async def test_chat_preserves_multi_operation_order(
                             "target": {
                                 "type": "darktable-action",
                                 "actionPath": "iop/exposure/exposure",
-                                "settingId": None,
+                                "settingId": "setting.exposure.primary",
                             },
                             "value": {"mode": "delta", "number": 0.2},
                             "reason": None,
@@ -215,7 +269,7 @@ async def test_chat_preserves_multi_operation_order(
                             "target": {
                                 "type": "darktable-action",
                                 "actionPath": "iop/exposure/exposure",
-                                "settingId": None,
+                                "settingId": "setting.exposure.primary",
                             },
                             "value": {"mode": "delta", "number": 0.5},
                             "reason": None,

@@ -6,6 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = "3.0"
 
+OperationKind = Literal["set-float", "set-choice", "set-bool"]
+OperationMode = Literal["delta", "set"]
+
 
 class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -80,28 +83,87 @@ class Histogram(StrictBaseModel):
         return self
 
 
+class ChoiceOption(StrictBaseModel):
+    choiceValue: int
+    choiceId: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+
+
 class Capability(StrictBaseModel):
     capabilityId: str = Field(min_length=1)
     label: str = Field(min_length=1)
-    kind: Literal["set-float"]
+    kind: OperationKind
     targetType: Literal["darktable-action"]
     actionPath: str = Field(min_length=1)
-    supportedModes: list[Literal["delta", "set"]] = Field(min_length=1)
-    minNumber: float
-    maxNumber: float
-    defaultNumber: float
-    stepNumber: float
+    supportedModes: list[OperationMode] = Field(min_length=1)
+    minNumber: float | None = None
+    maxNumber: float | None = None
+    defaultNumber: float | None = None
+    stepNumber: float | None = None
+    choices: list[ChoiceOption] | None = None
+    defaultChoiceValue: int | None = None
+    defaultBool: bool | None = None
 
     @model_validator(mode="after")
-    def validate_number_range(self) -> "Capability":
-        if self.minNumber > self.maxNumber:
-            raise ValueError("capability minNumber must be <= maxNumber")
-        if not (self.minNumber <= self.defaultNumber <= self.maxNumber):
-            raise ValueError("capability defaultNumber must be within min/max range")
-        if self.stepNumber <= 0:
-            raise ValueError("capability stepNumber must be positive")
+    def validate_value_shape(self) -> "Capability":
         if len(set(self.supportedModes)) != len(self.supportedModes):
             raise ValueError("capability supportedModes must not contain duplicates")
+
+        if self.kind == "set-float":
+            if self.minNumber is None or self.maxNumber is None:
+                raise ValueError("float capability requires minNumber/maxNumber")
+            if self.defaultNumber is None or self.stepNumber is None:
+                raise ValueError("float capability requires defaultNumber/stepNumber")
+            if self.minNumber > self.maxNumber:
+                raise ValueError("capability minNumber must be <= maxNumber")
+            if not (self.minNumber <= self.defaultNumber <= self.maxNumber):
+                raise ValueError("capability defaultNumber must be within min/max range")
+            if self.stepNumber <= 0:
+                raise ValueError("capability stepNumber must be positive")
+            if self.choices is not None or self.defaultChoiceValue is not None:
+                raise ValueError("float capability must not define choices")
+            if self.defaultBool is not None:
+                raise ValueError("float capability must not define defaultBool")
+        elif self.kind == "set-choice":
+            if self.supportedModes != ["set"]:
+                raise ValueError('choice capability supportedModes must be exactly ["set"]')
+            if not self.choices:
+                raise ValueError("choice capability must define choices")
+            choice_values = [choice.choiceValue for choice in self.choices]
+            choice_ids = [choice.choiceId for choice in self.choices]
+            if len(choice_values) != len(set(choice_values)):
+                raise ValueError("choice capability values must be unique")
+            if len(choice_ids) != len(set(choice_ids)):
+                raise ValueError("choice capability ids must be unique")
+            if self.defaultChoiceValue not in choice_values:
+                raise ValueError("choice capability defaultChoiceValue must reference a choice")
+            if any(
+                value is not None
+                for value in (
+                    self.minNumber,
+                    self.maxNumber,
+                    self.defaultNumber,
+                    self.stepNumber,
+                    self.defaultBool,
+                )
+            ):
+                raise ValueError("choice capability must not define float/bool defaults")
+        elif self.kind == "set-bool":
+            if self.supportedModes != ["set"]:
+                raise ValueError('bool capability supportedModes must be exactly ["set"]')
+            if self.defaultBool is None:
+                raise ValueError("bool capability requires defaultBool")
+            if any(
+                value is not None
+                for value in (
+                    self.minNumber,
+                    self.maxNumber,
+                    self.defaultNumber,
+                    self.stepNumber,
+                    self.defaultChoiceValue,
+                )
+            ) or self.choices is not None:
+                raise ValueError("bool capability must not define float/choice defaults")
         return self
 
 
@@ -122,12 +184,19 @@ class EditableSetting(StrictBaseModel):
     capabilityId: str = Field(min_length=1)
     label: str = Field(min_length=1)
     actionPath: str = Field(min_length=1)
-    currentNumber: float | None
-    supportedModes: list[Literal["delta", "set"]] = Field(min_length=1)
-    minNumber: float
-    maxNumber: float
-    defaultNumber: float
-    stepNumber: float
+    kind: OperationKind
+    supportedModes: list[OperationMode] = Field(min_length=1)
+    currentNumber: float | None = None
+    minNumber: float | None = None
+    maxNumber: float | None = None
+    defaultNumber: float | None = None
+    stepNumber: float | None = None
+    currentChoiceValue: int | None = None
+    currentChoiceId: str | None = None
+    choices: list[ChoiceOption] | None = None
+    defaultChoiceValue: int | None = None
+    currentBool: bool | None = None
+    defaultBool: bool | None = None
 
 
 class ImageHistoryItem(StrictBaseModel):
@@ -171,27 +240,53 @@ class RequestEnvelope(StrictBaseModel):
                     f"editableSetting references unknown capabilityId: {setting.capabilityId}"
                 )
             if capability.actionPath != setting.actionPath:
-                raise ValueError(
-                    "editableSetting actionPath does not match capability manifest"
-                )
+                raise ValueError("editableSetting actionPath does not match capability manifest")
             if capability.label != setting.label:
                 raise ValueError("editableSetting label does not match capability manifest")
+            if capability.kind != setting.kind:
+                raise ValueError("editableSetting kind does not match capability manifest")
             if capability.supportedModes != setting.supportedModes:
                 raise ValueError(
                     "editableSetting supportedModes do not match capability manifest"
                 )
+            if setting.kind == "set-float":
+                if setting.currentNumber is None:
+                    raise ValueError("float editableSetting requires currentNumber")
+                if (
+                    setting.minNumber != capability.minNumber
+                    or setting.maxNumber != capability.maxNumber
+                    or setting.defaultNumber != capability.defaultNumber
+                    or setting.stepNumber != capability.stepNumber
+                ):
+                    raise ValueError("float editableSetting bounds do not match capability")
+            elif setting.kind == "set-choice":
+                capability_choices = capability.choices or []
+                if setting.choices != capability_choices:
+                    raise ValueError("choice editableSetting choices do not match capability")
+                if setting.defaultChoiceValue != capability.defaultChoiceValue:
+                    raise ValueError(
+                        "choice editableSetting defaultChoiceValue does not match capability"
+                    )
+            elif setting.kind == "set-bool":
+                if setting.currentBool is None:
+                    raise ValueError("bool editableSetting requires currentBool")
+                if setting.defaultBool != capability.defaultBool:
+                    raise ValueError("bool editableSetting defaultBool does not match capability")
         return self
 
 
 class OperationTarget(StrictBaseModel):
     type: Literal["darktable-action"]
     actionPath: str = Field(min_length=1)
-    settingId: str | None
+    settingId: str = Field(min_length=1)
 
 
 class OperationValue(StrictBaseModel):
-    mode: Literal["delta", "set"]
-    number: float
+    mode: OperationMode
+    number: float | None = None
+    choiceValue: int | None = None
+    choiceId: str | None = None
+    boolValue: bool | None = None
 
 
 class OperationConstraint(StrictBaseModel):
@@ -202,11 +297,34 @@ class OperationConstraint(StrictBaseModel):
 class PlannedOperationDraft(StrictBaseModel):
     operationId: str = Field(min_length=1)
     sequence: int = Field(ge=1)
-    kind: Literal["set-float"]
+    kind: OperationKind
     target: OperationTarget
     value: OperationValue
     reason: str | None
     constraints: OperationConstraint
+
+    @model_validator(mode="after")
+    def validate_kind_and_value(self) -> "PlannedOperationDraft":
+        if self.kind == "set-float":
+            if self.value.number is None:
+                raise ValueError("set-float operation requires value.number")
+            if self.value.choiceValue is not None or self.value.boolValue is not None:
+                raise ValueError("set-float operation must not define choice/bool values")
+        elif self.kind == "set-choice":
+            if self.value.mode != "set":
+                raise ValueError('set-choice operation must use mode "set"')
+            if self.value.choiceValue is None:
+                raise ValueError("set-choice operation requires value.choiceValue")
+            if self.value.number is not None or self.value.boolValue is not None:
+                raise ValueError("set-choice operation must not define number/bool values")
+        elif self.kind == "set-bool":
+            if self.value.mode != "set":
+                raise ValueError('set-bool operation must use mode "set"')
+            if self.value.boolValue is None:
+                raise ValueError("set-bool operation requires value.boolValue")
+            if self.value.number is not None or self.value.choiceValue is not None:
+                raise ValueError("set-bool operation must not define number/choice values")
+        return self
 
 
 class AgentPlan(StrictBaseModel):
@@ -224,21 +342,21 @@ class AgentPlan(StrictBaseModel):
         return self
 
 
+class ErrorInfo(StrictBaseModel):
+    code: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+
+
 class OperationResult(StrictBaseModel):
     operationId: str = Field(min_length=1)
     status: Literal["planned", "applied", "blocked", "failed"]
-    error: "ErrorInfo | None" = None
+    error: ErrorInfo | None = None
 
 
 class PlanEnvelope(StrictBaseModel):
     planId: str = Field(min_length=1)
     baseImageRevisionId: str = Field(min_length=1)
     operations: list[PlannedOperationDraft]
-
-
-class ErrorInfo(StrictBaseModel):
-    code: str = Field(min_length=1)
-    message: str = Field(min_length=1)
 
 
 class ResponseEnvelope(StrictBaseModel):

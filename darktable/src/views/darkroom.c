@@ -1854,7 +1854,7 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
                                 ? g_strdup_printf("image-%" G_GINT64_FORMAT,
                                                   request->ui_context.image_id)
                                 : g_strdup("image-none");
-  if(!dt_agent_capabilities_collect(request->capabilities, error))
+  if(!dt_agent_capabilities_collect(dev, request->capabilities, error))
   {
     dt_agent_chat_request_clear(request);
     return FALSE;

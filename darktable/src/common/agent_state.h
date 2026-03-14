@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include "common/agent_capabilities.h"
+
 #include <glib.h>
 
 G_BEGIN_DECLS
@@ -41,11 +43,28 @@ typedef struct dt_agent_image_metadata_t
 
 typedef struct dt_agent_image_control_t
 {
+  gchar *setting_id;
   gchar *capability_id;
   gchar *label;
+  gchar *kind;
   gchar *action_path;
+  guint supported_modes;
   gboolean has_current_number;
   double current_number;
+  GPtrArray *choices;
+  gboolean has_default_choice_value;
+  gint default_choice_value;
+  gboolean has_current_choice_value;
+  gint current_choice_value;
+  gchar *current_choice_id;
+  gboolean has_default_bool;
+  gboolean default_bool;
+  gboolean has_current_bool;
+  gboolean current_bool;
+  double min_number;
+  double max_number;
+  double default_number;
+  double step_number;
 } dt_agent_image_control_t;
 
 typedef struct dt_agent_history_item_t
@@ -60,13 +79,29 @@ typedef struct dt_agent_history_item_t
 
 typedef struct dt_agent_image_state_t
 {
-  gboolean has_current_exposure;
-  double current_exposure;
   gint history_position;
   gint history_count;
   dt_agent_image_metadata_t metadata;
   GPtrArray *controls;
   GPtrArray *history;
+  struct
+  {
+    gboolean available;
+    gchar *preview_id;
+    gchar *mime_type;
+    gint width;
+    gint height;
+    gchar *base64_data;
+  } preview;
+  struct
+  {
+    gboolean available;
+    gint bin_count;
+    guint32 red[256];
+    guint32 green[256];
+    guint32 blue[256];
+    guint32 luma[256];
+  } histogram;
 } dt_agent_image_state_t;
 
 void dt_agent_image_metadata_clear(dt_agent_image_metadata_t *metadata);

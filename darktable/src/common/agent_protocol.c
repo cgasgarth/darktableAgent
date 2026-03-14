@@ -129,6 +129,30 @@ static gboolean _parse_message(JsonObject *object,
       && _require_string_member(message, "text", text, error);
 }
 
+static void _serialize_choice_options(JsonBuilder *builder, const GPtrArray *choices)
+{
+  if(!choices)
+  {
+    json_builder_add_null_value(builder);
+    return;
+  }
+
+  json_builder_begin_array(builder);
+  for(guint i = 0; i < choices->len; i++)
+  {
+    const dt_agent_choice_option_t *option = g_ptr_array_index((GPtrArray *)choices, i);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "choiceValue");
+    json_builder_add_int_value(builder, option->choice_value);
+    json_builder_set_member_name(builder, "choiceId");
+    json_builder_add_string_value(builder, option->choice_id);
+    json_builder_set_member_name(builder, "label");
+    json_builder_add_string_value(builder, option->label);
+    json_builder_end_object(builder);
+  }
+  json_builder_end_array(builder);
+}
+
 static void _serialize_capabilities(JsonBuilder *builder, const GPtrArray *capabilities)
 {
   json_builder_begin_array(builder);
@@ -159,28 +183,49 @@ static void _serialize_capabilities(JsonBuilder *builder, const GPtrArray *capab
         json_builder_add_string_value(builder, "delta");
       json_builder_end_array(builder);
 
-      json_builder_set_member_name(builder, "minNumber");
-      json_builder_add_double_value(builder, capability->min_number);
-      json_builder_set_member_name(builder, "maxNumber");
-      json_builder_add_double_value(builder, capability->max_number);
-      json_builder_set_member_name(builder, "defaultNumber");
-      json_builder_add_double_value(builder, capability->default_number);
-      json_builder_set_member_name(builder, "stepNumber");
-      json_builder_add_double_value(builder, capability->step_number);
+      if(g_strcmp0(capability->kind, "set-float") == 0)
+      {
+        json_builder_set_member_name(builder, "minNumber");
+        json_builder_add_double_value(builder, capability->min_number);
+        json_builder_set_member_name(builder, "maxNumber");
+        json_builder_add_double_value(builder, capability->max_number);
+        json_builder_set_member_name(builder, "defaultNumber");
+        json_builder_add_double_value(builder, capability->default_number);
+        json_builder_set_member_name(builder, "stepNumber");
+        json_builder_add_double_value(builder, capability->step_number);
+      }
+      else
+      {
+        json_builder_set_member_name(builder, "minNumber");
+        json_builder_add_null_value(builder);
+        json_builder_set_member_name(builder, "maxNumber");
+        json_builder_add_null_value(builder);
+        json_builder_set_member_name(builder, "defaultNumber");
+        json_builder_add_null_value(builder);
+        json_builder_set_member_name(builder, "stepNumber");
+        json_builder_add_null_value(builder);
+      }
+
+      json_builder_set_member_name(builder, "choices");
+      _serialize_choice_options(builder, capability->choices);
+
+      json_builder_set_member_name(builder, "defaultChoiceValue");
+      if(capability->has_default_choice_value)
+        json_builder_add_int_value(builder, capability->default_choice_value);
+      else
+        json_builder_add_null_value(builder);
+
+      json_builder_set_member_name(builder, "defaultBool");
+      if(capability->has_default_bool)
+        json_builder_add_boolean_value(builder, capability->default_bool);
+      else
+        json_builder_add_null_value(builder);
 
       json_builder_end_object(builder);
     }
   }
 
   json_builder_end_array(builder);
-}
-
-static gchar *_build_setting_id(const dt_agent_image_control_t *control)
-{
-  if(!control || !control->capability_id)
-    return NULL;
-
-  return g_strdup_printf("setting.%s", control->capability_id);
 }
 
 static gchar *_build_image_revision_id(const dt_agent_chat_request_t *request)
@@ -256,53 +301,83 @@ static void _serialize_image_snapshot(JsonBuilder *builder,
   for(guint i = 0; i < state->controls->len; i++)
   {
     const dt_agent_image_control_t *control = g_ptr_array_index(state->controls, i);
-    const dt_agent_capability_t *capability = NULL;
-    for(guint capability_index = 0; request->capabilities && capability_index < request->capabilities->len;
-        capability_index++)
-    {
-      const dt_agent_capability_t *candidate = g_ptr_array_index(request->capabilities, capability_index);
-      if(g_strcmp0(candidate->capability_id, control->capability_id) == 0)
-      {
-        capability = candidate;
-        break;
-      }
-    }
 
     json_builder_begin_object(builder);
-    g_autofree gchar *setting_id = _build_setting_id(control);
     json_builder_set_member_name(builder, "settingId");
-    if(setting_id)
-      json_builder_add_string_value(builder, setting_id);
+    if(control->setting_id)
+      json_builder_add_string_value(builder, control->setting_id);
     else
       json_builder_add_null_value(builder);
     json_builder_set_member_name(builder, "capabilityId");
     json_builder_add_string_value(builder, control->capability_id);
     json_builder_set_member_name(builder, "label");
     json_builder_add_string_value(builder, control->label);
+    json_builder_set_member_name(builder, "kind");
+    json_builder_add_string_value(builder, control->kind);
     json_builder_set_member_name(builder, "actionPath");
     json_builder_add_string_value(builder, control->action_path);
+
+    json_builder_set_member_name(builder, "supportedModes");
+    json_builder_begin_array(builder);
+    if(control->supported_modes & DT_AGENT_VALUE_MODE_FLAG_SET)
+      json_builder_add_string_value(builder, "set");
+    if(control->supported_modes & DT_AGENT_VALUE_MODE_FLAG_DELTA)
+      json_builder_add_string_value(builder, "delta");
+    json_builder_end_array(builder);
+
+    json_builder_set_member_name(builder, "minNumber");
+    if(g_strcmp0(control->kind, "set-float") == 0)
+      json_builder_add_double_value(builder, control->min_number);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "maxNumber");
+    if(g_strcmp0(control->kind, "set-float") == 0)
+      json_builder_add_double_value(builder, control->max_number);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "defaultNumber");
+    if(g_strcmp0(control->kind, "set-float") == 0)
+      json_builder_add_double_value(builder, control->default_number);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "stepNumber");
+    if(g_strcmp0(control->kind, "set-float") == 0)
+      json_builder_add_double_value(builder, control->step_number);
+    else
+      json_builder_add_null_value(builder);
+
     json_builder_set_member_name(builder, "currentNumber");
     if(control->has_current_number)
       json_builder_add_double_value(builder, control->current_number);
     else
       json_builder_add_null_value(builder);
-
-    json_builder_set_member_name(builder, "supportedModes");
-    json_builder_begin_array(builder);
-    if(capability && (capability->supported_modes & DT_AGENT_VALUE_MODE_FLAG_SET) != 0)
-      json_builder_add_string_value(builder, "set");
-    if(capability && (capability->supported_modes & DT_AGENT_VALUE_MODE_FLAG_DELTA) != 0)
-      json_builder_add_string_value(builder, "delta");
-    json_builder_end_array(builder);
-
-    json_builder_set_member_name(builder, "minNumber");
-    json_builder_add_double_value(builder, capability ? capability->min_number : 0.0);
-    json_builder_set_member_name(builder, "maxNumber");
-    json_builder_add_double_value(builder, capability ? capability->max_number : 0.0);
-    json_builder_set_member_name(builder, "defaultNumber");
-    json_builder_add_double_value(builder, capability ? capability->default_number : 0.0);
-    json_builder_set_member_name(builder, "stepNumber");
-    json_builder_add_double_value(builder, capability ? capability->step_number : 0.0);
+    json_builder_set_member_name(builder, "choices");
+    _serialize_choice_options(builder, control->choices);
+    json_builder_set_member_name(builder, "defaultChoiceValue");
+    if(control->has_default_choice_value)
+      json_builder_add_int_value(builder, control->default_choice_value);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "currentChoiceValue");
+    if(control->has_current_choice_value)
+      json_builder_add_int_value(builder, control->current_choice_value);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "currentChoiceId");
+    if(control->current_choice_id)
+      json_builder_add_string_value(builder, control->current_choice_id);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "defaultBool");
+    if(control->has_default_bool)
+      json_builder_add_boolean_value(builder, control->default_bool);
+    else
+      json_builder_add_null_value(builder);
+    json_builder_set_member_name(builder, "currentBool");
+    if(control->has_current_bool)
+      json_builder_add_boolean_value(builder, control->current_bool);
+    else
+      json_builder_add_null_value(builder);
     json_builder_end_object(builder);
   }
   json_builder_end_array(builder);
@@ -336,10 +411,58 @@ static void _serialize_image_snapshot(JsonBuilder *builder,
   json_builder_end_array(builder);
 
   json_builder_set_member_name(builder, "preview");
-  json_builder_add_null_value(builder);
+  if(state->preview.available)
+  {
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "previewId");
+    json_builder_add_string_value(builder, state->preview.preview_id);
+    json_builder_set_member_name(builder, "mimeType");
+    json_builder_add_string_value(builder, state->preview.mime_type);
+    json_builder_set_member_name(builder, "width");
+    json_builder_add_int_value(builder, state->preview.width);
+    json_builder_set_member_name(builder, "height");
+    json_builder_add_int_value(builder, state->preview.height);
+    json_builder_set_member_name(builder, "base64Data");
+    json_builder_add_string_value(builder, state->preview.base64_data);
+    json_builder_end_object(builder);
+  }
+  else
+    json_builder_add_null_value(builder);
 
   json_builder_set_member_name(builder, "histogram");
-  json_builder_add_null_value(builder);
+  if(state->histogram.available)
+  {
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "binCount");
+    json_builder_add_int_value(builder, state->histogram.bin_count);
+    json_builder_set_member_name(builder, "channels");
+    json_builder_begin_object(builder);
+    const struct
+    {
+      const char *name;
+      const guint32 *bins;
+    } channels[] = {
+      { "red", state->histogram.red },
+      { "green", state->histogram.green },
+      { "blue", state->histogram.blue },
+      { "luma", state->histogram.luma },
+    };
+    for(guint channel_index = 0; channel_index < G_N_ELEMENTS(channels); channel_index++)
+    {
+      json_builder_set_member_name(builder, channels[channel_index].name);
+      json_builder_begin_object(builder);
+      json_builder_set_member_name(builder, "bins");
+      json_builder_begin_array(builder);
+      for(gint bin_index = 0; bin_index < state->histogram.bin_count; bin_index++)
+        json_builder_add_int_value(builder, channels[channel_index].bins[bin_index]);
+      json_builder_end_array(builder);
+      json_builder_end_object(builder);
+    }
+    json_builder_end_object(builder);
+    json_builder_end_object(builder);
+  }
+  else
+    json_builder_add_null_value(builder);
 
   json_builder_end_object(builder);
 }
@@ -425,16 +548,10 @@ static gboolean _parse_operation(JsonObject *object,
     dt_agent_chat_operation_free(operation);
     return FALSE;
   }
-  if(json_object_has_member(target, "settingId"))
+  if(!_require_string_member(target, "settingId", &operation->setting_id, error))
   {
-    JsonNode *setting_id_node = json_object_get_member(target, "settingId");
-    if(JSON_NODE_HOLDS_VALUE(setting_id_node)
-       && g_type_is_a(json_node_get_value_type(setting_id_node), G_TYPE_STRING))
-    {
-      const char *setting_id = json_node_get_string(setting_id_node);
-      if(setting_id && setting_id[0])
-        operation->setting_id = g_strdup(setting_id);
-    }
+    dt_agent_chat_operation_free(operation);
+    return FALSE;
   }
 
   if(g_strcmp0(operation->target_type, "darktable-action") != 0)
@@ -447,8 +564,7 @@ static gboolean _parse_operation(JsonObject *object,
   }
 
   char *value_mode_name = NULL;
-  if(!_require_string_member(value, "mode", &value_mode_name, error)
-     || !_require_number_member(value, "number", &operation->number, error))
+  if(!_require_string_member(value, "mode", &value_mode_name, error))
   {
     g_free(value_mode_name);
     dt_agent_chat_operation_free(operation);
@@ -472,6 +588,61 @@ static gboolean _parse_operation(JsonObject *object,
                 "unsupported value mode");
     dt_agent_chat_operation_free(operation);
     return FALSE;
+  }
+
+  switch(operation->kind)
+  {
+    case DT_AGENT_OPERATION_SET_FLOAT:
+      if(!_require_number_member(value, "number", &operation->number, error))
+      {
+        dt_agent_chat_operation_free(operation);
+        return FALSE;
+      }
+      break;
+    case DT_AGENT_OPERATION_SET_CHOICE:
+      {
+        JsonNode *choice_value_node = json_object_get_member(value, "choiceValue");
+        if(!choice_value_node || !JSON_NODE_HOLDS_VALUE(choice_value_node)
+           || !g_type_is_a(json_node_get_value_type(choice_value_node), G_TYPE_INT64))
+        {
+          g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                      "choice operations require integer choiceValue");
+          dt_agent_chat_operation_free(operation);
+          return FALSE;
+        }
+        operation->has_choice_value = TRUE;
+        operation->choice_value = json_node_get_int(choice_value_node);
+        if(json_object_has_member(value, "choiceId"))
+        {
+          JsonNode *choice_id_node = json_object_get_member(value, "choiceId");
+          if(JSON_NODE_HOLDS_VALUE(choice_id_node)
+             && g_type_is_a(json_node_get_value_type(choice_id_node), G_TYPE_STRING))
+          {
+            const char *choice_id = json_node_get_string(choice_id_node);
+            if(choice_id && choice_id[0])
+              operation->choice_id = g_strdup(choice_id);
+          }
+        }
+      }
+      break;
+    case DT_AGENT_OPERATION_SET_BOOL:
+      {
+        JsonNode *bool_value_node = json_object_get_member(value, "boolValue");
+        if(!bool_value_node || !JSON_NODE_HOLDS_VALUE(bool_value_node)
+           || !g_type_is_a(json_node_get_value_type(bool_value_node), G_TYPE_BOOLEAN))
+        {
+          g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                      "bool operations require boolean boolValue");
+          dt_agent_chat_operation_free(operation);
+          return FALSE;
+        }
+        operation->has_bool_value = TRUE;
+        operation->bool_value = json_node_get_boolean(bool_value_node);
+      }
+      break;
+    case DT_AGENT_OPERATION_UNKNOWN:
+    default:
+      break;
   }
 
   *out = operation;
@@ -585,6 +756,7 @@ void dt_agent_chat_operation_free(gpointer data)
   g_free(operation->target_type);
   g_free(operation->action_path);
   g_free(operation->setting_id);
+  g_free(operation->choice_id);
   g_free(operation);
 }
 
@@ -626,6 +798,10 @@ const char *dt_agent_operation_kind_to_string(dt_agent_operation_kind_t kind)
   {
     case DT_AGENT_OPERATION_SET_FLOAT:
       return "set-float";
+    case DT_AGENT_OPERATION_SET_CHOICE:
+      return "set-choice";
+    case DT_AGENT_OPERATION_SET_BOOL:
+      return "set-bool";
     case DT_AGENT_OPERATION_UNKNOWN:
     default:
       return "unknown";
@@ -636,6 +812,10 @@ dt_agent_operation_kind_t dt_agent_operation_kind_from_string(const char *kind_n
 {
   if(g_strcmp0(kind_name, "set-float") == 0)
     return DT_AGENT_OPERATION_SET_FLOAT;
+  if(g_strcmp0(kind_name, "set-choice") == 0)
+    return DT_AGENT_OPERATION_SET_CHOICE;
+  if(g_strcmp0(kind_name, "set-bool") == 0)
+    return DT_AGENT_OPERATION_SET_BOOL;
 
   return DT_AGENT_OPERATION_UNKNOWN;
 }

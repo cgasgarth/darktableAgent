@@ -34,6 +34,8 @@ typedef enum dt_agent_operation_kind_t
 {
   DT_AGENT_OPERATION_UNKNOWN = 0,
   DT_AGENT_OPERATION_SET_FLOAT,
+  DT_AGENT_OPERATION_SET_CHOICE,
+  DT_AGENT_OPERATION_SET_BOOL,
 } dt_agent_operation_kind_t;
 
 typedef enum dt_agent_value_mode_t
@@ -78,6 +80,11 @@ typedef struct dt_agent_chat_operation_t
   gchar *setting_id;
   dt_agent_value_mode_t value_mode;
   double number;
+  gboolean has_choice_value;
+  gint choice_value;
+  gchar *choice_id;
+  gboolean has_bool_value;
+  gboolean bool_value;
 } dt_agent_chat_operation_t;
 
 typedef struct dt_agent_chat_response_t

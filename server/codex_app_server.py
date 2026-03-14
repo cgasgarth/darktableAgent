@@ -45,7 +45,7 @@ Return exactly one JSON object matching the output schema.
 You are given:
 - the latest user message
 - a capability manifest describing writable darktable controls
-- a current image snapshot with metadata, history, editable settings, and optionally a rendered preview and histogram
+- a current image snapshot with metadata, history, editable settings, and optionally a 1k rendered JPEG preview and histogram
 
 Rules:
 - Only plan operations that are explicitly supported by the capability manifest and editable settings snapshot.
@@ -55,9 +55,13 @@ Rules:
 - Every operation must be immediately executable by darktable.
 - Use the supplied preview and histogram when they are present.
 - Prefer the specific editable settings and current values supplied in the image snapshot over generic photography assumptions.
-- Use mode "delta" for relative adjustments and mode "set" for absolute assignments.
-- When the user requests an exact EV change, use that exact exposure delta if the exposure capability exists.
-- When the user requests to brighten or darken without an exact amount and the exposure capability exists, default to a single exposure delta of +0.7 EV or -0.7 EV.
+- Use mode "delta" only for set-float operations when the capability supports delta.
+- Use mode "set" for all set-choice and set-bool operations.
+- For set-choice operations, return value.choiceValue and prefer including value.choiceId when it is known from the editable setting choices.
+- For set-bool operations, return value.boolValue.
+- Use the exact target.settingId from imageSnapshot.editableSettings so the operation is tied to the intended control instance.
+- When the user requests an exact EV change, use that exact exposure delta if the exposure setting exists and supports delta.
+- When the user requests to brighten or darken without an exact amount and an exposure setting exists, default to a single exposure delta of +0.7 EV or -0.7 EV.
 - When the user asks for an unsupported action, explain the limitation and return no operations.
 """
 
@@ -97,6 +101,38 @@ class CodexAppServerBridge:
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads: dict[str, str] = {}
+
+    @staticmethod
+    def _build_output_schema() -> dict[str, Any]:
+        schema = AgentPlan.model_json_schema()
+
+        def _rewrite(node: Any) -> None:
+            if isinstance(node, dict):
+                properties = node.get("properties")
+                if isinstance(properties, dict):
+                    node["required"] = list(properties.keys())
+                    node.setdefault("additionalProperties", False)
+                    for child in properties.values():
+                        _rewrite(child)
+
+                for key in ("items", "anyOf", "allOf", "oneOf", "prefixItems"):
+                    child = node.get(key)
+                    if isinstance(child, list):
+                        for item in child:
+                            _rewrite(item)
+                    elif isinstance(child, dict):
+                        _rewrite(child)
+
+                defs = node.get("$defs")
+                if isinstance(defs, dict):
+                    for child in defs.values():
+                        _rewrite(child)
+            elif isinstance(node, list):
+                for item in node:
+                    _rewrite(item)
+
+        _rewrite(schema)
+        return schema
 
     def plan(self, request: RequestEnvelope) -> CodexTurnResult:
         deadline = time.monotonic() + self._timeout_seconds
@@ -170,7 +206,7 @@ class CodexAppServerBridge:
                     "text_elements": [],
                 }
             ],
-            "outputSchema": AgentPlan.model_json_schema(),
+            "outputSchema": self._build_output_schema(),
             "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
             "personality": _DEFAULT_PERSONALITY,
             "effort": _DEFAULT_REASONING_EFFORT,
