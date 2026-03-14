@@ -337,10 +337,13 @@ typedef struct dt_develop_t
   struct
   {
     GtkWidget *floating_window, *button; // TODO (#18559): remove gtk stuff from here
-    GtkWidget *conversation_view, *input_entry, *send_button;
+    GtkWidget *conversation_view, *input_entry, *send_button, *new_chat_button;
     GtkWidget *status_label, *error_label, *spinner;
     gchar *app_session_id;
+    gchar *image_session_id;
     gchar *conversation_id;
+    GHashTable *image_sessions;
+    dt_imgid_t current_image_id;
     gchar *autorun_message;
     gchar *test_report_path;
     guint autorun_source_id;

@@ -102,11 +102,21 @@ typedef struct dt_agent_chat_submission_t
 {
   gchar *request_id;
   gchar *conversation_id;
+  gchar *image_session_id;
   gboolean has_image_id;
   dt_imgid_t image_id;
   gboolean autorun;
   double exposure_before;
 } dt_agent_chat_submission_t;
+
+typedef struct dt_agent_chat_session_t
+{
+  gchar *image_session_id;
+  gchar *conversation_id;
+  gchar *transcript;
+  gchar *status_text;
+  gchar *error_text;
+} dt_agent_chat_session_t;
 
 const char *name(const dt_view_t *self)
 {
@@ -226,9 +236,12 @@ void cleanup(dt_view_t *self)
   if(dev->agent_chat.autorun_source_id)
     g_source_remove(dev->agent_chat.autorun_source_id);
   g_free(dev->agent_chat.app_session_id);
+  g_free(dev->agent_chat.image_session_id);
   g_free(dev->agent_chat.conversation_id);
   g_free(dev->agent_chat.autorun_message);
   g_free(dev->agent_chat.test_report_path);
+  if(dev->agent_chat.image_sessions)
+    g_hash_table_unref(dev->agent_chat.image_sessions);
 
   dt_dev_cleanup(dev);
   free(dev);
@@ -1606,7 +1619,166 @@ static void _agent_chat_submission_free(gpointer data)
 
   g_free(submission->request_id);
   g_free(submission->conversation_id);
+  g_free(submission->image_session_id);
   g_free(submission);
+}
+
+static void _agent_chat_session_free(gpointer data)
+{
+  dt_agent_chat_session_t *session = data;
+  if(!session)
+    return;
+
+  g_free(session->image_session_id);
+  g_free(session->conversation_id);
+  g_free(session->transcript);
+  g_free(session->status_text);
+  g_free(session->error_text);
+  g_free(session);
+}
+
+static dt_imgid_t _agent_chat_current_image_id(void)
+{
+  if(darktable.develop && darktable.develop->image_storage.id > 0)
+    return darktable.develop->image_storage.id;
+
+  return NO_IMGID;
+}
+
+static gchar *_agent_chat_default_transcript(void)
+{
+  return g_strdup(_("assistant: ready for this image. ask for an edit or describe the look you want."));
+}
+
+static GHashTable *_agent_chat_session_table(dt_develop_t *dev)
+{
+  if(!dev->agent_chat.image_sessions)
+    dev->agent_chat.image_sessions
+      = g_hash_table_new_full(g_int64_hash, g_int64_equal, g_free, _agent_chat_session_free);
+
+  return dev->agent_chat.image_sessions;
+}
+
+static dt_agent_chat_session_t *_agent_chat_lookup_session(dt_develop_t *dev, const dt_imgid_t image_id)
+{
+  if(!dev || !dev->agent_chat.image_sessions)
+    return NULL;
+
+  gint64 key = image_id;
+  return g_hash_table_lookup(dev->agent_chat.image_sessions, &key);
+}
+
+static dt_agent_chat_session_t *_agent_chat_lookup_or_create_session(dt_develop_t *dev,
+                                                                     const dt_imgid_t image_id)
+{
+  GHashTable *sessions = _agent_chat_session_table(dev);
+  gint64 key = image_id;
+  dt_agent_chat_session_t *session = g_hash_table_lookup(sessions, &key);
+  if(session)
+    return session;
+
+  session = g_malloc0(sizeof(*session));
+  session->image_session_id = g_uuid_string_random();
+  session->conversation_id = g_uuid_string_random();
+  session->transcript = _agent_chat_default_transcript();
+  session->status_text = g_strdup(_("ready to call the local agent server"));
+
+  gint64 *owned_key = g_malloc(sizeof(*owned_key));
+  *owned_key = image_id;
+  g_hash_table_insert(sessions, owned_key, session);
+  return session;
+}
+
+static gchar *_agent_chat_dup_transcript(dt_develop_t *dev)
+{
+  if(!dev || !dev->agent_chat.conversation_view)
+    return NULL;
+
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(dev->agent_chat.conversation_view));
+  GtkTextIter start, end;
+  gtk_text_buffer_get_bounds(buffer, &start, &end);
+  return gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+}
+
+static void _agent_chat_replace_transcript(dt_develop_t *dev, const char *text)
+{
+  if(!dev || !dev->agent_chat.conversation_view)
+    return;
+
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(dev->agent_chat.conversation_view));
+  gtk_text_buffer_set_text(buffer, text ? text : "", -1);
+}
+
+static void _agent_chat_sync_current_session(dt_develop_t *dev)
+{
+  if(!dev || !dev->agent_chat.conversation_id || !dev->agent_chat.image_session_id)
+    return;
+
+  dt_agent_chat_session_t *session
+    = _agent_chat_lookup_session(dev, dev->agent_chat.current_image_id);
+  if(!session)
+    return;
+
+  g_free(session->image_session_id);
+  session->image_session_id = g_strdup(dev->agent_chat.image_session_id);
+  g_free(session->conversation_id);
+  session->conversation_id = g_strdup(dev->agent_chat.conversation_id);
+  g_free(session->transcript);
+  session->transcript = _agent_chat_dup_transcript(dev);
+  g_free(session->status_text);
+  session->status_text = g_strdup(gtk_label_get_text(GTK_LABEL(dev->agent_chat.status_label)));
+  g_free(session->error_text);
+  session->error_text = g_strdup(gtk_label_get_text(GTK_LABEL(dev->agent_chat.error_label)));
+}
+
+static void _agent_chat_load_session(dt_develop_t *dev,
+                                     const dt_agent_chat_session_t *session)
+{
+  if(!dev || !session)
+    return;
+
+  g_free(dev->agent_chat.image_session_id);
+  dev->agent_chat.image_session_id = g_strdup(session->image_session_id);
+  g_free(dev->agent_chat.conversation_id);
+  dev->agent_chat.conversation_id = g_strdup(session->conversation_id);
+
+  _agent_chat_replace_transcript(dev, session->transcript ? session->transcript : "");
+  gtk_label_set_text(GTK_LABEL(dev->agent_chat.status_label),
+                     session->status_text ? session->status_text
+                                          : _("ready to call the local agent server"));
+  gtk_label_set_text(GTK_LABEL(dev->agent_chat.error_label),
+                     session->error_text ? session->error_text : "");
+  gtk_widget_set_visible(dev->agent_chat.error_label,
+                         session->error_text && session->error_text[0] != '\0');
+  gtk_spinner_stop(GTK_SPINNER(dev->agent_chat.spinner));
+  gtk_widget_set_visible(dev->agent_chat.spinner, FALSE);
+  dev->agent_chat.is_loading = FALSE;
+}
+
+static void _agent_chat_switch_to_image_session(dt_develop_t *dev,
+                                                const dt_imgid_t image_id,
+                                                const gboolean force_new_chat)
+{
+  if(!dev)
+    return;
+
+  if(dev->agent_chat.current_image_id || dev->agent_chat.conversation_id || dev->agent_chat.image_session_id)
+    _agent_chat_sync_current_session(dev);
+
+  dt_agent_chat_session_t *session = _agent_chat_lookup_or_create_session(dev, image_id);
+  if(force_new_chat)
+  {
+    g_free(session->conversation_id);
+    session->conversation_id = g_uuid_string_random();
+    g_clear_pointer(&session->transcript, g_free);
+    session->transcript = _agent_chat_default_transcript();
+    g_free(session->status_text);
+    session->status_text = g_strdup(_("started a new chat for this image"));
+    g_clear_pointer(&session->error_text, g_free);
+  }
+
+  dev->agent_chat.current_image_id = image_id;
+  _agent_chat_load_session(dev, session);
 }
 
 static double _agent_chat_read_current_exposure(void)
@@ -1628,6 +1800,14 @@ static void _agent_chat_write_test_report(dt_develop_t *dev,
 
   GKeyFile *report = g_key_file_new();
   g_key_file_set_string(report, "result", "status", status ? status : "unknown");
+  if(dev->agent_chat.app_session_id)
+    g_key_file_set_string(report, "result", "app_session_id", dev->agent_chat.app_session_id);
+  if(dev->agent_chat.image_session_id)
+    g_key_file_set_string(report, "result", "image_session_id", dev->agent_chat.image_session_id);
+  if(dev->agent_chat.conversation_id)
+    g_key_file_set_string(report, "result", "active_conversation_id", dev->agent_chat.conversation_id);
+  if(dev->agent_chat.current_image_id > 0)
+    g_key_file_set_integer(report, "result", "active_image_id", dev->agent_chat.current_image_id);
 
   if(result)
   {
@@ -1762,17 +1942,20 @@ static void _agent_chat_append_message(dt_develop_t *dev,
   g_free(line);
 
   _agent_chat_scroll_to_end(dev);
+  _agent_chat_sync_current_session(dev);
 }
 
 static void _agent_chat_set_status(dt_develop_t *dev, const char *status)
 {
   gtk_label_set_text(GTK_LABEL(dev->agent_chat.status_label), status ? status : "");
+  _agent_chat_sync_current_session(dev);
 }
 
 static void _agent_chat_set_error(dt_develop_t *dev, const char *error)
 {
   gtk_label_set_text(GTK_LABEL(dev->agent_chat.error_label), error ? error : "");
   gtk_widget_set_visible(dev->agent_chat.error_label, error && error[0] != '\0');
+  _agent_chat_sync_current_session(dev);
 }
 
 static void _agent_chat_update_sensitivity(dt_develop_t *dev)
@@ -1780,6 +1963,8 @@ static void _agent_chat_update_sensitivity(dt_develop_t *dev)
   const gboolean sensitive = !dev->agent_chat.is_loading;
   gtk_widget_set_sensitive(dev->agent_chat.input_entry, sensitive);
   gtk_widget_set_sensitive(dev->agent_chat.send_button, sensitive);
+  if(dev->agent_chat.new_chat_button)
+    gtk_widget_set_sensitive(dev->agent_chat.new_chat_button, sensitive);
 }
 
 static void _agent_chat_set_loading(dt_develop_t *dev, const gboolean is_loading)
@@ -1818,6 +2003,31 @@ static void _agent_chat_toggle_callback(GtkToggleButton *button, dt_develop_t *d
   }
 }
 
+static void _agent_chat_new_chat_clicked(GtkButton *button, gpointer user_data)
+{
+  (void)button;
+  dt_develop_t *dev = user_data;
+  _agent_chat_switch_to_image_session(dev, _agent_chat_current_image_id(), TRUE);
+  if(dev->agent_chat.input_entry)
+    gtk_entry_set_text(GTK_ENTRY(dev->agent_chat.input_entry), "");
+  _agent_chat_update_sensitivity(dev);
+  _agent_chat_scroll_to_end(dev);
+  if(dev->agent_chat.input_entry)
+    gtk_widget_grab_focus(dev->agent_chat.input_entry);
+}
+
+static void _agent_chat_image_changed_callback(gpointer instance, gpointer user_data)
+{
+  (void)instance;
+  dt_view_t *self = user_data;
+  if(!self || !self->data)
+    return;
+
+  dt_develop_t *dev = self->data;
+  _agent_chat_switch_to_image_session(dev, _agent_chat_current_image_id(), FALSE);
+  _agent_chat_update_sensitivity(dev);
+}
+
 static void _agent_chat_fill_ui_context(dt_agent_chat_request_t *request)
 {
   request->ui_context.view = g_strdup("darkroom");
@@ -1841,19 +2051,15 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
 
   if(!dev->agent_chat.app_session_id)
     dev->agent_chat.app_session_id = g_uuid_string_random();
-  if(!dev->agent_chat.conversation_id)
-    dev->agent_chat.conversation_id = g_uuid_string_random();
+  _agent_chat_switch_to_image_session(dev, _agent_chat_current_image_id(), FALSE);
 
   request->request_id = g_uuid_string_random();
   request->app_session_id = g_strdup(dev->agent_chat.app_session_id);
+  request->image_session_id = g_strdup(dev->agent_chat.image_session_id);
   request->conversation_id = g_strdup(dev->agent_chat.conversation_id);
   request->turn_id = g_strdup(request->request_id);
   request->message_text = g_strdup(message_text);
   _agent_chat_fill_ui_context(request);
-  request->image_session_id = request->ui_context.has_image_id
-                                ? g_strdup_printf("image-%" G_GINT64_FORMAT,
-                                                  request->ui_context.image_id)
-                                : g_strdup("image-none");
   if(!dt_agent_capabilities_collect(dev, request->capabilities, error))
   {
     dt_agent_chat_request_clear(request);
@@ -1890,6 +2096,8 @@ static gboolean _agent_chat_is_stale_response(dt_develop_t *dev,
                                               const dt_agent_client_result_t *result)
 {
   if(g_strcmp0(dev->agent_chat.conversation_id, submission->conversation_id) != 0)
+    return TRUE;
+  if(g_strcmp0(dev->agent_chat.image_session_id, submission->image_session_id) != 0)
     return TRUE;
 
   if(!_agent_chat_active_image_matches(submission))
@@ -2076,6 +2284,7 @@ static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboo
   dt_agent_chat_submission_t *submission = g_malloc0(sizeof(*submission));
   submission->request_id = g_strdup(request.request_id);
   submission->conversation_id = g_strdup(request.conversation_id);
+  submission->image_session_id = g_strdup(request.image_session_id);
   submission->has_image_id = request.ui_context.has_image_id;
   submission->image_id = request.ui_context.image_id;
   submission->autorun = autorun;
@@ -3085,7 +3294,7 @@ void gui_init(dt_view_t *self)
     GtkWidget *status_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(6));
     gtk_box_pack_start(GTK_BOX(outer), status_row, FALSE, FALSE, 0);
 
-    dev->agent_chat.status_label = gtk_label_new(_("assistant chat scaffold"));
+    dev->agent_chat.status_label = gtk_label_new(_("ready to call the local agent server"));
     gtk_label_set_xalign(GTK_LABEL(dev->agent_chat.status_label), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(dev->agent_chat.status_label), TRUE);
     gtk_box_pack_start(GTK_BOX(status_row), dev->agent_chat.status_label, TRUE, TRUE, 0);
@@ -3093,6 +3302,13 @@ void gui_init(dt_view_t *self)
     dev->agent_chat.spinner = gtk_spinner_new();
     gtk_widget_set_visible(dev->agent_chat.spinner, FALSE);
     gtk_box_pack_start(GTK_BOX(status_row), dev->agent_chat.spinner, FALSE, FALSE, 0);
+
+    dev->agent_chat.new_chat_button = gtk_button_new_with_label(_("new chat"));
+    gtk_widget_set_tooltip_text(dev->agent_chat.new_chat_button,
+                                _("start a fresh conversation for the current image"));
+    g_signal_connect(G_OBJECT(dev->agent_chat.new_chat_button), "clicked",
+                     G_CALLBACK(_agent_chat_new_chat_clicked), dev);
+    gtk_box_pack_start(GTK_BOX(status_row), dev->agent_chat.new_chat_button, FALSE, FALSE, 0);
 
     dev->agent_chat.error_label = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(dev->agent_chat.error_label), 0.0f);
@@ -3115,8 +3331,6 @@ void gui_init(dt_view_t *self)
     gtk_text_view_set_top_margin(GTK_TEXT_VIEW(dev->agent_chat.conversation_view), DT_PIXEL_APPLY_DPI(8));
     gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(dev->agent_chat.conversation_view), DT_PIXEL_APPLY_DPI(8));
     gtk_container_add(GTK_CONTAINER(scroll), dev->agent_chat.conversation_view);
-    _agent_chat_append_message(dev, _("assistant"),
-                               _("chat UI is ready. next step is wiring real agent actions."));
 
     GtkWidget *input_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, DT_PIXEL_APPLY_DPI(6));
     gtk_box_pack_start(GTK_BOX(outer), input_row, FALSE, FALSE, 0);
@@ -3786,6 +4000,7 @@ void enter(dt_view_t *self)
 
   // connect to preference change for module header button hiding
   DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_PREFERENCES_CHANGE, _preference_changed_button_hide);
+  DT_CONTROL_SIGNAL_HANDLE(DT_SIGNAL_DEVELOP_IMAGE_CHANGED, _agent_chat_image_changed_callback);
   dt_iop_color_picker_init();
 
   dt_image_check_camera_missing_sample(&dev->image_storage);
@@ -3800,6 +4015,7 @@ void enter(dt_view_t *self)
     = _agent_chat_env_enabled(DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV)
       || _agent_chat_env_enabled(DT_AGENT_CHAT_EXIT_AFTER_AUTORUN_ENV);
 
+  _agent_chat_switch_to_image_session(dev, _agent_chat_current_image_id(), FALSE);
   _agent_chat_set_loading(dev, FALSE);
   _agent_chat_set_error(dev, NULL);
   _agent_chat_set_status(dev, _("ready to call the local agent server"));
@@ -3970,6 +4186,7 @@ void leave(dt_view_t *self)
   gtk_widget_hide(dev->rawoverexposed.floating_window);
   gtk_widget_hide(dev->profile.floating_window);
   gtk_widget_hide(dev->color_assessment.floating_window);
+  _agent_chat_sync_current_session(dev);
   if(dev->agent_chat.button)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.button), FALSE);
 

@@ -151,6 +151,14 @@ exposure_before = float(result.get("exposure_before", "nan"))
 if math.isnan(exposure_before):
     raise SystemExit("Missing exposure_before in smoke report")
 
+for key in ("app_session_id", "image_session_id", "active_conversation_id"):
+    if not result.get(key, ""):
+        raise SystemExit(f"Missing {key} in smoke report")
+
+active_image_id = int(result.get("active_image_id", "0"))
+if active_image_id <= 0:
+    raise SystemExit(f"Expected active_image_id > 0 in smoke report, got {active_image_id}")
+
 if expected_delta:
     actual_delta = exposure_after - exposure_before
     if abs(actual_delta - float(expected_delta)) > 0.05:
