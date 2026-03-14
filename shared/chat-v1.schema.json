@@ -1,29 +1,53 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://darktableagent.local/schemas/chat-v1.schema.json",
-  "title": "darktableAgent Chat v2.0 Request",
+  "title": "darktableAgent Chat v3.0 Request",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
     "requestId",
-    "conversationId",
+    "session",
     "message",
     "uiContext",
-    "capabilities",
-    "imageState"
+    "capabilityManifest",
+    "imageSnapshot"
   ],
   "properties": {
     "schemaVersion": {
-      "const": "2.0"
+      "const": "3.0"
     },
     "requestId": {
       "type": "string",
       "minLength": 1
     },
-    "conversationId": {
-      "type": "string",
-      "minLength": 1
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "appSessionId",
+        "imageSessionId",
+        "conversationId",
+        "turnId"
+      ],
+      "properties": {
+        "appSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "imageSessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "conversationId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "turnId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     },
     "message": {
       "type": "object",
@@ -69,67 +93,99 @@
         }
       }
     },
-    "capabilities": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "capabilityId",
-          "label",
-          "kind",
-          "targetType",
-          "actionPath",
-          "supportedModes",
-          "minNumber",
-          "maxNumber",
-          "defaultNumber",
-          "stepNumber"
-        ],
-        "properties": {
-          "capabilityId": { "type": "string", "minLength": 1 },
-          "label": { "type": "string", "minLength": 1 },
-          "kind": { "const": "set-float" },
-          "targetType": { "const": "darktable-action" },
-          "actionPath": { "type": "string", "minLength": 1 },
-          "supportedModes": {
-            "type": "array",
-            "minItems": 1,
-            "items": {
-              "enum": ["delta", "set"]
-            }
-          },
-          "minNumber": { "type": "number" },
-          "maxNumber": { "type": "number" },
-          "defaultNumber": { "type": "number" },
-          "stepNumber": { "type": "number" }
-        }
-      }
-    },
-    "imageState": {
+    "capabilityManifest": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "currentExposure",
-        "historyPosition",
-        "historyCount",
-        "metadata",
-        "controls",
-        "history"
+        "manifestVersion",
+        "targets"
       ],
       "properties": {
-        "currentExposure": {
-          "type": [
-            "number",
-            "null"
-          ]
+        "manifestVersion": {
+          "type": "string",
+          "minLength": 1
         },
-        "historyPosition": {
-          "type": "integer"
-        },
-        "historyCount": {
-          "type": "integer"
+        "targets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "capabilityId",
+              "label",
+              "kind",
+              "targetType",
+              "actionPath",
+              "supportedModes",
+              "minNumber",
+              "maxNumber",
+              "defaultNumber",
+              "stepNumber"
+            ],
+            "properties": {
+              "capabilityId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "set-float"
+              },
+              "targetType": {
+                "const": "darktable-action"
+              },
+              "actionPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "supportedModes": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "enum": [
+                    "delta",
+                    "set"
+                  ]
+                }
+              },
+              "minNumber": {
+                "type": "number"
+              },
+              "maxNumber": {
+                "type": "number"
+              },
+              "defaultNumber": {
+                "type": "number"
+              },
+              "stepNumber": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    },
+    "imageSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "imageRevisionId",
+        "metadata",
+        "historyPosition",
+        "historyCount",
+        "editableSettings",
+        "history",
+        "preview",
+        "histogram"
+      ],
+      "properties": {
+        "imageRevisionId": {
+          "type": "string",
+          "minLength": 1
         },
         "metadata": {
           "type": "object",
@@ -147,29 +203,118 @@
             "exifFocalLength"
           ],
           "properties": {
-            "imageId": { "type": ["integer", "null"] },
-            "imageName": { "type": ["string", "null"] },
-            "cameraMaker": { "type": ["string", "null"] },
-            "cameraModel": { "type": ["string", "null"] },
-            "width": { "type": "integer" },
-            "height": { "type": "integer" },
-            "exifExposureSeconds": { "type": "number" },
-            "exifAperture": { "type": "number" },
-            "exifIso": { "type": "number" },
-            "exifFocalLength": { "type": "number" }
+            "imageId": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "imageName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cameraMaker": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cameraModel": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "width": {
+              "type": "integer"
+            },
+            "height": {
+              "type": "integer"
+            },
+            "exifExposureSeconds": {
+              "type": "number"
+            },
+            "exifAperture": {
+              "type": "number"
+            },
+            "exifIso": {
+              "type": "number"
+            },
+            "exifFocalLength": {
+              "type": "number"
+            }
           }
         },
-        "controls": {
+        "historyPosition": {
+          "type": "integer"
+        },
+        "historyCount": {
+          "type": "integer"
+        },
+        "editableSettings": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["capabilityId", "label", "actionPath", "currentNumber"],
+            "required": [
+              "settingId",
+              "capabilityId",
+              "label",
+              "actionPath",
+              "currentNumber",
+              "supportedModes",
+              "minNumber",
+              "maxNumber",
+              "defaultNumber",
+              "stepNumber"
+            ],
             "properties": {
-              "capabilityId": { "type": "string", "minLength": 1 },
-              "label": { "type": "string", "minLength": 1 },
-              "actionPath": { "type": "string", "minLength": 1 },
-              "currentNumber": { "type": ["number", "null"] }
+              "settingId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "capabilityId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1
+              },
+              "actionPath": {
+                "type": "string",
+                "minLength": 1
+              },
+              "currentNumber": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "supportedModes": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "enum": [
+                    "delta",
+                    "set"
+                  ]
+                }
+              },
+              "minNumber": {
+                "type": "number"
+              },
+              "maxNumber": {
+                "type": "number"
+              },
+              "defaultNumber": {
+                "type": "number"
+              },
+              "stepNumber": {
+                "type": "number"
+              }
             }
           }
         },
@@ -187,12 +332,100 @@
               "iopOrder"
             ],
             "properties": {
-              "num": { "type": "integer" },
-              "module": { "type": ["string", "null"] },
-              "enabled": { "type": "boolean" },
-              "multiPriority": { "type": "integer" },
-              "instanceName": { "type": ["string", "null"] },
-              "iopOrder": { "type": "integer" }
+              "num": {
+                "type": "integer"
+              },
+              "module": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "multiPriority": {
+                "type": "integer"
+              },
+              "instanceName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "iopOrder": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        "preview": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "previewId",
+            "mimeType",
+            "width",
+            "height",
+            "base64Data"
+          ],
+          "properties": {
+            "previewId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mimeType": {
+              "type": "string",
+              "minLength": 1
+            },
+            "width": {
+              "type": "integer"
+            },
+            "height": {
+              "type": "integer"
+            },
+            "base64Data": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "histogram": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "binCount",
+            "channels"
+          ],
+          "properties": {
+            "binCount": {
+              "type": "integer"
+            },
+            "channels": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "bins"
+                ],
+                "properties": {
+                  "bins": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
             }
           }
         }

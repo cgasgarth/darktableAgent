@@ -25,11 +25,9 @@ def _sample_capabilities() -> list[dict]:
     ]
 
 
-def _sample_image_state() -> dict:
+def _sample_image_snapshot() -> dict:
     return {
-        "currentExposure": 2.8,
-        "historyPosition": 1,
-        "historyCount": 1,
+        "imageRevisionId": "image-12-history-1",
         "metadata": {
             "imageId": 12,
             "imageName": "_DSC8809.ARW",
@@ -42,12 +40,20 @@ def _sample_image_state() -> dict:
             "exifIso": 100.0,
             "exifFocalLength": 35.0,
         },
-        "controls": [
+        "historyPosition": 1,
+        "historyCount": 1,
+        "editableSettings": [
             {
+                "settingId": "setting.exposure.primary",
                 "capabilityId": "exposure.primary",
                 "label": "Exposure",
                 "actionPath": "iop/exposure/exposure",
                 "currentNumber": 2.8,
+                "supportedModes": ["set", "delta"],
+                "minNumber": -18.0,
+                "maxNumber": 18.0,
+                "defaultNumber": 0.0,
+                "stepNumber": 0.01,
             }
         ],
         "history": [
@@ -60,18 +66,28 @@ def _sample_image_state() -> dict:
                 "iopOrder": 20,
             }
         ],
+        "preview": None,
+        "histogram": None,
     }
 
 
 def _sample_request_payload() -> dict:
     return {
-        "schemaVersion": "2.0",
+        "schemaVersion": "3.0",
         "requestId": "req-1",
-        "conversationId": "conv-1",
+        "session": {
+            "appSessionId": "app-1",
+            "imageSessionId": "img-12",
+            "conversationId": "conv-1",
+            "turnId": "turn-1",
+        },
         "message": {"role": "user", "text": "Make it brighter"},
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "_DSC8809.ARW"},
-        "capabilities": _sample_capabilities(),
-        "imageState": _sample_image_state(),
+        "capabilityManifest": {
+            "manifestVersion": "manifest-1",
+            "targets": _sample_capabilities(),
+        },
+        "imageSnapshot": _sample_image_snapshot(),
     }
 
 
@@ -117,12 +133,19 @@ async def test_chat_returns_codex_plan_response(
                     "operations": [
                         {
                             "operationId": "op-exposure-plus-0.7",
+                            "sequence": 1,
                             "kind": "set-float",
                             "target": {
                                 "type": "darktable-action",
                                 "actionPath": "iop/exposure/exposure",
+                                "settingId": "setting.exposure.primary",
                             },
                             "value": {"mode": "delta", "number": 0.7},
+                            "reason": None,
+                            "constraints": {
+                                "onOutOfRange": "clamp",
+                                "onRevisionMismatch": "fail",
+                            },
                         }
                     ],
                 }
@@ -136,19 +159,26 @@ async def test_chat_returns_codex_plan_response(
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["message"]["text"] == "Increasing exposure by +0.7 EV."
-    assert body["operations"] == [
+    assert body["assistantMessage"]["text"] == "Increasing exposure by +0.7 EV."
+    assert body["plan"]["operations"] == [
         {
             "operationId": "op-exposure-plus-0.7",
+            "sequence": 1,
             "kind": "set-float",
-            "status": "planned",
             "target": {
                 "type": "darktable-action",
                 "actionPath": "iop/exposure/exposure",
+                "settingId": "setting.exposure.primary",
             },
             "value": {"mode": "delta", "number": 0.7},
+            "reason": None,
+            "constraints": {
+                "onOutOfRange": "clamp",
+                "onRevisionMismatch": "fail",
+            },
         }
     ]
+    assert body["operationResults"] == [{"operationId": "op-exposure-plus-0.7", "status": "planned", "error": None}]
     assert bridge.requests[0].message.text == "Make it brighter"
 
 
@@ -164,21 +194,35 @@ async def test_chat_preserves_multi_operation_order(
                     "operations": [
                         {
                             "operationId": "op-exposure-plus-0.2",
+                            "sequence": 1,
                             "kind": "set-float",
                             "target": {
                                 "type": "darktable-action",
                                 "actionPath": "iop/exposure/exposure",
+                                "settingId": None,
                             },
                             "value": {"mode": "delta", "number": 0.2},
+                            "reason": None,
+                            "constraints": {
+                                "onOutOfRange": "clamp",
+                                "onRevisionMismatch": "fail",
+                            },
                         },
                         {
                             "operationId": "op-exposure-plus-0.5",
+                            "sequence": 2,
                             "kind": "set-float",
                             "target": {
                                 "type": "darktable-action",
                                 "actionPath": "iop/exposure/exposure",
+                                "settingId": None,
                             },
                             "value": {"mode": "delta", "number": 0.5},
+                            "reason": None,
+                            "constraints": {
+                                "onOutOfRange": "clamp",
+                                "onRevisionMismatch": "fail",
+                            },
                         },
                     ],
                 }
@@ -191,7 +235,7 @@ async def test_chat_preserves_multi_operation_order(
 
     assert response.status_code == 200
     body = response.json()
-    assert [operation["operationId"] for operation in body["operations"]] == [
+    assert [operation["operationId"] for operation in body["plan"]["operations"]] == [
         "op-exposure-plus-0.2",
         "op-exposure-plus-0.5",
     ]
@@ -217,8 +261,8 @@ async def test_chat_supports_operation_free_assistant_messages(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["operations"] == []
-    assert body["message"]["text"] == "I need a more specific edit instruction."
+    assert body["plan"]["operations"] == []
+    assert body["assistantMessage"]["text"] == "I need a more specific edit instruction."
 
 
 @pytest.mark.anyio
@@ -253,40 +297,40 @@ async def test_chat_rejects_malformed_payload(api_client: AsyncClient) -> None:
     assert response.status_code == 422
     body = response.json()
     assert body["status"] == "error"
-    assert body["operations"] == []
+    assert body["operationResults"] == []
     assert "message/role" in body["error"]["message"]
 
 
 @pytest.mark.anyio
-async def test_chat_rejects_missing_image_state(api_client: AsyncClient) -> None:
+async def test_chat_rejects_missing_image_snapshot(api_client: AsyncClient) -> None:
     payload = _sample_request_payload()
-    payload.pop("imageState")
+    payload.pop("imageSnapshot")
 
     response = await api_client.post("/v1/chat", json=payload)
 
     assert response.status_code == 422
     body = response.json()
     assert body["status"] == "error"
-    assert "imageState" in body["error"]["message"]
+    assert "imageSnapshot" in body["error"]["message"]
 
 
 @pytest.mark.anyio
-async def test_chat_rejects_missing_capabilities(api_client: AsyncClient) -> None:
+async def test_chat_rejects_missing_capability_manifest(api_client: AsyncClient) -> None:
     payload = _sample_request_payload()
-    payload.pop("capabilities")
+    payload.pop("capabilityManifest")
 
     response = await api_client.post("/v1/chat", json=payload)
 
     assert response.status_code == 422
     body = response.json()
     assert body["status"] == "error"
-    assert "capabilities" in body["error"]["message"]
+    assert "capabilityManifest" in body["error"]["message"]
 
 
 @pytest.mark.anyio
-async def test_chat_rejects_control_capability_mismatch(api_client: AsyncClient) -> None:
+async def test_chat_rejects_setting_capability_mismatch(api_client: AsyncClient) -> None:
     payload = _sample_request_payload()
-    payload["imageState"]["controls"][0]["capabilityId"] = "unknown.capability"
+    payload["imageSnapshot"]["editableSettings"][0]["capabilityId"] = "unknown.capability"
 
     response = await api_client.post("/v1/chat", json=payload)
 

@@ -199,18 +199,21 @@ if not rows:
     raise SystemExit("Expected at least one accepted_request log entry")
 
 accepted_request = rows[-1]
-image_state = accepted_request.get("imageState")
+image_snapshot = accepted_request.get("imageSnapshot")
 capabilities = accepted_request.get("capabilities")
 
-if image_state is not None:
-    if not isinstance(image_state, dict):
-        raise SystemExit("Missing imageState in accepted_request log entry")
-    if "currentExposure" not in image_state:
-        raise SystemExit("Missing currentExposure in imageState")
-    if not isinstance(image_state.get("controls"), list) or not image_state["controls"]:
-        raise SystemExit("Missing controls in imageState")
-    if not isinstance(image_state.get("history"), list):
-        raise SystemExit("Missing history in imageState")
+if image_snapshot is not None:
+    if not isinstance(image_snapshot, dict):
+        raise SystemExit("Missing imageSnapshot in accepted_request log entry")
+    if "imageRevisionId" not in image_snapshot:
+        raise SystemExit("Missing imageRevisionId in imageSnapshot")
+    if not isinstance(image_snapshot.get("editableSettings"), list) or not image_snapshot["editableSettings"]:
+        raise SystemExit("Missing editableSettings in imageSnapshot")
+    if not isinstance(image_snapshot.get("history"), list):
+        raise SystemExit("Missing history in imageSnapshot")
+    metadata = image_snapshot.get("metadata")
+    if not isinstance(metadata, dict):
+        raise SystemExit("Missing metadata in imageSnapshot")
 
 if capabilities is not None:
     if not isinstance(capabilities, list) or not capabilities:
@@ -233,11 +236,11 @@ if capabilities is not None:
 
 require_image_state = bool(int(sys.argv[2]))
 require_capabilities = bool(int(sys.argv[3]))
-if require_image_state and image_state is None:
-    raise SystemExit("Expected imageState in accepted_request log entry")
+if require_image_state and image_snapshot is None:
+    raise SystemExit("Expected imageSnapshot in accepted_request log entry")
 if require_capabilities and capabilities is None:
     raise SystemExit("Expected capabilities in accepted_request log entry")
 
-print("Accepted request log includes expected image state and capability manifest.")
+print("Accepted request log includes expected image snapshot and capability manifest.")
 PY
 fi

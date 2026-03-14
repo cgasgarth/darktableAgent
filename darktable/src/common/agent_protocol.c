@@ -131,7 +131,6 @@ static gboolean _parse_message(JsonObject *object,
 
 static void _serialize_capabilities(JsonBuilder *builder, const GPtrArray *capabilities)
 {
-  json_builder_set_member_name(builder, "capabilities");
   json_builder_begin_array(builder);
 
   if(capabilities)
@@ -176,17 +175,39 @@ static void _serialize_capabilities(JsonBuilder *builder, const GPtrArray *capab
   json_builder_end_array(builder);
 }
 
-static void _serialize_image_state(JsonBuilder *builder,
-                                   const dt_agent_image_state_t *state)
+static gchar *_build_setting_id(const dt_agent_image_control_t *control)
 {
-  json_builder_set_member_name(builder, "imageState");
+  if(!control || !control->capability_id)
+    return NULL;
+
+  return g_strdup_printf("setting.%s", control->capability_id);
+}
+
+static gchar *_build_image_revision_id(const dt_agent_chat_request_t *request)
+{
+  if(request && request->image_revision_id && request->image_revision_id[0])
+    return g_strdup(request->image_revision_id);
+
+  if(request && request->ui_context.has_image_id)
+    return g_strdup_printf("image-%" G_GINT64_FORMAT "-history-%d-%d",
+                           request->ui_context.image_id,
+                           request->image_state.history_position,
+                           request->image_state.history_count);
+
+  return g_strdup("image-unknown");
+}
+
+static void _serialize_image_snapshot(JsonBuilder *builder,
+                                      const dt_agent_chat_request_t *request)
+{
+  const dt_agent_image_state_t *state = &request->image_state;
+
+  json_builder_set_member_name(builder, "imageSnapshot");
   json_builder_begin_object(builder);
 
-  json_builder_set_member_name(builder, "currentExposure");
-  if(state->has_current_exposure)
-    json_builder_add_double_value(builder, state->current_exposure);
-  else
-    json_builder_add_null_value(builder);
+  g_autofree gchar *image_revision_id = _build_image_revision_id(request);
+  json_builder_set_member_name(builder, "imageRevisionId");
+  json_builder_add_string_value(builder, image_revision_id);
 
   json_builder_set_member_name(builder, "historyPosition");
   json_builder_add_int_value(builder, state->history_position);
@@ -230,12 +251,30 @@ static void _serialize_image_state(JsonBuilder *builder,
   json_builder_add_double_value(builder, state->metadata.exif_focal_length);
   json_builder_end_object(builder);
 
-  json_builder_set_member_name(builder, "controls");
+  json_builder_set_member_name(builder, "editableSettings");
   json_builder_begin_array(builder);
   for(guint i = 0; i < state->controls->len; i++)
   {
     const dt_agent_image_control_t *control = g_ptr_array_index(state->controls, i);
+    const dt_agent_capability_t *capability = NULL;
+    for(guint capability_index = 0; request->capabilities && capability_index < request->capabilities->len;
+        capability_index++)
+    {
+      const dt_agent_capability_t *candidate = g_ptr_array_index(request->capabilities, capability_index);
+      if(g_strcmp0(candidate->capability_id, control->capability_id) == 0)
+      {
+        capability = candidate;
+        break;
+      }
+    }
+
     json_builder_begin_object(builder);
+    g_autofree gchar *setting_id = _build_setting_id(control);
+    json_builder_set_member_name(builder, "settingId");
+    if(setting_id)
+      json_builder_add_string_value(builder, setting_id);
+    else
+      json_builder_add_null_value(builder);
     json_builder_set_member_name(builder, "capabilityId");
     json_builder_add_string_value(builder, control->capability_id);
     json_builder_set_member_name(builder, "label");
@@ -247,6 +286,23 @@ static void _serialize_image_state(JsonBuilder *builder,
       json_builder_add_double_value(builder, control->current_number);
     else
       json_builder_add_null_value(builder);
+
+    json_builder_set_member_name(builder, "supportedModes");
+    json_builder_begin_array(builder);
+    if(capability && (capability->supported_modes & DT_AGENT_VALUE_MODE_FLAG_SET) != 0)
+      json_builder_add_string_value(builder, "set");
+    if(capability && (capability->supported_modes & DT_AGENT_VALUE_MODE_FLAG_DELTA) != 0)
+      json_builder_add_string_value(builder, "delta");
+    json_builder_end_array(builder);
+
+    json_builder_set_member_name(builder, "minNumber");
+    json_builder_add_double_value(builder, capability ? capability->min_number : 0.0);
+    json_builder_set_member_name(builder, "maxNumber");
+    json_builder_add_double_value(builder, capability ? capability->max_number : 0.0);
+    json_builder_set_member_name(builder, "defaultNumber");
+    json_builder_add_double_value(builder, capability ? capability->default_number : 0.0);
+    json_builder_set_member_name(builder, "stepNumber");
+    json_builder_add_double_value(builder, capability ? capability->step_number : 0.0);
     json_builder_end_object(builder);
   }
   json_builder_end_array(builder);
@@ -278,6 +334,12 @@ static void _serialize_image_state(JsonBuilder *builder,
     json_builder_end_object(builder);
   }
   json_builder_end_array(builder);
+
+  json_builder_set_member_name(builder, "preview");
+  json_builder_add_null_value(builder);
+
+  json_builder_set_member_name(builder, "histogram");
+  json_builder_add_null_value(builder);
 
   json_builder_end_object(builder);
 }
@@ -314,23 +376,16 @@ static gboolean _parse_operation(JsonObject *object,
                                  dt_agent_chat_operation_t **out,
                                  GError **error)
 {
-  static const char *const valid_statuses[] = {
-    "planned",
-    "applied",
-    "blocked",
-    "failed",
-    NULL,
-  };
-
   dt_agent_chat_operation_t *operation = g_new0(dt_agent_chat_operation_t, 1);
 
   if(!_require_string_member(object, "operationId", &operation->operation_id, error)
-     || !_require_string_member(object, "kind", &operation->kind_name, error)
-     || !_require_string_member(object, "status", &operation->status, error))
+     || !_require_string_member(object, "kind", &operation->kind_name, error))
   {
     dt_agent_chat_operation_free(operation);
     return FALSE;
   }
+
+  operation->status = g_strdup("planned");
 
   operation->kind = dt_agent_operation_kind_from_string(operation->kind_name);
   if(operation->kind == DT_AGENT_OPERATION_UNKNOWN)
@@ -338,15 +393,6 @@ static gboolean _parse_operation(JsonObject *object,
     g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
                 "unsupported operation kind '%s'",
                 operation->kind_name ? operation->kind_name : "");
-    dt_agent_chat_operation_free(operation);
-    return FALSE;
-  }
-
-  if(!_string_in_list(operation->status, valid_statuses))
-  {
-    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
-                "unsupported operation status '%s'",
-                operation->status ? operation->status : "");
     dt_agent_chat_operation_free(operation);
     return FALSE;
   }
@@ -379,6 +425,17 @@ static gboolean _parse_operation(JsonObject *object,
     dt_agent_chat_operation_free(operation);
     return FALSE;
   }
+  if(json_object_has_member(target, "settingId"))
+  {
+    JsonNode *setting_id_node = json_object_get_member(target, "settingId");
+    if(JSON_NODE_HOLDS_VALUE(setting_id_node)
+       && g_type_is_a(json_node_get_value_type(setting_id_node), G_TYPE_STRING))
+    {
+      const char *setting_id = json_node_get_string(setting_id_node);
+      if(setting_id && setting_id[0])
+        operation->setting_id = g_strdup(setting_id);
+    }
+  }
 
   if(g_strcmp0(operation->target_type, "darktable-action") != 0)
   {
@@ -401,6 +458,14 @@ static gboolean _parse_operation(JsonObject *object,
   operation->value_mode = dt_agent_value_mode_from_string(value_mode_name);
   g_free(value_mode_name);
 
+  if(json_object_has_member(object, "sequence"))
+  {
+    JsonNode *sequence_node = json_object_get_member(object, "sequence");
+    if(JSON_NODE_HOLDS_VALUE(sequence_node)
+       && g_type_is_a(json_node_get_value_type(sequence_node), G_TYPE_INT64))
+      operation->sequence = json_node_get_int(sequence_node);
+  }
+
   if(operation->value_mode == DT_AGENT_VALUE_MODE_UNKNOWN)
   {
     g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
@@ -411,6 +476,35 @@ static gboolean _parse_operation(JsonObject *object,
 
   *out = operation;
   return TRUE;
+}
+
+static gboolean _parse_session(JsonObject *object,
+                               char **app_session_id,
+                               char **image_session_id,
+                               char **conversation_id,
+                               char **turn_id,
+                               GError **error)
+{
+  if(!json_object_has_member(object, "session"))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "missing required member 'session'");
+    return FALSE;
+  }
+
+  JsonNode *node = json_object_get_member(object, "session");
+  if(!JSON_NODE_HOLDS_OBJECT(node))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "member 'session' must be an object");
+    return FALSE;
+  }
+
+  JsonObject *session = json_node_get_object(node);
+  return _require_string_member(session, "appSessionId", app_session_id, error)
+      && _require_string_member(session, "imageSessionId", image_session_id, error)
+      && _require_string_member(session, "conversationId", conversation_id, error)
+      && _require_string_member(session, "turnId", turn_id, error);
 }
 
 void dt_agent_ui_context_clear(dt_agent_ui_context_t *ui_context)
@@ -440,7 +534,11 @@ void dt_agent_chat_request_clear(dt_agent_chat_request_t *request)
 
   g_free(request->schema_version);
   g_free(request->request_id);
+  g_free(request->app_session_id);
+  g_free(request->image_session_id);
   g_free(request->conversation_id);
+  g_free(request->turn_id);
+  g_free(request->image_revision_id);
   g_free(request->message_text);
   dt_agent_ui_context_clear(&request->ui_context);
   if(request->capabilities)
@@ -456,7 +554,11 @@ void dt_agent_chat_request_copy(dt_agent_chat_request_t *dest,
   g_free(dest->schema_version);
   dest->schema_version = g_strdup(src->schema_version);
   dest->request_id = g_strdup(src->request_id);
+  dest->app_session_id = g_strdup(src->app_session_id);
+  dest->image_session_id = g_strdup(src->image_session_id);
   dest->conversation_id = g_strdup(src->conversation_id);
+  dest->turn_id = g_strdup(src->turn_id);
+  dest->image_revision_id = g_strdup(src->image_revision_id);
   dest->message_text = g_strdup(src->message_text);
   dest->ui_context.view = g_strdup(src->ui_context.view);
   dest->ui_context.has_image_id = src->ui_context.has_image_id;
@@ -482,6 +584,7 @@ void dt_agent_chat_operation_free(gpointer data)
   g_free(operation->status);
   g_free(operation->target_type);
   g_free(operation->action_path);
+  g_free(operation->setting_id);
   g_free(operation);
 }
 
@@ -501,7 +604,12 @@ void dt_agent_chat_response_clear(dt_agent_chat_response_t *response)
 
   g_free(response->schema_version);
   g_free(response->request_id);
+  g_free(response->app_session_id);
+  g_free(response->image_session_id);
   g_free(response->conversation_id);
+  g_free(response->turn_id);
+  g_free(response->plan_id);
+  g_free(response->base_image_revision_id);
   g_free(response->status);
   g_free(response->message_role);
   g_free(response->message_text);
@@ -559,7 +667,8 @@ dt_agent_value_mode_t dt_agent_value_mode_from_string(const char *mode_name)
 gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
                                        GError **error)
 {
-  if(!request || !request->request_id || !request->conversation_id
+  if(!request || !request->request_id || !request->app_session_id
+     || !request->image_session_id || !request->conversation_id || !request->turn_id
      || !request->message_text || !request->ui_context.view
      || !request->capabilities || request->capabilities->len == 0)
   {
@@ -579,8 +688,17 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
   json_builder_set_member_name(builder, "requestId");
   json_builder_add_string_value(builder, request->request_id);
 
+  json_builder_set_member_name(builder, "session");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appSessionId");
+  json_builder_add_string_value(builder, request->app_session_id);
+  json_builder_set_member_name(builder, "imageSessionId");
+  json_builder_add_string_value(builder, request->image_session_id);
   json_builder_set_member_name(builder, "conversationId");
   json_builder_add_string_value(builder, request->conversation_id);
+  json_builder_set_member_name(builder, "turnId");
+  json_builder_add_string_value(builder, request->turn_id);
+  json_builder_end_object(builder);
 
   json_builder_set_member_name(builder, "message");
   json_builder_begin_object(builder);
@@ -606,8 +724,14 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
     json_builder_add_null_value(builder);
   json_builder_end_object(builder);
 
+  json_builder_set_member_name(builder, "capabilityManifest");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "manifestVersion");
+  json_builder_add_string_value(builder, "darktable-agent-live");
+  json_builder_set_member_name(builder, "targets");
   _serialize_capabilities(builder, request->capabilities);
-  _serialize_image_state(builder, &request->image_state);
+  json_builder_end_object(builder);
+  _serialize_image_snapshot(builder, request);
 
   json_builder_end_object(builder);
 
@@ -657,9 +781,15 @@ gboolean dt_agent_chat_response_parse_data(const gchar *data,
 
   gboolean ok = _require_string_member(object, "schemaVersion", &response->schema_version, error)
              && _require_string_member(object, "requestId", &response->request_id, error)
-             && _require_string_member(object, "conversationId", &response->conversation_id, error)
+             && _parse_session(object,
+                               &response->app_session_id,
+                               &response->image_session_id,
+                               &response->conversation_id,
+                               &response->turn_id,
+                               error)
              && _require_string_member(object, "status", &response->status, error)
-             && _parse_message(object, "message", &response->message_role, &response->message_text, error)
+             && _parse_message(object, "assistantMessage",
+                               &response->message_role, &response->message_text, error)
              && _parse_error(object, &response->error_code, &response->error_message, error);
 
   if(ok)
@@ -702,40 +832,70 @@ gboolean dt_agent_chat_response_parse_data(const gchar *data,
     if(!ok)
       goto cleanup;
 
-    if(!json_object_has_member(object, "operations"))
+    if(g_strcmp0(response->status, "ok") == 0)
     {
-      g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
-                  "missing required member 'operations'");
-      ok = FALSE;
-    }
-    else
-    {
-      JsonNode *operations_node = json_object_get_member(object, "operations");
-      if(!JSON_NODE_HOLDS_ARRAY(operations_node))
+      if(!json_object_has_member(object, "plan"))
       {
         g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
-                    "member 'operations' must be an array");
+                    "missing required member 'plan'");
         ok = FALSE;
       }
       else
       {
-        JsonArray *operations = json_node_get_array(operations_node);
-        const guint count = json_array_get_length(operations);
-        for(guint i = 0; ok && i < count; i++)
+        JsonNode *plan_node = json_object_get_member(object, "plan");
+        if(!JSON_NODE_HOLDS_OBJECT(plan_node))
         {
-          JsonNode *operation_node = json_array_get_element(operations, i);
-          if(!JSON_NODE_HOLDS_OBJECT(operation_node))
+          g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                      "member 'plan' must be an object");
+          ok = FALSE;
+        }
+        else
+        {
+          JsonObject *plan = json_node_get_object(plan_node);
+          ok = _require_string_member(plan, "planId", &response->plan_id, error)
+             && _require_string_member(plan, "baseImageRevisionId",
+                                       &response->base_image_revision_id, error);
+
+          if(!ok)
+            goto cleanup;
+
+          if(!json_object_has_member(plan, "operations"))
           {
             g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
-                        "operation %u must be an object", i);
+                        "plan must include operations");
             ok = FALSE;
-            break;
           }
+          else
+          {
+            JsonNode *operations_node = json_object_get_member(plan, "operations");
+            if(!JSON_NODE_HOLDS_ARRAY(operations_node))
+            {
+              g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                          "plan operations must be an array");
+              ok = FALSE;
+            }
+            else
+            {
+              JsonArray *operations = json_node_get_array(operations_node);
+              const guint count = json_array_get_length(operations);
+              for(guint i = 0; ok && i < count; i++)
+              {
+                JsonNode *operation_node = json_array_get_element(operations, i);
+                if(!JSON_NODE_HOLDS_OBJECT(operation_node))
+                {
+                  g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                              "operation %u must be an object", i);
+                  ok = FALSE;
+                  break;
+                }
 
-          dt_agent_chat_operation_t *operation = NULL;
-          ok = _parse_operation(json_node_get_object(operation_node), &operation, error);
-          if(ok)
-            g_ptr_array_add(response->operations, operation);
+                dt_agent_chat_operation_t *operation = NULL;
+                ok = _parse_operation(json_node_get_object(operation_node), &operation, error);
+                if(ok)
+                  g_ptr_array_add(response->operations, operation);
+              }
+            }
+          }
         }
       }
     }

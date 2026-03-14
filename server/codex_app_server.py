@@ -45,14 +45,16 @@ Return exactly one JSON object matching the output schema.
 You are given:
 - the latest user message
 - a capability manifest describing writable darktable controls
-- the current image state, metadata, and history
+- a current image snapshot with metadata, history, editable settings, and optionally a rendered preview and histogram
 
 Rules:
-- Only plan operations that are explicitly supported by the capability manifest.
-- Never invent capability IDs or action paths.
+- Only plan operations that are explicitly supported by the capability manifest and editable settings snapshot.
+- Never invent capability IDs, setting IDs, or action paths.
 - Use zero operations when the request is unsupported, ambiguous, unsafe, or impossible with the supplied capabilities.
 - Keep assistantText brief and user-facing.
 - Every operation must be immediately executable by darktable.
+- Use the supplied preview and histogram when they are present.
+- Prefer the specific editable settings and current values supplied in the image snapshot over generic photography assumptions.
 - Use mode "delta" for relative adjustments and mode "set" for absolute assignments.
 - When the user requests an exact EV change, use that exact exposure delta if the exposure capability exists.
 - When the user requests to brighten or darken without an exact amount and the exposure capability exists, default to a single exposure delta of +0.7 EV or -0.7 EV.
@@ -100,7 +102,7 @@ class CodexAppServerBridge:
         deadline = time.monotonic() + self._timeout_seconds
         with self._lock:
             self._ensure_initialized_locked(deadline)
-            thread_id = self._get_or_create_thread_locked(request.conversationId, deadline)
+            thread_id = self._get_or_create_thread_locked(request.session.conversationId, deadline)
             return self._run_turn_locked(thread_id, request, deadline)
 
     def _ensure_initialized_locked(self, deadline: float) -> None:

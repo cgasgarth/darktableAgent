@@ -225,6 +225,7 @@ void cleanup(dt_view_t *self)
 
   if(dev->agent_chat.autorun_source_id)
     g_source_remove(dev->agent_chat.autorun_source_id);
+  g_free(dev->agent_chat.app_session_id);
   g_free(dev->agent_chat.conversation_id);
   g_free(dev->agent_chat.autorun_message);
   g_free(dev->agent_chat.test_report_path);
@@ -1838,13 +1839,21 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
 {
   dt_agent_chat_request_init(request);
 
+  if(!dev->agent_chat.app_session_id)
+    dev->agent_chat.app_session_id = g_uuid_string_random();
   if(!dev->agent_chat.conversation_id)
     dev->agent_chat.conversation_id = g_uuid_string_random();
 
   request->request_id = g_uuid_string_random();
+  request->app_session_id = g_strdup(dev->agent_chat.app_session_id);
   request->conversation_id = g_strdup(dev->agent_chat.conversation_id);
+  request->turn_id = g_strdup(request->request_id);
   request->message_text = g_strdup(message_text);
   _agent_chat_fill_ui_context(request);
+  request->image_session_id = request->ui_context.has_image_id
+                                ? g_strdup_printf("image-%" G_GINT64_FORMAT,
+                                                  request->ui_context.image_id)
+                                : g_strdup("image-none");
   if(!dt_agent_capabilities_collect(request->capabilities, error))
   {
     dt_agent_chat_request_clear(request);
@@ -1856,7 +1865,8 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
     return FALSE;
   }
 
-  if(!request->request_id || !request->conversation_id || !request->message_text)
+  if(!request->request_id || !request->app_session_id || !request->image_session_id
+     || !request->conversation_id || !request->turn_id || !request->message_text)
   {
     g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
                 "%s", _("failed to build an agent request"));

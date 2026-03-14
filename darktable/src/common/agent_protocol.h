@@ -25,7 +25,7 @@
 
 G_BEGIN_DECLS
 
-#define DT_AGENT_CHAT_SCHEMA_VERSION "2.0"
+#define DT_AGENT_CHAT_SCHEMA_VERSION "3.0"
 #define DT_AGENT_CHAT_SERVER_URL_CONF "plugins/ai/agent/server_url"
 #define DT_AGENT_CHAT_TIMEOUT_SECONDS_CONF "plugins/ai/agent/timeout_seconds"
 #define DT_AGENT_CHAT_DEFAULT_ENDPOINT "http://127.0.0.1:8001/v1/chat"
@@ -55,7 +55,11 @@ typedef struct dt_agent_chat_request_t
 {
   gchar *schema_version;
   gchar *request_id;
+  gchar *app_session_id;
+  gchar *image_session_id;
   gchar *conversation_id;
+  gchar *turn_id;
+  gchar *image_revision_id;
   gchar *message_text;
   dt_agent_ui_context_t ui_context;
   GPtrArray *capabilities;
@@ -65,11 +69,13 @@ typedef struct dt_agent_chat_request_t
 typedef struct dt_agent_chat_operation_t
 {
   gchar *operation_id;
+  gint sequence;
   dt_agent_operation_kind_t kind;
   gchar *kind_name;
   gchar *status;
   gchar *target_type;
   gchar *action_path;
+  gchar *setting_id;
   dt_agent_value_mode_t value_mode;
   double number;
 } dt_agent_chat_operation_t;
@@ -78,7 +84,12 @@ typedef struct dt_agent_chat_response_t
 {
   gchar *schema_version;
   gchar *request_id;
+  gchar *app_session_id;
+  gchar *image_session_id;
   gchar *conversation_id;
+  gchar *turn_id;
+  gchar *plan_id;
+  gchar *base_image_revision_id;
   gchar *status;
   gchar *message_role;
   gchar *message_text;

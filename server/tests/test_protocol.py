@@ -20,11 +20,9 @@ def _sample_capabilities() -> list[dict]:
     ]
 
 
-def _sample_image_state() -> dict:
+def _sample_image_snapshot() -> dict:
     return {
-        "currentExposure": 2.8,
-        "historyPosition": 1,
-        "historyCount": 1,
+        "imageRevisionId": "image-12-history-1",
         "metadata": {
             "imageId": 12,
             "imageName": "_DSC8809.ARW",
@@ -37,12 +35,20 @@ def _sample_image_state() -> dict:
             "exifIso": 100.0,
             "exifFocalLength": 35.0,
         },
-        "controls": [
+        "historyPosition": 1,
+        "historyCount": 1,
+        "editableSettings": [
             {
+                "settingId": "setting.exposure.primary",
                 "capabilityId": "exposure.primary",
                 "label": "Exposure",
                 "actionPath": "iop/exposure/exposure",
                 "currentNumber": 2.8,
+                "supportedModes": ["set", "delta"],
+                "minNumber": -18.0,
+                "maxNumber": 18.0,
+                "defaultNumber": 0.0,
+                "stepNumber": 0.01,
             }
         ],
         "history": [
@@ -55,27 +61,39 @@ def _sample_image_state() -> dict:
                 "iopOrder": 20,
             }
         ],
+        "preview": None,
+        "histogram": None,
     }
 
 
 def _sample_request_payload() -> dict:
     return {
-        "schemaVersion": "2.0",
+        "schemaVersion": "3.0",
         "requestId": "req-1",
-        "conversationId": "conv-1",
+        "session": {
+            "appSessionId": "app-1",
+            "imageSessionId": "img-12",
+            "conversationId": "conv-1",
+            "turnId": "turn-1",
+        },
         "message": {"role": "user", "text": "Make it brighter"},
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
-        "capabilities": _sample_capabilities(),
-        "imageState": _sample_image_state(),
+        "capabilityManifest": {
+            "manifestVersion": "manifest-1",
+            "targets": _sample_capabilities(),
+        },
+        "imageSnapshot": _sample_image_snapshot(),
     }
 
 
-def test_request_envelope_accepts_v2_payload() -> None:
+def test_request_envelope_accepts_v3_payload() -> None:
     envelope = RequestEnvelope.model_validate(_sample_request_payload())
 
-    assert envelope.schemaVersion == "2.0"
-    assert envelope.capabilities[0].supportedModes == ["set", "delta"]
-    assert envelope.imageState.controls[0].actionPath == "iop/exposure/exposure"
+    assert envelope.schemaVersion == "3.0"
+    assert envelope.capabilityManifest.targets[0].supportedModes == ["set", "delta"]
+    assert (
+        envelope.imageSnapshot.editableSettings[0].actionPath == "iop/exposure/exposure"
+    )
 
 
 def test_request_envelope_rejects_unknown_fields() -> None:
@@ -98,21 +116,35 @@ def test_build_response_from_plan_preserves_ordered_operations() -> None:
             "operations": [
                 {
                     "operationId": "op-exposure-plus-0.2",
+                    "sequence": 1,
                     "kind": "set-float",
                     "target": {
                         "type": "darktable-action",
                         "actionPath": "iop/exposure/exposure",
+                        "settingId": "setting.exposure.primary",
                     },
                     "value": {"mode": "delta", "number": 0.2},
+                    "reason": None,
+                    "constraints": {
+                        "onOutOfRange": "clamp",
+                        "onRevisionMismatch": "fail",
+                    },
                 },
                 {
                     "operationId": "op-exposure-plus-0.5",
+                    "sequence": 2,
                     "kind": "set-float",
                     "target": {
                         "type": "darktable-action",
                         "actionPath": "iop/exposure/exposure",
+                        "settingId": "setting.exposure.primary",
                     },
                     "value": {"mode": "delta", "number": 0.5},
+                    "reason": None,
+                    "constraints": {
+                        "onOutOfRange": "clamp",
+                        "onRevisionMismatch": "fail",
+                    },
                 },
             ],
         }
@@ -120,12 +152,13 @@ def test_build_response_from_plan_preserves_ordered_operations() -> None:
 
     response = build_response_from_plan(request, plan)
 
-    assert response.message.text == "Applying two exposure adjustments."
-    assert [operation.operationId for operation in response.operations] == [
+    assert response.assistantMessage.text == "Applying two exposure adjustments."
+    assert [operation.operationId for operation in response.plan.operations] == [
         "op-exposure-plus-0.2",
         "op-exposure-plus-0.5",
     ]
-    assert [operation.status for operation in response.operations] == ["planned", "planned"]
+    assert [result.status for result in response.operationResults] == ["planned", "planned"]
+    assert response.session.conversationId == "conv-1"
 
 
 def test_agent_plan_rejects_duplicate_operation_ids() -> None:
@@ -136,21 +169,35 @@ def test_agent_plan_rejects_duplicate_operation_ids() -> None:
                 "operations": [
                     {
                         "operationId": "duplicate",
+                        "sequence": 1,
                         "kind": "set-float",
                         "target": {
                             "type": "darktable-action",
                             "actionPath": "iop/exposure/exposure",
+                            "settingId": None,
                         },
                         "value": {"mode": "delta", "number": 0.2},
+                        "reason": None,
+                        "constraints": {
+                            "onOutOfRange": "clamp",
+                            "onRevisionMismatch": "fail",
+                        },
                     },
                     {
                         "operationId": "duplicate",
+                        "sequence": 2,
                         "kind": "set-float",
                         "target": {
                             "type": "darktable-action",
                             "actionPath": "iop/exposure/exposure",
+                            "settingId": None,
                         },
                         "value": {"mode": "delta", "number": 0.5},
+                        "reason": None,
+                        "constraints": {
+                            "onOutOfRange": "clamp",
+                            "onRevisionMismatch": "fail",
+                        },
                     },
                 ],
             }
@@ -161,33 +208,80 @@ def test_agent_plan_rejects_duplicate_operation_ids() -> None:
         raise AssertionError("Expected validation failure")
 
 
-def test_request_envelope_rejects_missing_image_state() -> None:
-    payload = _sample_request_payload()
-    payload.pop("imageState")
-
+def test_agent_plan_rejects_duplicate_sequences() -> None:
     try:
-        RequestEnvelope.model_validate(payload)
+        AgentPlan.model_validate(
+            {
+                "assistantText": "Nope",
+                "operations": [
+                    {
+                        "operationId": "one",
+                        "sequence": 1,
+                        "kind": "set-float",
+                        "target": {
+                            "type": "darktable-action",
+                            "actionPath": "iop/exposure/exposure",
+                            "settingId": None,
+                        },
+                        "value": {"mode": "delta", "number": 0.2},
+                        "reason": None,
+                        "constraints": {
+                            "onOutOfRange": "clamp",
+                            "onRevisionMismatch": "fail",
+                        },
+                    },
+                    {
+                        "operationId": "two",
+                        "sequence": 1,
+                        "kind": "set-float",
+                        "target": {
+                            "type": "darktable-action",
+                            "actionPath": "iop/exposure/exposure",
+                            "settingId": None,
+                        },
+                        "value": {"mode": "delta", "number": 0.5},
+                        "reason": None,
+                        "constraints": {
+                            "onOutOfRange": "clamp",
+                            "onRevisionMismatch": "fail",
+                        },
+                    },
+                ],
+            }
+        )
     except ValidationError as exc:
-        assert "imageState" in str(exc)
+        assert "operation sequence values must be unique" in str(exc)
     else:
         raise AssertionError("Expected validation failure")
 
 
-def test_request_envelope_rejects_missing_capabilities() -> None:
+def test_request_envelope_rejects_missing_image_snapshot() -> None:
     payload = _sample_request_payload()
-    payload.pop("capabilities")
+    payload.pop("imageSnapshot")
 
     try:
         RequestEnvelope.model_validate(payload)
     except ValidationError as exc:
-        assert "capabilities" in str(exc)
+        assert "imageSnapshot" in str(exc)
     else:
         raise AssertionError("Expected validation failure")
 
 
-def test_request_envelope_rejects_control_capability_mismatch() -> None:
+def test_request_envelope_rejects_missing_capability_manifest() -> None:
     payload = _sample_request_payload()
-    payload["imageState"]["controls"][0]["capabilityId"] = "unknown.capability"
+    payload.pop("capabilityManifest")
+
+    try:
+        RequestEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        assert "capabilityManifest" in str(exc)
+    else:
+        raise AssertionError("Expected validation failure")
+
+
+def test_request_envelope_rejects_setting_capability_mismatch() -> None:
+    payload = _sample_request_payload()
+    payload["imageSnapshot"]["editableSettings"][0]["capabilityId"] = "unknown.capability"
 
     try:
         RequestEnvelope.model_validate(payload)
