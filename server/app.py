@@ -317,10 +317,14 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
         progress_getter = getattr(bridge, "get_request_progress", None)
         plan_task = asyncio.create_task(asyncio.to_thread(bridge.plan, request))
         last_progress_signature: tuple[Any, ...] | None = None
+        last_progress_payload: dict[str, Any] | None = None
 
         yield _encode_sse("accepted", {"requestId": request.requestId})
 
         while True:
+            if plan_task.done():
+                break
+
             if callable(progress_getter):
                 progress_payload = await asyncio.to_thread(
                     progress_getter,
@@ -343,10 +347,8 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                 )
                 if progress_signature != last_progress_signature:
                     last_progress_signature = progress_signature
+                    last_progress_payload = dict(progress_payload)
                     yield _encode_sse("progress", progress_payload)
-
-            if plan_task.done():
-                break
 
             await asyncio.sleep(0.25)
 
@@ -354,6 +356,26 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
             turn_result = plan_task.result()
             response = build_response_from_plan(request, turn_result.plan)
             _log_fulfilled_request(request, response, turn_result)
+            completion_progress = (
+                dict(last_progress_payload)
+                if last_progress_payload is not None
+                else {
+                    "found": True,
+                    "toolCallsUsed": 0,
+                    "maxToolCalls": request.refinement.maxPasses if request.refinement.enabled else 1,
+                    "appliedOperationCount": len(response.plan.operations) if response.plan else 0,
+                    "operations": [],
+                    "lastToolName": None,
+                    "progressVersion": 0,
+                }
+            )
+            completion_progress["found"] = True
+            completion_progress["status"] = "completed"
+            completion_progress["message"] = "Codex plan completed"
+            if completion_progress.get("progressVersion") is None:
+                completion_progress["progressVersion"] = 0
+            completion_progress["progressVersion"] = int(completion_progress["progressVersion"]) + 1
+            yield _encode_sse("progress", completion_progress)
             yield _encode_sse("final", response.model_dump(mode="json"))
         except CodexAppServerError as exc:
             payload = build_error_payload(
