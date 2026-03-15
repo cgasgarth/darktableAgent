@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import json
 import logging
 import os
@@ -13,6 +14,12 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+try:
+    from PIL import Image, ImageEnhance
+except Exception:  # pragma: no cover - fallback for environments without Pillow
+    Image = None
+    ImageEnhance = None
 
 from shared.protocol import AgentPlan, RequestEnvelope
 
@@ -112,9 +119,13 @@ class _ActiveRequestState:
 class _TurnContext:
     base_request: RequestEnvelope
     preview_data_url: str
+    base_preview_mime_type: str
+    base_preview_bytes: bytes
+    preview_mime_type: str
     base_image_revision_id: str
     state_payload: dict[str, Any]
     setting_by_id: dict[str, dict[str, Any]]
+    base_float_setting_numbers: dict[str, float]
     live_run_enabled: bool
     max_tool_calls: int
     tool_calls_used: int = 0
@@ -520,7 +531,7 @@ class CodexAppServerBridge:
                 active_request.codex_turn_id = None
 
     @staticmethod
-    def _preview_data_url(request: RequestEnvelope) -> str:
+    def _decode_preview_image(request: RequestEnvelope) -> tuple[str, bytes]:
         preview = request.imageSnapshot.preview
         if preview is None:
             raise CodexAppServerError(
@@ -539,8 +550,25 @@ class CodexAppServerBridge:
             ) from exc
 
         mime_type = preview.mimeType or "image/jpeg"
+        return mime_type, image_bytes
+
+    @staticmethod
+    def _build_data_url(
+        mime_type: str,
+        image_bytes: bytes,
+        *,
+        revision_token: str | None = None,
+    ) -> str:
+        normalized_mime = mime_type.strip() or "image/jpeg"
+        if revision_token:
+            normalized_mime = f"{normalized_mime};x-darktable-stage={revision_token}"
         encoded = base64.b64encode(image_bytes).decode("ascii")
-        return f"data:{mime_type};base64,{encoded}"
+        return f"data:{normalized_mime};base64,{encoded}"
+
+    @classmethod
+    def _preview_data_url(cls, request: RequestEnvelope) -> str:
+        mime_type, image_bytes = cls._decode_preview_image(request)
+        return cls._build_data_url(mime_type, image_bytes)
 
     def _register_turn_context(
         self,
@@ -549,10 +577,12 @@ class CodexAppServerBridge:
         request: RequestEnvelope,
         preview_data_url: str,
     ) -> None:
+        preview_mime_type, preview_bytes = self._decode_preview_image(request)
         state_payload = json.loads(json.dumps(self._build_prompt_payload(request)))
         image_snapshot = state_payload.get("imageSnapshot", {})
         editable_settings = image_snapshot.get("editableSettings", [])
         setting_by_id: dict[str, dict[str, Any]] = {}
+        base_float_setting_numbers: dict[str, float] = {}
         if isinstance(editable_settings, list):
             for setting in editable_settings:
                 if not isinstance(setting, dict):
@@ -560,15 +590,25 @@ class CodexAppServerBridge:
                 setting_id = setting.get("settingId")
                 if isinstance(setting_id, str) and setting_id:
                     setting_by_id[setting_id] = setting
+                    if setting.get("kind") == "set-float":
+                        current_number = setting.get("currentNumber")
+                        if not isinstance(current_number, (int, float)):
+                            current_number = setting.get("defaultNumber")
+                        if isinstance(current_number, (int, float)):
+                            base_float_setting_numbers[setting_id] = float(current_number)
         base_image_revision_id = request.imageSnapshot.imageRevisionId
         max_tool_calls = request.refinement.maxPasses if request.refinement.enabled else 1
         with self._state_lock:
             self._turn_contexts[(thread_id, turn_id)] = _TurnContext(
                 base_request=request,
                 preview_data_url=preview_data_url,
+                base_preview_mime_type=preview_mime_type,
+                base_preview_bytes=preview_bytes,
+                preview_mime_type=preview_mime_type,
                 base_image_revision_id=base_image_revision_id,
                 state_payload=state_payload,
                 setting_by_id=setting_by_id,
+                base_float_setting_numbers=base_float_setting_numbers,
                 live_run_enabled=request.refinement.enabled,
                 max_tool_calls=max_tool_calls,
             )
@@ -1177,6 +1217,7 @@ class CodexAppServerBridge:
             image_snapshot["imageRevisionId"] = (
                 f"{context.base_image_revision_id}:tool-{len(context.staged_operations)}"
             )
+        self._refresh_preview_after_operations(context)
 
         return {
             "success": True,
@@ -1185,11 +1226,106 @@ class CodexAppServerBridge:
                     "type": "inputText",
                     "text": (
                         f"Staged {len(staged_batch)} operations in this call; "
-                        f"{len(context.staged_operations)} total staged operations."
+                        f"{len(context.staged_operations)} total staged operations. "
+                        "Preview refreshed for get_preview_image."
                     ),
                 }
             ],
         }
+
+    @staticmethod
+    def _clamp(value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(maximum, value))
+
+    def _collect_preview_adjustments(self, context: _TurnContext) -> tuple[float, float, float]:
+        brightness_ev = 0.0
+        contrast_delta = 0.0
+        saturation_delta = 0.0
+
+        for setting_id, setting in context.setting_by_id.items():
+            if setting.get("kind") != "set-float":
+                continue
+
+            current_number = setting.get("currentNumber")
+            if not isinstance(current_number, (int, float)):
+                continue
+            base_number = context.base_float_setting_numbers.get(setting_id, float(current_number))
+            delta = float(current_number) - float(base_number)
+            if abs(delta) < 1e-6:
+                continue
+
+            action_path = setting.get("actionPath")
+            if not isinstance(action_path, str):
+                continue
+            normalized_path = action_path.lower()
+
+            if normalized_path == "iop/exposure/exposure":
+                brightness_ev += delta
+                continue
+            if "black level" in normalized_path or normalized_path.endswith("/black"):
+                brightness_ev += 0.35 * delta
+            if "toneequal/" in normalized_path and any(
+                token in normalized_path
+                for token in ("whites", "highlights", "mid", "shadows", "blacks", "brightness")
+            ):
+                brightness_ev += 0.25 * delta
+            if any(token in normalized_path for token in ("contrast", "brilliance", "clarity")):
+                contrast_delta += 0.6 * delta
+            if any(
+                token in normalized_path for token in ("saturation", "sat_", "chroma", "vibrance")
+            ):
+                saturation_delta += 0.7 * delta
+
+        return brightness_ev, contrast_delta, saturation_delta
+
+    def _render_staged_preview(self, context: _TurnContext) -> tuple[str, bytes] | None:
+        if Image is None or ImageEnhance is None:
+            return None
+
+        try:
+            with Image.open(io.BytesIO(context.base_preview_bytes)) as source_image:
+                image = source_image.convert("RGB")
+        except Exception:
+            return None
+
+        brightness_ev, contrast_delta, saturation_delta = self._collect_preview_adjustments(context)
+        brightness_factor = self._clamp(2.0**brightness_ev, 0.1, 6.0)
+        contrast_factor = self._clamp(1.0 + contrast_delta, 0.2, 3.0)
+        saturation_factor = self._clamp(1.0 + saturation_delta, 0.0, 3.0)
+
+        if abs(brightness_factor - 1.0) > 1e-3:
+            image = ImageEnhance.Brightness(image).enhance(brightness_factor)
+        if abs(contrast_factor - 1.0) > 1e-3:
+            image = ImageEnhance.Contrast(image).enhance(contrast_factor)
+        if abs(saturation_factor - 1.0) > 1e-3:
+            image = ImageEnhance.Color(image).enhance(saturation_factor)
+
+        output = io.BytesIO()
+        base_mime = context.base_preview_mime_type.lower()
+        if "png" in base_mime:
+            image.save(output, format="PNG")
+            return "image/png", output.getvalue()
+
+        image.save(output, format="JPEG", quality=85, optimize=True)
+        return "image/jpeg", output.getvalue()
+
+    def _refresh_preview_after_operations(self, context: _TurnContext) -> None:
+        staged_count = len(context.staged_operations)
+        rendered = self._render_staged_preview(context)
+        if rendered is not None:
+            context.preview_mime_type, rendered_bytes = rendered
+            context.preview_data_url = self._build_data_url(
+                context.preview_mime_type,
+                rendered_bytes,
+                revision_token=str(staged_count),
+            )
+            return
+
+        context.preview_data_url = self._build_data_url(
+            context.preview_mime_type,
+            context.base_preview_bytes,
+            revision_token=str(staged_count),
+        )
 
     def _normalize_tool_operation(
         self,

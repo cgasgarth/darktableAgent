@@ -614,6 +614,23 @@ def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
                 "jsonrpc": "2.0",
+                "id": 18,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-preview-before",
+                    "tool": _TOOL_GET_PREVIEW_IMAGE,
+                    "arguments": {},
+                },
+            }
+        )
+        preview_before = sent_payloads[0]["result"]["contentItems"][0]["imageUrl"]
+        sent_payloads.clear()
+
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
                 "id": 19,
                 "method": "item/tool/call",
                 "params": {
@@ -641,12 +658,32 @@ def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
         result = sent_payloads[0]["result"]
         assert result["success"] is True
         assert "Staged 1 operations" in result["contentItems"][0]["text"]
+        assert "Preview refreshed" in result["contentItems"][0]["text"]
 
         sent_payloads.clear()
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
                 "jsonrpc": "2.0",
                 "id": 20,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-preview-after-apply",
+                    "tool": _TOOL_GET_PREVIEW_IMAGE,
+                    "arguments": {},
+                },
+            }
+        )
+        preview_after = sent_payloads[0]["result"]["contentItems"][0]["imageUrl"]
+        assert preview_after != preview_before
+        assert "x-darktable-stage=1" in preview_after
+
+        sent_payloads.clear()
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 21,
                 "method": "item/tool/call",
                 "params": {
                     "threadId": "thread-1",
