@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 import pytest
 
@@ -311,23 +312,30 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
 
 def test_turn_input_sends_preview_as_separate_image_item() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    preview_local_paths: list[str] = []
 
-    items = bridge._build_turn_input(_sample_request())  # type: ignore[attr-defined]
+    items = bridge._build_turn_input(_sample_request(), preview_local_paths)  # type: ignore[attr-defined]
 
-    assert items[0]["type"] == "text"
-    assert items[1]["type"] == "image"
-    assert items[1]["url"] == "data:image/jpeg;base64,ZmFrZS1wcmV2aWV3"
+    try:
+        assert items[0]["type"] == "text"
+        assert items[1]["type"] == "localImage"
+        assert Path(items[1]["path"]).exists()
+        assert items[1]["path"] in preview_local_paths
+    finally:
+        bridge._cleanup_local_image_paths(preview_local_paths)  # type: ignore[attr-defined]
 
 
 def test_turn_input_omits_image_item_without_preview() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
     request.imageSnapshot.preview = None
+    preview_local_paths: list[str] = []
 
-    items = bridge._build_turn_input(request)  # type: ignore[attr-defined]
+    items = bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
 
     assert len(items) == 1
     assert items[0]["type"] == "text"
+    assert preview_local_paths == []
 
 
 def test_cancel_request_marks_matching_active_turn_cancelled() -> None:

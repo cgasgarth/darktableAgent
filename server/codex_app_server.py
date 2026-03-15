@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import os
 import select
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -361,98 +364,104 @@ class CodexAppServerBridge:
         thread_reused: bool,
     ) -> CodexTurnResult:
         started_at = time.monotonic()
-        turn_input = self._build_turn_input(request)
+        preview_local_paths: list[str] = []
+        turn_input = self._build_turn_input(request, preview_local_paths)
         self._conversation_turn_counts[active_request.conversation_id] = (
             self._conversation_turn_counts.get(active_request.conversation_id, 0) + 1
         )
         turn_index = self._conversation_turn_counts[active_request.conversation_id]
         prompt_text_chars = 0
-        image_data_url_chars = 0
+        image_input_chars = 0
         for item in turn_input:
             if item.get("type") == "text":
                 prompt_text_chars += len(str(item.get("text", "")))
             elif item.get("type") == "image":
-                image_data_url_chars += len(str(item.get("url", "")))
+                image_input_chars += len(str(item.get("url", "")))
+            elif item.get("type") == "localImage":
+                image_input_chars += len(str(item.get("path", "")))
 
-        turn_request = {
-            "threadId": thread_id,
-            "input": turn_input,
-            "outputSchema": self._build_output_schema(),
-            "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
-            "personality": _DEFAULT_PERSONALITY,
-            "effort": effort,
-        }
-        if model:
-            turn_request["model"] = model
-
-        response = self._send_request_locked("turn/start", turn_request, deadline, active_request)
         try:
-            turn_id = response["result"]["turn"]["id"]
-        except KeyError as exc:
-            raise CodexAppServerError(
-                "codex_turn_start_failed", "Codex did not return a turn id"
-            ) from exc
-        active_request.codex_turn_id = turn_id
+            turn_request = {
+                "threadId": thread_id,
+                "input": turn_input,
+                "outputSchema": self._build_output_schema(),
+                "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
+                "personality": _DEFAULT_PERSONALITY,
+                "effort": effort,
+            }
+            if model:
+                turn_request["model"] = model
 
-        state = {
-            "thread_id": thread_id,
-            "turn_id": turn_id,
-            "chunks": [],
-            "final_message": None,
-            "turn_error": None,
-            "completed": False,
-            "token_usage_last": None,
-            "token_usage_total": None,
-        }
+            response = self._send_request_locked("turn/start", turn_request, deadline, active_request)
+            try:
+                turn_id = response["result"]["turn"]["id"]
+            except KeyError as exc:
+                raise CodexAppServerError(
+                    "codex_turn_start_failed", "Codex did not return a turn id"
+                ) from exc
+            active_request.codex_turn_id = turn_id
 
-        while not state["completed"]:
-            self._raise_if_cancelled_locked(active_request)
-            message = self._read_message_locked(deadline, active_request)
-            self._handle_message_locked(message, state)
+            state = {
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "chunks": [],
+                "final_message": None,
+                "turn_error": None,
+                "completed": False,
+                "token_usage_last": None,
+                "token_usage_total": None,
+            }
 
-        if state["turn_error"]:
-            raise CodexAppServerError("codex_turn_failed", state["turn_error"])
+            while not state["completed"]:
+                self._raise_if_cancelled_locked(active_request)
+                message = self._read_message_locked(deadline, active_request)
+                self._handle_message_locked(message, state)
 
-        raw_message = state["final_message"] or "".join(state["chunks"]).strip()
-        if not raw_message:
-            raise CodexAppServerError(
-                "codex_empty_response", "Codex completed the turn without returning a plan"
+            if state["turn_error"]:
+                raise CodexAppServerError("codex_turn_failed", state["turn_error"])
+
+            raw_message = state["final_message"] or "".join(state["chunks"]).strip()
+            if not raw_message:
+                raise CodexAppServerError(
+                    "codex_empty_response", "Codex completed the turn without returning a plan"
+                )
+
+            try:
+                plan = AgentPlan.model_validate_json(raw_message)
+            except Exception as exc:
+                raise CodexAppServerError(
+                    "codex_invalid_response",
+                    f"Codex returned invalid plan JSON: {raw_message}",
+                ) from exc
+
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            logger.info(
+                "codex_turn_completed",
+                extra={
+                    "structured": {
+                        "requestId": active_request.request_id,
+                        "conversationId": active_request.conversation_id,
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "threadReused": thread_reused,
+                        "turnIndexInConversation": turn_index,
+                        "durationMs": duration_ms,
+                        "promptTextChars": prompt_text_chars,
+                        "imageInputChars": image_input_chars,
+                        "tokenUsageLast": state["token_usage_last"],
+                        "tokenUsageTotal": state["token_usage_total"],
+                    }
+                },
             )
 
-        try:
-            plan = AgentPlan.model_validate_json(raw_message)
-        except Exception as exc:
-            raise CodexAppServerError(
-                "codex_invalid_response",
-                f"Codex returned invalid plan JSON: {raw_message}",
-            ) from exc
-
-        duration_ms = int((time.monotonic() - started_at) * 1000)
-        logger.info(
-            "codex_turn_completed",
-            extra={
-                "structured": {
-                    "requestId": active_request.request_id,
-                    "conversationId": active_request.conversation_id,
-                    "threadId": thread_id,
-                    "turnId": turn_id,
-                    "threadReused": thread_reused,
-                    "turnIndexInConversation": turn_index,
-                    "durationMs": duration_ms,
-                    "promptTextChars": prompt_text_chars,
-                    "imageDataUrlChars": image_data_url_chars,
-                    "tokenUsageLast": state["token_usage_last"],
-                    "tokenUsageTotal": state["token_usage_total"],
-                }
-            },
-        )
-
-        return CodexTurnResult(
-            plan=plan,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            raw_message=raw_message,
-        )
+            return CodexTurnResult(
+                plan=plan,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                raw_message=raw_message,
+            )
+        finally:
+            self._cleanup_local_image_paths(preview_local_paths)
 
     @staticmethod
     def _build_preview_data_url(request: RequestEnvelope) -> str | None:
@@ -460,6 +469,52 @@ class CodexAppServerBridge:
         if preview is None:
             return None
         return f"data:{preview.mimeType};base64,{preview.base64Data}"
+
+    @staticmethod
+    def _preview_suffix_for_mime(mime_type: str | None) -> str:
+        normalized = (mime_type or "").lower()
+        if normalized in {"image/jpeg", "image/jpg"}:
+            return ".jpg"
+        if normalized == "image/png":
+            return ".png"
+        if normalized == "image/webp":
+            return ".webp"
+        if normalized == "image/avif":
+            return ".avif"
+        return ".img"
+
+    def _materialize_preview_file(self, request: RequestEnvelope) -> str | None:
+        preview = request.imageSnapshot.preview
+        if preview is None:
+            return None
+
+        try:
+            image_bytes = base64.b64decode(preview.base64Data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            logger.warning(
+                "codex_preview_decode_failed",
+                extra={"structured": {"previewId": preview.previewId, "error": str(exc)}},
+            )
+            return None
+
+        suffix = self._preview_suffix_for_mime(preview.mimeType)
+        file_descriptor, file_path = tempfile.mkstemp(prefix="darktable-agent-preview-", suffix=suffix)
+        with os.fdopen(file_descriptor, "wb") as preview_file:
+            preview_file.write(image_bytes)
+        return file_path
+
+    @staticmethod
+    def _cleanup_local_image_paths(paths: list[str]) -> None:
+        for path in paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning(
+                    "codex_preview_cleanup_failed",
+                    extra={"structured": {"path": path, "error": str(exc)}},
+                )
 
     @staticmethod
     def _build_prompt_payload(request: RequestEnvelope) -> dict[str, Any]:
@@ -505,7 +560,11 @@ class CodexAppServerBridge:
             f"shadows={shadows:.2f}, midtones={midtones:.2f}, highlights={highlights:.2f}"
         )
 
-    def _build_turn_input(self, request: RequestEnvelope) -> list[dict[str, Any]]:
+    def _build_turn_input(
+        self,
+        request: RequestEnvelope,
+        preview_local_paths: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = [
             {
                 "type": "text",
@@ -514,9 +573,15 @@ class CodexAppServerBridge:
             }
         ]
 
-        preview_url = self._build_preview_data_url(request)
-        if preview_url:
-            items.append({"type": "image", "url": preview_url})
+        preview_path = self._materialize_preview_file(request)
+        if preview_path:
+            items.append({"type": "localImage", "path": preview_path})
+            if preview_local_paths is not None:
+                preview_local_paths.append(preview_path)
+        else:
+            preview_url = self._build_preview_data_url(request)
+            if preview_url:
+                items.append({"type": "image", "url": preview_url})
 
         return items
 
