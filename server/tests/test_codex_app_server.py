@@ -66,6 +66,20 @@ def _sample_request() -> RequestEnvelope:
                         "maxNumber": 1.0,
                         "defaultNumber": 0.0,
                         "stepNumber": 0.01,
+                    },
+                    {
+                        "moduleId": "primaries",
+                        "moduleLabel": "rgb primaries",
+                        "capabilityId": "primaries.red-hue",
+                        "label": "Red hue",
+                        "kind": "set-float",
+                        "targetType": "darktable-action",
+                        "actionPath": "iop/primaries/red_hue",
+                        "supportedModes": ["set", "delta"],
+                        "minNumber": -3.141592653589793,
+                        "maxNumber": 3.141592653589793,
+                        "defaultNumber": 0.0,
+                        "stepNumber": 0.001,
                     }
                 ],
             },
@@ -115,6 +129,21 @@ def _sample_request() -> RequestEnvelope:
                         "maxNumber": 1.0,
                         "defaultNumber": 0.0,
                         "stepNumber": 0.01,
+                    },
+                    {
+                        "moduleId": "primaries",
+                        "moduleLabel": "rgb primaries",
+                        "settingId": "setting.primaries.red-hue",
+                        "capabilityId": "primaries.red-hue",
+                        "label": "Red hue",
+                        "actionPath": "iop/primaries/red_hue",
+                        "kind": "set-float",
+                        "currentNumber": 0.05,
+                        "supportedModes": ["set", "delta"],
+                        "minNumber": -3.141592653589793,
+                        "maxNumber": 3.141592653589793,
+                        "defaultNumber": 0.0,
+                        "stepNumber": 0.001,
                     }
                 ],
                 "history": [],
@@ -223,6 +252,7 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Use refinement.goalText as the root user goal" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "moduleId/moduleLabel" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "colorbalancergb" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "primaries" in _THREAD_DEVELOPER_INSTRUCTIONS
 
 
 def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() -> None:
@@ -234,8 +264,9 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "preview, histogram, history, and current settings" in prompt
     assert "Respect refinement state" in prompt
     assert "Use moduleId/moduleLabel to group related controls" in prompt
-    assert "color equalizer or color balance rgb" in prompt
+    assert "rgb primaries, color equalizer, or color balance rgb" in prompt
     assert '"moduleId":"colorequal"' in prompt
+    assert '"moduleId":"primaries"' in prompt
     assert '"text":"Do a full edit so this becomes a polished gallery-ready landscape photo."' in prompt
 
 

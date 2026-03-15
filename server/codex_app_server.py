@@ -61,7 +61,7 @@ Rules:
 - When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the current settings.
 - Favor restrained, high-confidence edits over extreme changes. Preserve highlight detail, avoid crushed shadows, and avoid oversaturation unless the user explicitly asks for a stylized look.
 - Prefer existing supported controls for global tone, color, detail, and presence before giving up on the request.
-- When moduleId `colorequal` or `colorbalancergb` is present, treat those controls as preferred advanced color tools for hue, chroma, brilliance, vibrance, contrast, and color separation work.
+- When moduleId `colorequal`, `colorbalancergb`, or `primaries` is present, treat those controls as preferred advanced color tools for hue, chroma, brilliance, vibrance, contrast, color separation, and primary remapping work.
 - If visual context is present, do not answer with "be more specific" unless no safe supported edit can be inferred.
 - Use refinement.goalText as the root user goal for every pass, even when the latest user message is an automatic continuation prompt.
 - For single-turn requests, always return continueRefining=false.
@@ -376,7 +376,7 @@ class CodexAppServerBridge:
             "Use the capability manifest and image state exactly as provided.\n"
             "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, history, and current settings instead of asking for more specificity.\n"
-            "When advanced color modules like color equalizer or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
+            "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
             "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
             "Return only the JSON object required by the output schema.\n\n"

@@ -66,6 +66,20 @@ def _sample_capabilities() -> list[dict]:
             "maxNumber": 1.0,
             "defaultNumber": 0.0,
             "stepNumber": 0.01,
+        },
+        {
+            "moduleId": "primaries",
+            "moduleLabel": "rgb primaries",
+            "capabilityId": "primaries.red-hue",
+            "label": "Red hue",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/primaries/red_hue",
+            "supportedModes": ["set", "delta"],
+            "minNumber": -3.141592653589793,
+            "maxNumber": 3.141592653589793,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.001,
         }
     ]
 
@@ -154,6 +168,21 @@ def _sample_image_snapshot() -> dict:
                 "maxNumber": 1.0,
                 "defaultNumber": 0.0,
                 "stepNumber": 0.01,
+            },
+            {
+                "moduleId": "primaries",
+                "moduleLabel": "rgb primaries",
+                "settingId": "setting.primaries.red-hue",
+                "capabilityId": "primaries.red-hue",
+                "label": "Red hue",
+                "actionPath": "iop/primaries/red_hue",
+                "kind": "set-float",
+                "currentNumber": 0.05,
+                "supportedModes": ["set", "delta"],
+                "minNumber": -3.141592653589793,
+                "maxNumber": 3.141592653589793,
+                "defaultNumber": 0.0,
+                "stepNumber": 0.001,
             }
         ],
         "history": [
@@ -222,12 +251,14 @@ def test_request_envelope_accepts_v3_payload() -> None:
     assert envelope.capabilityManifest.targets[1].defaultBool is False
     assert envelope.capabilityManifest.targets[2].choices[1].choiceId == "rgb"
     assert envelope.capabilityManifest.targets[3].moduleId == "colorequal"
+    assert envelope.capabilityManifest.targets[4].moduleLabel == "rgb primaries"
     assert (
         envelope.imageSnapshot.editableSettings[0].actionPath == "iop/exposure/exposure"
     )
     assert envelope.imageSnapshot.editableSettings[1].currentBool is True
     assert envelope.imageSnapshot.editableSettings[2].currentChoiceId == "rgb"
     assert envelope.imageSnapshot.editableSettings[3].moduleLabel == "color equalizer"
+    assert envelope.imageSnapshot.editableSettings[4].actionPath == "iop/primaries/red_hue"
     assert envelope.imageSnapshot.preview.width == 1000
     assert envelope.imageSnapshot.histogram.binCount == 4
 
@@ -258,7 +289,7 @@ def test_request_envelope_rejects_invalid_single_turn_refinement_shape() -> None
 
 def test_request_envelope_rejects_module_metadata_mismatch() -> None:
     payload = _sample_request_payload()
-    payload["imageSnapshot"]["editableSettings"][3]["moduleId"] = "colorbalancergb"
+    payload["imageSnapshot"]["editableSettings"][4]["moduleId"] = "colorbalancergb"
 
     try:
         RequestEnvelope.model_validate(payload)

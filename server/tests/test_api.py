@@ -63,6 +63,20 @@ def _sample_capabilities() -> list[dict]:
             "maxNumber": 1.0,
             "defaultNumber": 0.0,
             "stepNumber": 0.01,
+        },
+        {
+            "moduleId": "primaries",
+            "moduleLabel": "rgb primaries",
+            "capabilityId": "primaries.red-hue",
+            "label": "Red hue",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/primaries/red_hue",
+            "supportedModes": ["set", "delta"],
+            "minNumber": -3.141592653589793,
+            "maxNumber": 3.141592653589793,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.001,
         }
     ]
 
@@ -143,6 +157,21 @@ def _sample_image_snapshot() -> dict:
                 "maxNumber": 1.0,
                 "defaultNumber": 0.0,
                 "stepNumber": 0.01,
+            },
+            {
+                "moduleId": "primaries",
+                "moduleLabel": "rgb primaries",
+                "settingId": "setting.primaries.red-hue",
+                "capabilityId": "primaries.red-hue",
+                "label": "Red hue",
+                "actionPath": "iop/primaries/red_hue",
+                "kind": "set-float",
+                "currentNumber": 0.05,
+                "supportedModes": ["set", "delta"],
+                "minNumber": -3.141592653589793,
+                "maxNumber": 3.141592653589793,
+                "defaultNumber": 0.0,
+                "stepNumber": 0.001,
             }
         ],
         "history": [
