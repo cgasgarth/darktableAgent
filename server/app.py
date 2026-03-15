@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 import os
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from server.codex_app_server import CodexAppServerBridge, CodexAppServerError
@@ -26,6 +27,7 @@ from shared.protocol import (
 )
 
 logger = logging.getLogger("darktable_agent.server")
+codex_logger = logging.getLogger("darktable_agent.codex")
 
 
 class JsonFormatter(logging.Formatter):
@@ -43,10 +45,11 @@ class JsonFormatter(logging.Formatter):
 
 handler = logging.StreamHandler()
 handler.setFormatter(JsonFormatter())
-logger.handlers.clear()
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-logger.propagate = False
+for configured_logger in (logger, codex_logger):
+    configured_logger.handlers.clear()
+    configured_logger.addHandler(handler)
+    configured_logger.setLevel(logging.INFO)
+    configured_logger.propagate = False
 
 app = FastAPI(title="darktableAgent server", version="0.2.0")
 _codex_bridge = CodexAppServerBridge()
@@ -90,6 +93,24 @@ def build_error_response(
     message: str,
     status_code: int,
 ) -> JSONResponse:
+    payload = build_error_payload(
+        request_id=request_id,
+        session=session,
+        refinement=refinement,
+        code=code,
+        message=message,
+    )
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+def build_error_payload(
+    *,
+    request_id: str,
+    session: dict[str, str],
+    refinement: RefinementStatus | None,
+    code: str,
+    message: str,
+) -> dict[str, Any]:
     payload = ResponseEnvelope(
         requestId=request_id,
         session=ResponseSession.model_validate(session),
@@ -108,7 +129,60 @@ def build_error_response(
         operationResults=[],
         error=ErrorInfo(code=code, message=message),
     )
-    return JSONResponse(status_code=status_code, content=payload.model_dump())
+    return payload.model_dump()
+
+
+def _log_accepted_request(request: RequestEnvelope) -> None:
+    logger.info(
+        "accepted_request",
+        extra={
+            "structured": {
+                "event": "accepted_request",
+                "requestId": request.requestId,
+                "appSessionId": request.session.appSessionId,
+                "imageSessionId": request.session.imageSessionId,
+                "conversationId": request.session.conversationId,
+                "turnId": request.session.turnId,
+                "fast": request.fast,
+                "refinement": request.refinement.model_dump(),
+                "view": request.uiContext.view,
+                "imageId": request.uiContext.imageId,
+                "imageName": request.uiContext.imageName,
+                "capabilityCount": len(request.capabilityManifest.targets),
+                "editableSettingCount": len(request.imageSnapshot.editableSettings),
+                "historyPosition": request.imageSnapshot.historyPosition,
+                "historyCount": request.imageSnapshot.historyCount,
+                "hasPreview": request.imageSnapshot.preview is not None,
+                "hasHistogram": request.imageSnapshot.histogram is not None,
+                "messageText": request.message.text,
+            }
+        },
+    )
+
+
+def _log_fulfilled_request(request: RequestEnvelope, response: ResponseEnvelope, turn_result: Any) -> None:
+    logger.info(
+        "fulfilled_request",
+        extra={
+            "structured": {
+                "event": "fulfilled_request",
+                "requestId": request.requestId,
+                "appSessionId": request.session.appSessionId,
+                "imageSessionId": request.session.imageSessionId,
+                "conversationId": request.session.conversationId,
+                "turnId": request.session.turnId,
+                "codexThreadId": turn_result.thread_id,
+                "codexTurnId": turn_result.turn_id,
+                "refinement": response.refinement.model_dump(),
+                "operationCount": len(response.plan.operations) if response.plan else 0,
+                "assistantText": response.assistantMessage.text,
+            }
+        },
+    )
+
+
+def _encode_sse(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
 @app.exception_handler(RequestValidationError)
@@ -193,31 +267,7 @@ async def cancel_chat(request: CancelRequestEnvelope) -> CancelResponseEnvelope:
 
 @app.post("/v1/chat", response_model=ResponseEnvelope)
 async def chat(request: RequestEnvelope) -> ResponseEnvelope:
-    logger.info(
-        "accepted_request",
-        extra={
-            "structured": {
-                "event": "accepted_request",
-                "requestId": request.requestId,
-                "appSessionId": request.session.appSessionId,
-                "imageSessionId": request.session.imageSessionId,
-                "conversationId": request.session.conversationId,
-                "turnId": request.session.turnId,
-                "fast": request.fast,
-                "refinement": request.refinement.model_dump(),
-                "view": request.uiContext.view,
-                "imageId": request.uiContext.imageId,
-                "imageName": request.uiContext.imageName,
-                "capabilityCount": len(request.capabilityManifest.targets),
-                "editableSettingCount": len(request.imageSnapshot.editableSettings),
-                "historyPosition": request.imageSnapshot.historyPosition,
-                "historyCount": request.imageSnapshot.historyCount,
-                "hasPreview": request.imageSnapshot.preview is not None,
-                "hasHistogram": request.imageSnapshot.histogram is not None,
-                "messageText": request.message.text,
-            }
-        },
-    )
+    _log_accepted_request(request)
 
     try:
         turn_result = await asyncio.to_thread(get_codex_bridge().plan, request)
@@ -230,24 +280,119 @@ async def chat(request: RequestEnvelope) -> ResponseEnvelope:
             message=exc.message,
             status_code=exc.status_code,
         )
+    except Exception:
+        logger.exception(
+            "chat_request_unexpected_error",
+            extra={
+                "structured": {
+                    "event": "chat_request_unexpected_error",
+                    "requestId": request.requestId,
+                    "appSessionId": request.session.appSessionId,
+                    "imageSessionId": request.session.imageSessionId,
+                    "conversationId": request.session.conversationId,
+                    "turnId": request.session.turnId,
+                }
+            },
+        )
+        return build_error_response(
+            request_id=request.requestId,
+            session=request.session.model_dump(mode="json"),
+            refinement=build_request_error_refinement(request),
+            code="internal_error",
+            message="Unexpected server error",
+            status_code=500,
+        )
 
     response = build_response_from_plan(request, turn_result.plan)
-    logger.info(
-        "fulfilled_request",
-        extra={
-            "structured": {
-                "event": "fulfilled_request",
-                "requestId": request.requestId,
-                "appSessionId": request.session.appSessionId,
-                "imageSessionId": request.session.imageSessionId,
-                "conversationId": request.session.conversationId,
-                "turnId": request.session.turnId,
-                "codexThreadId": turn_result.thread_id,
-                "codexTurnId": turn_result.turn_id,
-                "refinement": response.refinement.model_dump(),
-                "operationCount": len(response.plan.operations) if response.plan else 0,
-                "assistantText": response.assistantMessage.text,
-            }
+    _log_fulfilled_request(request, response, turn_result)
+    return response
+
+
+@app.post("/v1/chat/stream")
+async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
+    _log_accepted_request(request)
+
+    async def event_generator():
+        bridge = get_codex_bridge()
+        progress_getter = getattr(bridge, "get_request_progress", None)
+        plan_task = asyncio.create_task(asyncio.to_thread(bridge.plan, request))
+        last_progress_signature: tuple[Any, ...] | None = None
+
+        yield _encode_sse("accepted", {"requestId": request.requestId})
+
+        while True:
+            if callable(progress_getter):
+                progress_payload = await asyncio.to_thread(
+                    progress_getter,
+                    request_id=request.requestId,
+                    app_session_id=request.session.appSessionId,
+                    image_session_id=request.session.imageSessionId,
+                    conversation_id=request.session.conversationId,
+                    turn_id=request.session.turnId,
+                )
+                progress_signature = (
+                    progress_payload.get("found"),
+                    progress_payload.get("status"),
+                    progress_payload.get("toolCallsUsed"),
+                    progress_payload.get("maxToolCalls"),
+                    progress_payload.get("stagedOperationCount"),
+                    len(progress_payload.get("operations", [])),
+                    progress_payload.get("message"),
+                )
+                if progress_signature != last_progress_signature:
+                    last_progress_signature = progress_signature
+                    yield _encode_sse("progress", progress_payload)
+
+            if plan_task.done():
+                break
+
+            await asyncio.sleep(0.25)
+
+        try:
+            turn_result = plan_task.result()
+            response = build_response_from_plan(request, turn_result.plan)
+            _log_fulfilled_request(request, response, turn_result)
+            yield _encode_sse("final", response.model_dump(mode="json"))
+        except CodexAppServerError as exc:
+            payload = build_error_payload(
+                request_id=request.requestId,
+                session=request.session.model_dump(mode="json"),
+                refinement=build_request_error_refinement(request),
+                code=exc.code,
+                message=exc.message,
+            )
+            yield _encode_sse("error", payload)
+        except Exception:
+            logger.exception(
+                "chat_request_unexpected_error",
+                extra={
+                    "structured": {
+                        "event": "chat_request_unexpected_error",
+                        "requestId": request.requestId,
+                        "appSessionId": request.session.appSessionId,
+                        "imageSessionId": request.session.imageSessionId,
+                        "conversationId": request.session.conversationId,
+                        "turnId": request.session.turnId,
+                    }
+                },
+            )
+            payload = build_error_payload(
+                request_id=request.requestId,
+                session=request.session.model_dump(mode="json"),
+                refinement=build_request_error_refinement(request),
+                code="internal_error",
+                message="Unexpected server error",
+            )
+            yield _encode_sse("error", payload)
+
+        yield _encode_sse("completed", {"requestId": request.requestId})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
-    return response

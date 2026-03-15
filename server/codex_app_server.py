@@ -50,6 +50,18 @@ _FAST_MODE_REASONING_EFFORT = os.environ.get(
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
 _DEFAULT_HISTOGRAM_BINS = int(os.environ.get("DARKTABLE_AGENT_HISTOGRAM_BINS", "64"))
+_DEFAULT_PROGRESS_LOG_INTERVAL_SECONDS = float(
+    os.environ.get("DARKTABLE_AGENT_CODEX_PROGRESS_LOG_INTERVAL_SECONDS", "5")
+)
+_DEFAULT_MAX_IDLE_SECONDS = float(
+    os.environ.get("DARKTABLE_AGENT_CODEX_MAX_IDLE_SECONDS", "120")
+)
+_DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS = int(
+    os.environ.get("DARKTABLE_AGENT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS", "4")
+)
+_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY = int(
+    os.environ.get("DARKTABLE_AGENT_MAX_TOOL_CALLS_WITHOUT_APPLY", "3")
+)
 _TOOL_GET_IMAGE_STATE = "get_image_state"
 _TOOL_GET_PREVIEW_IMAGE = "get_preview_image"
 _TOOL_APPLY_OPERATIONS = "apply_operations"
@@ -59,7 +71,7 @@ _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing
 Use tools to gather image context before planning edits:
 - call `get_preview_image` to inspect the latest rendered preview
 - call `get_image_state` to inspect editable settings and histogram
-- in live agent runs (`mode=multi-turn`), call `apply_operations` to stage edits iteratively
+- in live agent runs (`mode=multi-turn`), call `apply_operations` to apply edits iteratively
 Return exactly one JSON object matching the output schema after tool calls.
 
 Use preview as primary visual context. Use histogram + editable settings as constraints.
@@ -73,9 +85,9 @@ Refinement rules:
 - In single-turn mode, return operations in the final JSON; do not use `apply_operations`.
 - In multi-turn mode, perform iterative tool calls within this same run:
   1) inspect context with `get_preview_image`/`get_image_state`
-  2) stage edits with `apply_operations`
+  2) apply edits with `apply_operations` early (do not spend many calls only inspecting)
   3) re-check state and continue until satisfied or tool budget is exhausted
-- In multi-turn mode, the final JSON should summarize the run and typically return empty operations because edits were staged via `apply_operations`.
+- In multi-turn mode, the final JSON should summarize the run and typically return empty operations because edits were already applied via `apply_operations`.
 - In multi-turn mode, continueRefining must be false in the final JSON.
 
 Value rules:
@@ -113,6 +125,11 @@ class _ActiveRequestState:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     thread_id: str | None = None
     codex_turn_id: str | None = None
+    status: str = "queued"
+    message: str = "Request accepted"
+    started_at_monotonic: float = field(default_factory=time.monotonic)
+    last_progress_log_at: float = 0.0
+    last_tool_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -129,6 +146,7 @@ class _TurnContext:
     live_run_enabled: bool
     max_tool_calls: int
     tool_calls_used: int = 0
+    consecutive_read_only_tool_calls: int = 0
     staged_operations: list[dict[str, Any]] = field(default_factory=list)
     next_operation_sequence: int = 1
 
@@ -197,14 +215,29 @@ class CodexAppServerBridge:
             model = self._model_for_request(request)
             effort = self._effort_for_request(request)
             with self._lock:
+                self._set_active_request_status_locked(
+                    request.requestId,
+                    status="initializing",
+                    message="Initializing Codex app server",
+                )
                 self._raise_if_cancelled_locked(active_request)
                 self._ensure_initialized_locked(deadline)
                 self._raise_if_cancelled_locked(active_request)
                 thread_reused = request.session.conversationId in self._conversation_threads
+                self._set_active_request_status_locked(
+                    request.requestId,
+                    status="starting-thread",
+                    message="Starting or reusing Codex thread",
+                )
                 thread_id = self._get_or_create_thread_locked(
                     request.session.conversationId, model, deadline
                 )
                 active_request.thread_id = thread_id
+                self._set_active_request_status_locked(
+                    request.requestId,
+                    status="starting-turn",
+                    message="Starting Codex turn",
+                )
                 return self._run_turn_locked(
                     thread_id,
                     request,
@@ -214,6 +247,45 @@ class CodexAppServerBridge:
                     active_request,
                     thread_reused,
                 )
+        except CodexAppServerError as exc:
+            self._set_active_request_status_locked(
+                request.requestId,
+                status="failed",
+                message=exc.message,
+            )
+            logger.error(
+                "codex_plan_failed",
+                extra={
+                    "structured": {
+                        "requestId": request.requestId,
+                        "conversationId": request.session.conversationId,
+                        "threadId": active_request.thread_id,
+                        "turnId": active_request.codex_turn_id,
+                        "code": exc.code,
+                        "message": exc.message,
+                        "statusCode": exc.status_code,
+                    }
+                },
+            )
+            raise
+        except Exception as exc:
+            self._set_active_request_status_locked(
+                request.requestId,
+                status="failed",
+                message=str(exc),
+            )
+            logger.exception(
+                "codex_plan_unexpected_error",
+                extra={
+                    "structured": {
+                        "requestId": request.requestId,
+                        "conversationId": request.session.conversationId,
+                        "threadId": active_request.thread_id,
+                        "turnId": active_request.codex_turn_id,
+                    }
+                },
+            )
+            raise
         finally:
             self._unregister_request(request.requestId)
 
@@ -236,6 +308,8 @@ class CodexAppServerBridge:
             active_request = self._active_requests.get(request_id)
             if active_request and active_request.conversation_id == conversation_id:
                 active_request.cancel_event.set()
+                active_request.status = "cancel-requested"
+                active_request.message = "Cancellation requested"
                 matched_active = True
 
         return matched_active
@@ -259,6 +333,62 @@ class CodexAppServerBridge:
             self._active_requests.pop(request_id, None)
             self._cancelled_request_ids.discard(request_id)
 
+    def get_request_progress(
+        self,
+        *,
+        request_id: str,
+        app_session_id: str,
+        image_session_id: str,
+        conversation_id: str,
+        turn_id: str,
+    ) -> dict[str, Any]:
+        with self._state_lock:
+            active_request = self._active_requests.get(request_id)
+            if active_request is None:
+                return {
+                    "found": False,
+                    "status": "not_found",
+                    "toolCallsUsed": 0,
+                    "maxToolCalls": 0,
+                    "stagedOperationCount": 0,
+                    "operations": [],
+                    "message": "No active request found for that requestId.",
+                }
+
+            if (
+                active_request.app_session_id != app_session_id
+                or active_request.image_session_id != image_session_id
+                or active_request.conversation_id != conversation_id
+                or active_request.client_turn_id != turn_id
+            ):
+                return {
+                    "found": False,
+                    "status": "not_found",
+                    "toolCallsUsed": 0,
+                    "maxToolCalls": 0,
+                    "stagedOperationCount": 0,
+                    "operations": [],
+                    "message": "No active request matched the provided session identifiers.",
+                }
+
+            context = None
+            if active_request.thread_id and active_request.codex_turn_id:
+                context = self._turn_contexts.get((active_request.thread_id, active_request.codex_turn_id))
+
+            operations = list(context.staged_operations) if context else []
+            tool_calls_used = context.tool_calls_used if context else 0
+            max_tool_calls = context.max_tool_calls if context else 0
+
+            return {
+                "found": True,
+                "status": active_request.status,
+                "toolCallsUsed": tool_calls_used,
+                "maxToolCalls": max_tool_calls,
+                "stagedOperationCount": len(operations),
+                "operations": operations,
+                "message": active_request.message,
+            }
+
     def _is_cancelled(self, active_request: _ActiveRequestState) -> bool:
         with self._state_lock:
             return (
@@ -270,6 +400,11 @@ class CodexAppServerBridge:
         if active_request is None or not self._is_cancelled(active_request):
             return
 
+        self._set_active_request_status_locked(
+            active_request.request_id,
+            status="cancelled",
+            message="Chat request was canceled",
+        )
         logger.info(
             "codex_request_cancelled",
             extra={
@@ -286,6 +421,95 @@ class CodexAppServerBridge:
             "request_cancelled",
             "Chat request was canceled",
             status_code=499,
+        )
+
+    def _set_active_request_status_locked(
+        self,
+        request_id: str,
+        *,
+        status: str,
+        message: str | None = None,
+        last_tool_name: str | None = None,
+    ) -> None:
+        with self._state_lock:
+            active_request = self._active_requests.get(request_id)
+            if active_request is None:
+                return
+            active_request.status = status
+            if message is not None:
+                active_request.message = message
+            if last_tool_name is not None:
+                active_request.last_tool_name = last_tool_name
+
+    def _set_active_request_status_for_turn_locked(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        status: str,
+        message: str,
+        last_tool_name: str | None = None,
+    ) -> None:
+        with self._state_lock:
+            for active_request in self._active_requests.values():
+                if active_request.thread_id == thread_id and active_request.codex_turn_id == turn_id:
+                    active_request.status = status
+                    active_request.message = message
+                    if last_tool_name is not None:
+                        active_request.last_tool_name = last_tool_name
+                    return
+
+    def _log_turn_progress_locked(
+        self,
+        active_request: _ActiveRequestState,
+        *,
+        force: bool = False,
+        reason: str = "heartbeat",
+    ) -> None:
+        now = time.monotonic()
+        with self._state_lock:
+            tracked_request = self._active_requests.get(active_request.request_id)
+            if tracked_request is None:
+                return
+            if (
+                not force
+                and tracked_request.last_progress_log_at > 0.0
+                and now - tracked_request.last_progress_log_at < _DEFAULT_PROGRESS_LOG_INTERVAL_SECONDS
+            ):
+                return
+
+            context = None
+            if tracked_request.thread_id and tracked_request.codex_turn_id:
+                context = self._turn_contexts.get((tracked_request.thread_id, tracked_request.codex_turn_id))
+
+            tracked_request.last_progress_log_at = now
+            status = tracked_request.status
+            message = tracked_request.message
+            last_tool_name = tracked_request.last_tool_name
+            tool_calls_used = context.tool_calls_used if context else 0
+            max_tool_calls = context.max_tool_calls if context else 0
+            staged_operation_count = len(context.staged_operations) if context else 0
+            read_only_streak = context.consecutive_read_only_tool_calls if context else 0
+
+        logger.info(
+            "codex_turn_progress",
+            extra={
+                "structured": {
+                    "requestId": active_request.request_id,
+                    "conversationId": active_request.conversation_id,
+                    "threadId": active_request.thread_id,
+                    "turnId": active_request.codex_turn_id,
+                    "status": status,
+                    "message": message,
+                    "reason": reason,
+                    "elapsedMs": int((now - active_request.started_at_monotonic) * 1000),
+                    "toolCallsUsed": tool_calls_used,
+                    "maxToolCalls": max_tool_calls,
+                    "stagedOperationCount": staged_operation_count,
+                    "readOnlyToolCallStreak": read_only_streak,
+                    "lastToolName": last_tool_name,
+                }
+            },
         )
 
     def _ensure_initialized_locked(self, deadline: float) -> None:
@@ -362,7 +586,7 @@ class CodexAppServerBridge:
             {
                 "name": _TOOL_APPLY_OPERATIONS,
                 "description": (
-                    "Stage one or more darktable operations in the live run and update image state for follow-up tool calls."
+                    "Apply one or more darktable operations in the live run and update image state for follow-up tool calls."
                 ),
                 "inputSchema": apply_operations_schema,
             },
@@ -427,7 +651,7 @@ class CodexAppServerBridge:
     ) -> CodexTurnResult:
         started_at = time.monotonic()
         preview_data_url = self._preview_data_url(request)
-        turn_input = self._build_turn_input(request)
+        turn_input = self._build_turn_input(request, preview_data_url=preview_data_url)
         self._conversation_turn_counts[active_request.conversation_id] = (
             self._conversation_turn_counts.get(active_request.conversation_id, 0) + 1
         )
@@ -462,6 +686,27 @@ class CodexAppServerBridge:
                 ) from exc
             active_request.codex_turn_id = turn_id
             self._register_turn_context(thread_id, turn_id, request, preview_data_url)
+            self._set_active_request_status_locked(
+                active_request.request_id,
+                status="running",
+                message="Waiting for Codex turn output",
+            )
+            logger.info(
+                "codex_turn_started",
+                extra={
+                    "structured": {
+                        "requestId": active_request.request_id,
+                        "conversationId": active_request.conversation_id,
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "threadReused": thread_reused,
+                        "turnIndexInConversation": turn_index,
+                        "model": model,
+                        "effort": effort,
+                    }
+                },
+            )
+            self._log_turn_progress_locked(active_request, force=True, reason="turn_started")
 
             state = {
                 "thread_id": thread_id,
@@ -472,11 +717,36 @@ class CodexAppServerBridge:
                 "completed": False,
                 "token_usage_last": None,
                 "token_usage_total": None,
+                "last_activity_at": time.monotonic(),
+                "last_activity_method": "turn/start",
             }
 
             while not state["completed"]:
                 self._raise_if_cancelled_locked(active_request)
-                message = self._read_message_locked(deadline, active_request)
+                max_wait_seconds = 0.5
+                if _DEFAULT_MAX_IDLE_SECONDS > 0:
+                    idle_seconds = time.monotonic() - state["last_activity_at"]
+                    if idle_seconds >= _DEFAULT_MAX_IDLE_SECONDS:
+                        raise CodexAppServerError(
+                            "codex_stalled",
+                            (
+                                "Codex turn stalled without output. "
+                                f"No events for {int(idle_seconds)}s after "
+                                f"{state.get('last_activity_method') or 'unknown'}."
+                            ),
+                            status_code=504,
+                        )
+                    max_wait_seconds = min(max_wait_seconds, _DEFAULT_MAX_IDLE_SECONDS - idle_seconds)
+
+                message = self._read_message_locked(
+                    deadline,
+                    active_request,
+                    max_wait_seconds=max_wait_seconds,
+                )
+                if message is None:
+                    continue
+                state["last_activity_at"] = time.monotonic()
+                state["last_activity_method"] = message.get("method") or "jsonrpc-response"
                 self._handle_message_locked(message, state)
 
             if state["turn_error"]:
@@ -498,6 +768,11 @@ class CodexAppServerBridge:
 
             context = self._get_turn_context(thread_id, turn_id)
             plan = self._finalize_plan_with_live_context(plan, context)
+            self._set_active_request_status_locked(
+                active_request.request_id,
+                status="completed",
+                message="Codex plan completed",
+            )
 
             duration_ms = int((time.monotonic() - started_at) * 1000)
             logger.info(
@@ -757,14 +1032,31 @@ class CodexAppServerBridge:
         }
         return compact_payload
 
-    def _build_turn_input(self, request: RequestEnvelope) -> list[dict[str, Any]]:
-        return [
+    def _build_turn_input(
+        self,
+        request: RequestEnvelope,
+        *,
+        preview_data_url: str | None = None,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = [
             {
                 "type": "text",
                 "text": self._build_turn_prompt(request),
                 "text_elements": [],
             }
         ]
+        # In live mode, provide the current preview image up front so the first
+        # tool call can focus on state or edits instead of fetching an initial image.
+        if request.refinement.enabled and not request.refinement.automaticContinuation:
+            if preview_data_url is None:
+                preview_data_url = self._preview_data_url(request)
+            items.append(
+                {
+                    "type": "image",
+                    "url": preview_data_url,
+                }
+            )
+        return items
 
     def _build_turn_prompt(self, request: RequestEnvelope) -> str:
         is_followup = request.refinement.automaticContinuation
@@ -782,7 +1074,9 @@ class CodexAppServerBridge:
         )
         live_run_line = (
             "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
+            "Initial turn input includes the current preview image.\n"
             "After each apply_operations call, re-check get_image_state and optionally get_preview_image before the next adjustment.\n"
+            f"Apply at least one edit batch with apply_operations within the first {_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY} tool calls.\n"
             "When satisfied, return final JSON with continueRefining=false and usually empty operations.\n"
             if live_run_enabled
             else "Single-turn mode: do not call apply_operations; return operations directly in final JSON.\n"
@@ -896,7 +1190,9 @@ class CodexAppServerBridge:
         self,
         deadline: float,
         active_request: _ActiveRequestState | None = None,
-    ) -> dict[str, Any]:
+        *,
+        max_wait_seconds: float | None = None,
+    ) -> dict[str, Any] | None:
         if not self._process or not self._process.stdout or not self._process.stderr:
             raise CodexAppServerError("codex_process_unavailable", "Codex app server is not running")
 
@@ -910,7 +1206,10 @@ class CodexAppServerBridge:
                 [self._process.stdout, self._process.stderr],
                 [],
                 [],
-                min(remaining, 0.5),
+                min(
+                    remaining,
+                    0.5 if max_wait_seconds is None else max(0.0, max_wait_seconds),
+                ),
             )
             if not ready:
                 if self._process.poll() is not None:
@@ -918,6 +1217,8 @@ class CodexAppServerBridge:
                     raise CodexAppServerError(
                         "codex_process_exited", "Codex app server exited unexpectedly", status_code=503
                     )
+                if max_wait_seconds is not None:
+                    return None
                 continue
 
             for stream in ready:
@@ -1076,32 +1377,6 @@ class CodexAppServerBridge:
                 ],
             }
 
-        context = self._get_turn_context(thread_id, turn_id)
-        if context is None:
-            return {
-                "success": False,
-                "contentItems": [
-                    {
-                        "type": "inputText",
-                        "text": "No active image context is available for this tool call.",
-                    }
-                ],
-            }
-
-        if not self._register_tool_call_budget(context):
-            return {
-                "success": False,
-                "contentItems": [
-                    {
-                        "type": "inputText",
-                        "text": (
-                            f"Tool call budget exceeded ({context.max_tool_calls}). "
-                            "Finalize the run now."
-                        ),
-                    }
-                ],
-            }
-
         arguments = params.get("arguments")
         if arguments is None:
             arguments = {}
@@ -1116,42 +1391,91 @@ class CodexAppServerBridge:
                 ],
             }
 
-        if tool_name == _TOOL_GET_PREVIEW_IMAGE:
-            response = {
-                "success": True,
-                "contentItems": [
-                    {
-                        "type": "inputImage",
-                        "imageUrl": context.preview_data_url,
-                    }
-                ],
-            }
-        elif tool_name == _TOOL_GET_IMAGE_STATE:
-            payload = context.state_payload
-            response = {
-                "success": True,
-                "contentItems": [
-                    {
-                        "type": "inputText",
-                        "text": json.dumps(payload, separators=(",", ":")),
-                    }
-                ],
-            }
-        elif tool_name == _TOOL_APPLY_OPERATIONS:
-            response = self._apply_operations_tool_call(context, arguments)
-        else:
-            response = {
-                "success": False,
-                "contentItems": [
-                    {
-                        "type": "inputText",
-                        "text": (
-                            f"Unsupported tool '{tool_name}'. Supported tools: "
-                            f"{_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_APPLY_OPERATIONS}."
-                        ),
-                    }
-                ],
-            }
+        with self._state_lock:
+            context = self._turn_contexts.get((thread_id, turn_id))
+            if context is None:
+                return {
+                    "success": False,
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": "No active image context is available for this tool call.",
+                        }
+                    ],
+                }
+
+            guardrail_error = self._register_tool_call_progress_locked(context, tool_name)
+            if guardrail_error is not None:
+                response = self._tool_error_response(guardrail_error)
+            elif tool_name == _TOOL_GET_PREVIEW_IMAGE:
+                response = {
+                    "success": True,
+                    "contentItems": [
+                        {
+                            "type": "inputImage",
+                            "imageUrl": context.preview_data_url,
+                        }
+                    ],
+                }
+            elif tool_name == _TOOL_GET_IMAGE_STATE:
+                payload = context.state_payload
+                response = {
+                    "success": True,
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": json.dumps(payload, separators=(",", ":")),
+                        }
+                    ],
+                }
+            elif tool_name == _TOOL_APPLY_OPERATIONS:
+                response = self._apply_operations_tool_call(context, arguments)
+            else:
+                response = {
+                    "success": False,
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": (
+                                f"Unsupported tool '{tool_name}'. Supported tools: "
+                                f"{_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_APPLY_OPERATIONS}."
+                            ),
+                        }
+                    ],
+                }
+            tool_calls_used = context.tool_calls_used
+            max_tool_calls = context.max_tool_calls
+            staged_operation_count = len(context.staged_operations)
+            read_only_streak = context.consecutive_read_only_tool_calls
+            tool_error = None
+            if not response["success"]:
+                content_items = response.get("contentItems")
+                if isinstance(content_items, list):
+                    for content_item in content_items:
+                        if not isinstance(content_item, dict):
+                            continue
+                        text = content_item.get("text")
+                        if isinstance(text, str) and text:
+                            tool_error = text
+                            break
+
+        self._set_active_request_status_for_turn_locked(
+            thread_id,
+            turn_id,
+            status="running",
+            message=(
+                (
+                    f"Handled tool {tool_name} ({tool_calls_used}/{max_tool_calls}); "
+                    f"{staged_operation_count} live edits"
+                )
+                if response["success"]
+                else (
+                    f"Tool {tool_name} failed ({tool_calls_used}/{max_tool_calls}): "
+                    f"{tool_error or 'No details provided'}"
+                )
+            ),
+            last_tool_name=tool_name,
+        )
 
         logger.info(
             "codex_tool_call_handled",
@@ -1162,6 +1486,11 @@ class CodexAppServerBridge:
                     "tool": tool_name,
                     "callId": call_id,
                     "success": response["success"],
+                    "toolCallsUsed": tool_calls_used,
+                    "maxToolCalls": max_tool_calls,
+                    "stagedOperationCount": staged_operation_count,
+                    "readOnlyToolCallStreak": read_only_streak,
+                    "toolError": tool_error,
                 }
             },
         )
@@ -1171,6 +1500,53 @@ class CodexAppServerBridge:
     def _register_tool_call_budget(context: _TurnContext) -> bool:
         context.tool_calls_used += 1
         return context.tool_calls_used <= context.max_tool_calls
+
+    @staticmethod
+    def _is_read_only_tool(tool_name: str) -> bool:
+        return tool_name in {_TOOL_GET_PREVIEW_IMAGE, _TOOL_GET_IMAGE_STATE}
+
+    def _register_tool_call_progress_locked(
+        self,
+        context: _TurnContext,
+        tool_name: str,
+    ) -> str | None:
+        context.tool_calls_used += 1
+        if context.tool_calls_used > context.max_tool_calls:
+            return (
+                f"Tool call budget exceeded ({context.max_tool_calls}). "
+                "Finalize the run now."
+            )
+
+        if (
+            context.live_run_enabled
+            and not context.staged_operations
+            and tool_name != _TOOL_APPLY_OPERATIONS
+            and context.tool_calls_used > _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
+        ):
+            return (
+                "No live edits have been applied yet in live mode. "
+                f"Call {_TOOL_APPLY_OPERATIONS} now with concrete operations or finalize."
+            )
+
+        if tool_name == _TOOL_APPLY_OPERATIONS:
+            context.consecutive_read_only_tool_calls = 0
+            return None
+
+        if self._is_read_only_tool(tool_name):
+            context.consecutive_read_only_tool_calls += 1
+            if (
+                context.live_run_enabled
+                and context.consecutive_read_only_tool_calls
+                > _DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS
+            ):
+                return (
+                    "Too many consecutive read-only tool calls. "
+                    f"Call {_TOOL_APPLY_OPERATIONS} with concrete edits or finalize now."
+                )
+            return None
+
+        context.consecutive_read_only_tool_calls = 0
+        return None
 
     @staticmethod
     def _tool_error_response(message: str) -> dict[str, Any]:
@@ -1225,8 +1601,8 @@ class CodexAppServerBridge:
                 {
                     "type": "inputText",
                     "text": (
-                        f"Staged {len(staged_batch)} operations in this call; "
-                        f"{len(context.staged_operations)} total staged operations. "
+                        f"Applied {len(staged_batch)} operations in this call; "
+                        f"{len(context.staged_operations)} total live edits applied. "
                         "Preview refreshed for get_preview_image."
                     ),
                 }

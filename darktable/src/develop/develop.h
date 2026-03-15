@@ -354,6 +354,11 @@ typedef struct dt_develop_t
     guint autorun_source_id;
     guint continuation_source_id;
     guint max_refinement_passes;
+    guint active_request_live_applied_count;
+    guint active_request_refinement_pass_index;
+    guint active_request_refinement_max_passes;
+    guint active_request_tool_calls_used;
+    guint active_request_tool_calls_max;
     gboolean multi_turn_enabled;
     gboolean fast_mode_enabled;
     gboolean active_request_canceling;

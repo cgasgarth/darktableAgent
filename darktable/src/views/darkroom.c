@@ -169,6 +169,12 @@ static void _agent_chat_cancel_active_request(dt_develop_t *dev,
 static void _agent_chat_schedule_refinement_continue(dt_develop_t *dev,
                                                      const dt_agent_chat_submission_t *submission,
                                                      const dt_agent_chat_response_t *response);
+static void _agent_chat_progress_finished(const dt_agent_client_progress_t *progress,
+                                          gpointer user_data);
+static gboolean _agent_chat_apply_operation_range(const GPtrArray *operations,
+                                                  const guint start_index,
+                                                  dt_agent_execution_report_t *execution_report,
+                                                  GError **error);
 
 const char *name(const dt_view_t *self)
 {
@@ -1757,6 +1763,9 @@ static void _agent_chat_set_active_request(dt_develop_t *dev,
   dev->agent_chat.active_request_id = g_strdup(request_id);
   dev->agent_chat.active_request = request;
   dev->agent_chat.active_request_canceling = FALSE;
+  dev->agent_chat.active_request_live_applied_count = 0;
+  dev->agent_chat.active_request_tool_calls_used = 0;
+  dev->agent_chat.active_request_tool_calls_max = 0;
 }
 
 static void _agent_chat_clear_active_request(dt_develop_t *dev,
@@ -1771,6 +1780,11 @@ static void _agent_chat_clear_active_request(dt_develop_t *dev,
     g_clear_pointer(&dev->agent_chat.active_request_id, g_free);
     dev->agent_chat.active_request_canceling = FALSE;
   }
+  dev->agent_chat.active_request_live_applied_count = 0;
+  dev->agent_chat.active_request_refinement_pass_index = 0;
+  dev->agent_chat.active_request_refinement_max_passes = 0;
+  dev->agent_chat.active_request_tool_calls_used = 0;
+  dev->agent_chat.active_request_tool_calls_max = 0;
 }
 
 static void _agent_chat_cancel_pending_refinement(dt_develop_t *dev)
@@ -2365,9 +2379,33 @@ static void _agent_chat_update_refinement_status(dt_develop_t *dev,
 {
   if(!dev)
     return;
-
   (void)pass_index;
-  (void)max_passes;
+
+  dev->agent_chat.active_request_refinement_pass_index = pass_index;
+  dev->agent_chat.active_request_refinement_max_passes = max_passes;
+
+  if(dev->agent_chat.active_request_canceling)
+  {
+    _agent_chat_set_status(dev, _("Canceling request..."));
+    return;
+  }
+
+  if(dev->agent_chat.multi_turn_enabled)
+  {
+    const guint max_tool_calls = dev->agent_chat.active_request_tool_calls_max > 0
+                                   ? dev->agent_chat.active_request_tool_calls_max
+                                   : MAX(1u, max_passes);
+    const guint used_tool_calls = MIN(dev->agent_chat.active_request_tool_calls_used,
+                                      max_tool_calls);
+    g_autofree gchar *status = g_strdup_printf(
+      _("Live edits | tool calls %u/%u | edits applied %u"),
+      used_tool_calls,
+      max_tool_calls,
+      dev->agent_chat.active_request_live_applied_count);
+    _agent_chat_set_status(dev, status);
+    return;
+  }
+
   _agent_chat_set_status(dev, _("Sending request..."));
 }
 
@@ -2694,6 +2732,104 @@ static void _agent_chat_append_operation_summary(dt_develop_t *dev,
   g_string_free(summary, TRUE);
 }
 
+static gboolean _agent_chat_apply_operation_range(const GPtrArray *operations,
+                                                  const guint start_index,
+                                                  dt_agent_execution_report_t *execution_report,
+                                                  GError **error)
+{
+  if(!operations || start_index >= operations->len)
+    return TRUE;
+
+  dt_agent_chat_response_t partial_response;
+  dt_agent_chat_response_init(&partial_response);
+  if(partial_response.operations)
+    g_ptr_array_unref(partial_response.operations);
+  partial_response.operations = g_ptr_array_new();
+
+  for(guint i = start_index; i < operations->len; i++)
+    g_ptr_array_add(partial_response.operations, g_ptr_array_index((GPtrArray *)operations, i));
+
+  const gboolean ok = dt_agent_execute_response(&partial_response, execution_report, error);
+
+  g_ptr_array_unref(partial_response.operations);
+  partial_response.operations = NULL;
+  dt_agent_chat_response_clear(&partial_response);
+  return ok;
+}
+
+static void _agent_chat_progress_finished(const dt_agent_client_progress_t *progress,
+                                          gpointer user_data)
+{
+  (void)user_data;
+  dt_develop_t *dev = _agent_chat_get_darkroom_dev();
+  if(!dev)
+    return;
+
+  if(!dev->agent_chat.multi_turn_enabled
+     || !dev->agent_chat.is_loading
+     || !dev->agent_chat.active_request
+     || dev->agent_chat.active_request_canceling)
+    return;
+
+  if(!progress)
+    return;
+
+  if(progress->cancelled)
+    return;
+
+  if(progress->transport_error && progress->transport_error[0] != '\0')
+  {
+    dt_print(DT_DEBUG_CONTROL,
+             "[agent-chat] progress stream event failed: %s",
+             progress->transport_error);
+    return;
+  }
+
+  if(progress->found)
+  {
+    dev->agent_chat.active_request_tool_calls_used = progress->tool_calls_used;
+    if(progress->tool_calls_max > 0)
+      dev->agent_chat.active_request_tool_calls_max = progress->tool_calls_max;
+
+    const guint live_edit_count = progress->has_response && progress->response.operations
+                                    ? progress->response.operations->len
+                                    : progress->staged_operation_count;
+
+    if(_agent_chat_darkroom_is_visible()
+       && progress->has_response
+       && progress->response.operations
+       && live_edit_count > dev->agent_chat.active_request_live_applied_count)
+    {
+      dt_agent_execution_report_t live_report;
+      dt_agent_execution_report_init(&live_report);
+      g_autoptr(GError) apply_error = NULL;
+      if(!_agent_chat_apply_operation_range(progress->response.operations,
+                                            dev->agent_chat.active_request_live_applied_count,
+                                            &live_report,
+                                            &apply_error))
+      {
+        const char *message = apply_error && apply_error->message ? apply_error->message
+                                                                  : _("failed to apply live edits");
+        _agent_chat_set_error(dev, message);
+        _agent_chat_set_status(dev, _("Live apply failed"));
+        dt_print(DT_DEBUG_CONTROL,
+                 "[agent-chat] live apply failed: %s",
+                 message);
+        dt_agent_execution_report_clear(&live_report);
+        _agent_chat_cancel_active_request(dev, _("Live apply failed"), "apply-failed");
+        return;
+      }
+
+      dev->agent_chat.active_request_live_applied_count = live_edit_count;
+      dt_agent_execution_report_clear(&live_report);
+    }
+  }
+
+  _agent_chat_update_refinement_status(dev,
+                                       MAX(1u, dev->agent_chat.active_request_refinement_pass_index),
+                                       MAX(1u, dev->agent_chat.active_request_refinement_max_passes));
+}
+
 static void _agent_chat_handle_transport_error(dt_develop_t *dev,
                                                const char *error_message)
 {
@@ -2707,7 +2843,8 @@ static void _agent_chat_handle_transport_error(dt_develop_t *dev,
 static gboolean _agent_chat_handle_response(dt_develop_t *dev,
                                             const dt_agent_chat_response_t *response,
                                             dt_agent_execution_report_t *execution_report,
-                                            gchar **out_error_message)
+                                            gchar **out_error_message,
+                                            const guint already_applied_count)
 {
   if(response->message_text && response->message_text[0] != '\0')
     _agent_chat_append_message(dev, _("assistant"), response->message_text);
@@ -2726,8 +2863,16 @@ static gboolean _agent_chat_handle_response(dt_develop_t *dev,
 
   if(response->operations && response->operations->len > 0)
   {
+    const guint start_index = MIN(already_applied_count, response->operations->len);
+    if(start_index >= response->operations->len)
+    {
+      _agent_chat_set_status(dev, _("Response received"));
+      return TRUE;
+    }
+
     GError *apply_error = NULL;
-    if(!dt_agent_execute_response(response, execution_report, &apply_error))
+    if(!_agent_chat_apply_operation_range(response->operations, start_index,
+                                          execution_report, &apply_error))
     {
       const char *message
         = apply_error && apply_error->message ? apply_error->message
@@ -2769,6 +2914,9 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     return;
 
   const gboolean active_request = _agent_chat_submission_matches_active_request(dev, submission);
+  const guint live_applied_before_finish = active_request
+                                             ? dev->agent_chat.active_request_live_applied_count
+                                             : 0u;
   if(active_request)
     _agent_chat_clear_active_request(dev, TRUE);
 
@@ -2944,7 +3092,8 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     dt_agent_execution_report_init(&execution_report);
     g_autofree gchar *response_error = NULL;
     const gboolean handled = _agent_chat_handle_response(dev, &result->response,
-                                                         &execution_report, &response_error);
+                                                         &execution_report, &response_error,
+                                                         live_applied_before_finish);
     const gboolean legacy_refinement_loop_enabled
       = _agent_chat_env_enabled("DARKTABLE_AGENT_LEGACY_MULTI_TURN_LOOP");
     const gboolean should_continue
@@ -3074,7 +3223,9 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
   }
 
   dt_agent_client_request_t *request_handle
-    = dt_agent_client_chat_async(&request, _agent_chat_request_finished,
+    = dt_agent_client_chat_async(&request,
+                                 _agent_chat_request_finished,
+                                 _agent_chat_progress_finished,
                                  submission, _agent_chat_submission_free, &error);
   dt_agent_chat_request_clear(&request);
 
@@ -3094,6 +3245,12 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
   }
 
   _agent_chat_set_active_request(dev, request_handle, submission->request_id);
+  dev->agent_chat.active_request_refinement_pass_index = refinement_pass_index;
+  dev->agent_chat.active_request_refinement_max_passes = refinement_max_passes;
+  dev->agent_chat.active_request_tool_calls_used = 0;
+  dev->agent_chat.active_request_tool_calls_max
+    = refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI ? refinement_max_passes : 1u;
+  dev->agent_chat.active_request_live_applied_count = 0;
   _agent_chat_update_sensitivity(dev);
 
   return TRUE;
@@ -4244,7 +4401,7 @@ void gui_init(dt_view_t *self)
 
     dev->agent_chat.fast_mode_check_button = gtk_check_button_new_with_label(_("fast mode"));
     gtk_widget_set_tooltip_text(dev->agent_chat.fast_mode_check_button,
-                                _("use the faster codex spark model for chat planning"));
+                                _("hint the server to use a faster planning path"));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.fast_mode_check_button),
                                  dev->agent_chat.fast_mode_enabled);
     g_signal_connect(G_OBJECT(dev->agent_chat.fast_mode_check_button), "toggled",

@@ -598,6 +598,85 @@ async def test_chat_surfaces_codex_backend_errors(
 
 
 @pytest.mark.anyio
+async def test_chat_surfaces_unexpected_backend_errors(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(error=RuntimeError("boom"))
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    response = await api_client.post("/v1/chat", json=_sample_request_payload())
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["error"] == {
+        "code": "internal_error",
+        "message": "Unexpected server error",
+    }
+
+
+@pytest.mark.anyio
+async def test_chat_stream_emits_final_event(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "Streaming done.",
+                    "continueRefining": False,
+                    "operations": [],
+                }
+            )
+        )
+    )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    payload = _sample_request_payload()
+    async with api_client.stream("POST", "/v1/chat/stream", json=payload) as response:
+        assert response.status_code == 200
+        chunks = []
+        async for chunk in response.aiter_text():
+            chunks.append(chunk)
+            joined = "".join(chunks)
+            if "event: final" in joined and "event: completed" in joined:
+                break
+
+    stream_text = "".join(chunks)
+    assert "event: accepted" in stream_text
+    assert "event: final" in stream_text
+    assert '"assistantMessage":{"role":"assistant","text":"Streaming done."}' in stream_text
+    assert "event: completed" in stream_text
+
+
+@pytest.mark.anyio
+async def test_chat_stream_emits_error_event_for_codex_error(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        error=CodexAppServerError(
+            "codex_timeout", "Codex app server timed out", status_code=504
+        )
+    )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    payload = _sample_request_payload()
+    async with api_client.stream("POST", "/v1/chat/stream", json=payload) as response:
+        assert response.status_code == 200
+        chunks = []
+        async for chunk in response.aiter_text():
+            chunks.append(chunk)
+            joined = "".join(chunks)
+            if "event: error" in joined and "event: completed" in joined:
+                break
+
+    stream_text = "".join(chunks)
+    assert "event: error" in stream_text
+    assert '"code":"codex_timeout"' in stream_text
+    assert '"message":"Codex app server timed out"' in stream_text
+
+
+@pytest.mark.anyio
 async def test_chat_rejects_malformed_payload(api_client: AsyncClient) -> None:
     payload = _sample_request_payload()
     payload["message"]["role"] = "assistant"

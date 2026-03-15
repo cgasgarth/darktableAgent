@@ -361,6 +361,8 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Call get_preview_image and get_image_state before returning a final plan." in prompt
     assert "Tool budget: maximum 10 tool calls in this run." in prompt
     assert "Live run mode is enabled" in prompt
+    assert "Initial turn input includes the current preview image." in prompt
+    assert "Apply at least one edit batch with apply_operations within the first" in prompt
     assert "infer a conservative supported edit plan" in prompt
     assert "preview, histogram, and available controls" in prompt
     assert "Respect refinement state" in prompt
@@ -376,10 +378,26 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Latest user message: Do a full edit so this becomes a polished gallery-ready landscape photo." in prompt
 
 
-def test_turn_input_is_text_only_prompt_item() -> None:
+def test_turn_input_in_live_mode_includes_text_and_initial_preview_image() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
 
     items = bridge._build_turn_input(_sample_request())  # type: ignore[attr-defined]
+
+    assert len(items) == 2
+    assert items[0]["type"] == "text"
+    assert items[1]["type"] == "image"
+    assert str(items[1]["url"]).startswith("data:image/jpeg;base64,")
+
+
+def test_turn_input_in_single_turn_mode_remains_text_only() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.enabled = False
+    request.refinement.mode = "single-turn"
+    request.refinement.maxPasses = 1
+    request.refinement.passIndex = 1
+
+    items = bridge._build_turn_input(request)  # type: ignore[attr-defined]
 
     assert len(items) == 1
     assert items[0]["type"] == "text"
@@ -458,6 +476,79 @@ def test_cancel_request_records_unknown_request_ids_for_future_preflight() -> No
     try:
         assert active_request.cancel_event.is_set() is True
     finally:
+        bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
+
+
+def test_get_request_progress_returns_not_found_for_unknown_request() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+
+    progress = bridge.get_request_progress(
+        request_id="missing-request",
+        app_session_id="app-1",
+        image_session_id="img-1",
+        conversation_id="conv-1",
+        turn_id="turn-1",
+    )
+
+    assert progress == {
+        "found": False,
+        "status": "not_found",
+        "toolCallsUsed": 0,
+        "maxToolCalls": 0,
+        "stagedOperationCount": 0,
+        "operations": [],
+        "message": "No active request found for that requestId.",
+    }
+
+
+def test_get_request_progress_returns_live_staged_operations_for_active_turn() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    active_request = bridge._register_request(request)  # type: ignore[attr-defined]
+    try:
+        data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+        bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+        active_request.thread_id = "thread-1"
+        active_request.codex_turn_id = "turn-1"
+        active_request.status = "running"
+        active_request.message = "Waiting for Codex turn output"
+        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert context is not None
+        context.tool_calls_used = 3
+        context.staged_operations = [
+            {
+                "operationId": "tool-op-1",
+                "sequence": 1,
+                "kind": "set-float",
+                "target": {
+                    "type": "darktable-action",
+                    "actionPath": "iop/exposure/exposure",
+                    "settingId": "setting.exposure.primary",
+                },
+                "value": {"mode": "delta", "number": 0.25},
+                "reason": None,
+                "constraints": {
+                    "onOutOfRange": "clamp",
+                    "onRevisionMismatch": "fail",
+                },
+            }
+        ]
+
+        progress = bridge.get_request_progress(
+            request_id=request.requestId,
+            app_session_id=request.session.appSessionId,
+            image_session_id=request.session.imageSessionId,
+            conversation_id=request.session.conversationId,
+            turn_id=request.session.turnId,
+        )
+        assert progress["found"] is True
+        assert progress["status"] == "running"
+        assert progress["toolCallsUsed"] == 3
+        assert progress["maxToolCalls"] == request.refinement.maxPasses
+        assert progress["stagedOperationCount"] == 1
+        assert len(progress["operations"]) == 1
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
 
 
@@ -657,7 +748,7 @@ def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
 
         result = sent_payloads[0]["result"]
         assert result["success"] is True
-        assert "Staged 1 operations" in result["contentItems"][0]["text"]
+        assert "Applied 1 operations" in result["contentItems"][0]["text"]
         assert "Preview refreshed" in result["contentItems"][0]["text"]
 
         sent_payloads.clear()
@@ -785,6 +876,116 @@ def test_tool_call_budget_limits_total_tool_calls() -> None:
     assert sent_payloads[1]["result"]["success"] is True
     assert sent_payloads[2]["result"]["success"] is False
     assert "Tool call budget exceeded" in sent_payloads[2]["result"]["contentItems"][0]["text"]
+
+
+def test_live_run_guardrail_requires_apply_after_initial_read_only_calls() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.maxPasses = 20
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        for request_id in (31, 32, 33, 34):
+            bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "item/tool/call",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "callId": f"call-read-only-{request_id}",
+                        "tool": _TOOL_GET_IMAGE_STATE,
+                        "arguments": {},
+                    },
+                }
+            )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    assert sent_payloads[0]["result"]["success"] is True
+    assert sent_payloads[1]["result"]["success"] is True
+    assert sent_payloads[2]["result"]["success"] is True
+    assert sent_payloads[3]["result"]["success"] is False
+    assert (
+        "No live edits have been applied yet in live mode"
+        in sent_payloads[3]["result"]["contentItems"][0]["text"]
+    )
+
+
+def test_read_only_guardrail_requires_apply_or_finalize_after_streak() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.maxPasses = 20
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 36,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-first",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/exposure/exposure",
+                                    "settingId": "setting.exposure.primary",
+                                },
+                                "value": {"mode": "delta", "number": 0.1},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+        for request_id in (37, 38, 39, 40, 41):
+            bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "item/tool/call",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "callId": f"call-read-only-{request_id}",
+                        "tool": _TOOL_GET_IMAGE_STATE,
+                        "arguments": {},
+                    },
+                }
+            )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    assert sent_payloads[0]["result"]["success"] is True
+    assert sent_payloads[1]["result"]["success"] is True
+    assert sent_payloads[2]["result"]["success"] is True
+    assert sent_payloads[3]["result"]["success"] is True
+    assert sent_payloads[4]["result"]["success"] is True
+    assert sent_payloads[5]["result"]["success"] is False
+    assert (
+        "Too many consecutive read-only tool calls"
+        in sent_payloads[5]["result"]["contentItems"][0]["text"]
+    )
 
 
 def test_finalize_plan_with_live_context_merges_staged_operations() -> None:
