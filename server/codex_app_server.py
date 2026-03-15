@@ -43,47 +43,31 @@ _FAST_MODE_REASONING_EFFORT = os.environ.get(
 )
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
+_DEFAULT_HISTOGRAM_BINS = int(os.environ.get("DARKTABLE_AGENT_HISTOGRAM_BINS", "64"))
 
 _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing planner for darktable.
 
-Never use tools, never request approvals, never ask for user input, and never run commands.
+Never use tools, never ask for approvals, and never request user input.
 Return exactly one JSON object matching the output schema.
 
-You are given:
-- the latest user message
-- refinement state describing whether this is a single-turn request or an automatic continuation pass
-- a compact image snapshot with edit-relevant metadata, editable setting targets, and optionally a 1k rendered JPEG preview and histogram
-- when available, the 1k preview is attached as a separate image input and the text payload only includes preview metadata
+Use the attached preview image as primary visual context. Use histogram + editable settings as constraints.
+Only emit operations targeting provided settingId/actionPath pairs. Never invent IDs or paths.
+Keep edits coherent, conservative, and executable.
+If user intent is broad, infer a reasonable plan from the visible image instead of asking for more specificity.
+Prefer advanced color controls (`colorequal`, `colorbalancergb`, `primaries`) when available for nuanced color work.
 
-Rules:
-- Only plan operations that are explicitly supported by the editable setting targets snapshot.
-- Never invent capability IDs, setting IDs, or action paths.
-- Use zero operations only when the request is unsupported, unsafe, or impossible with the supplied capabilities.
-- Keep assistantText brief and user-facing.
-- Every operation must be immediately executable by darktable.
-- Use the supplied preview and histogram when they are present.
-- Use the attached image input directly when it is present; do not expect raw preview bytes inside the text payload.
-- Prefer the supplied editable setting targets and bounds over generic photography assumptions.
-- Use moduleId/moduleLabel to understand which controls belong to the same darktable module.
-- Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or editable settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
-- When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the available controls.
-- Favor restrained, high-confidence edits over extreme changes. Preserve highlight detail, avoid crushed shadows, and avoid oversaturation unless the user explicitly asks for a stylized look.
-- Prefer existing supported controls for global tone, color, detail, and presence before giving up on the request.
-- When moduleId `colorequal`, `colorbalancergb`, or `primaries` is present, treat those controls as preferred advanced color tools for hue, chroma, brilliance, vibrance, contrast, color separation, and primary remapping work.
-- If visual context is present, do not answer with "be more specific" unless no safe supported edit can be inferred.
-- Use refinement.goalText as the root user goal for every pass, even when the latest user message is an automatic continuation prompt.
-- For single-turn requests, always return continueRefining=false.
-- For multi-turn requests, set continueRefining=true only when another pass is still likely to improve the image after darktable applies this pass.
-- Set continueRefining=false when the image already satisfies the goal, when additional safe edits are not warranted, or when you return zero operations.
-- As refinement progresses, prefer smaller finishing adjustments and stop once further changes would be mostly speculative.
-- Use mode "delta" only for set-float operations when the capability supports delta.
-- Use mode "set" for all set-choice and set-bool operations.
-- For set-choice operations, return value.choiceValue and prefer including value.choiceId when it is known from the editable setting choices.
-- For set-bool operations, return value.boolValue.
-- Use the exact target.settingId from imageSnapshot.editableSettings so the operation is tied to the intended control instance.
-- When the user requests an exact EV change, use that exact exposure delta if the exposure setting exists and supports delta.
-- When the user requests to brighten or darken without an exact amount and an exposure setting exists, default to a single exposure delta of +0.7 EV or -0.7 EV.
-- When the user asks for an unsupported action, explain the limitation and return no operations.
+Refinement rules:
+- Always optimize toward refinement.goalText.
+- In single-turn mode, continueRefining must be false.
+- In multi-turn mode, set continueRefining true only if another pass is likely useful after these operations apply.
+- Set continueRefining false when image is good enough, gains are speculative, or operations is empty.
+
+Value rules:
+- Use mode `delta` only for set-float when supported.
+- Use mode `set` for set-choice and set-bool.
+- set-choice uses value.choiceValue (and choiceId when known).
+- set-bool uses value.boolValue.
+- Always include the exact target.settingId from editable settings.
 """
 
 
@@ -523,22 +507,57 @@ class CodexAppServerBridge:
                 )
 
     @staticmethod
-    def _build_prompt_payload(request: RequestEnvelope) -> dict[str, Any]:
+    def _trim_histogram_payload(request: RequestEnvelope) -> dict[str, Any] | None:
+        histogram = request.imageSnapshot.histogram
+        if histogram is None:
+            return None
+
+        luma = histogram.channels.get("luma")
+        if luma is None or not luma.bins:
+            return None
+
+        source_bins = luma.bins
+        source_count = len(source_bins)
+        target_count = max(1, min(_DEFAULT_HISTOGRAM_BINS, source_count))
+
+        if target_count == source_count:
+            rebinned = list(source_bins)
+        else:
+            rebinned: list[int] = []
+            for index in range(target_count):
+                start = (index * source_count) // target_count
+                end = ((index + 1) * source_count) // target_count
+                if end <= start:
+                    end = min(source_count, start + 1)
+                rebinned.append(sum(source_bins[start:end]))
+
+        return {
+            "binCount": target_count,
+            "channels": {
+                "luma": {
+                    "bins": rebinned,
+                }
+            },
+        }
+
+    def _build_prompt_payload(self, request: RequestEnvelope) -> dict[str, Any]:
+        is_followup = request.refinement.automaticContinuation
         compact_settings: list[dict[str, Any]] = []
         for setting in request.imageSnapshot.editableSettings:
             compact_setting: dict[str, Any] = {
-                "moduleId": setting.moduleId,
-                "moduleLabel": setting.moduleLabel,
                 "settingId": setting.settingId,
-                "capabilityId": setting.capabilityId,
                 "kind": setting.kind,
                 "actionPath": setting.actionPath,
                 "supportedModes": setting.supportedModes,
             }
+            if not is_followup:
+                compact_setting["moduleId"] = setting.moduleId
+                compact_setting["moduleLabel"] = setting.moduleLabel
             if setting.kind == "set-float":
                 compact_setting["minNumber"] = setting.minNumber
                 compact_setting["maxNumber"] = setting.maxNumber
-                compact_setting["stepNumber"] = setting.stepNumber
+                if not is_followup:
+                    compact_setting["stepNumber"] = setting.stepNumber
             elif setting.kind == "set-choice":
                 compact_setting["choices"] = (
                     [choice.model_dump(mode="json") for choice in setting.choices]
@@ -552,20 +571,13 @@ class CodexAppServerBridge:
             "imageSnapshot": {
                 "imageRevisionId": request.imageSnapshot.imageRevisionId,
                 "metadata": {
-                    "imageId": metadata.imageId,
-                    "imageName": metadata.imageName,
                     "width": metadata.width,
                     "height": metadata.height,
                 },
                 "editableSettings": compact_settings,
-                "histogram": (
-                    request.imageSnapshot.histogram.model_dump(mode="json")
-                    if request.imageSnapshot.histogram
-                    else None
-                ),
+                "histogram": self._trim_histogram_payload(request),
                 "preview": (
                     {
-                        "previewId": request.imageSnapshot.preview.previewId,
                         "mimeType": request.imageSnapshot.preview.mimeType,
                         "width": request.imageSnapshot.preview.width,
                         "height": request.imageSnapshot.preview.height,
@@ -601,6 +613,12 @@ class CodexAppServerBridge:
     def _build_turn_prompt(self, request: RequestEnvelope) -> str:
         payload = self._build_prompt_payload(request)
         preview = request.imageSnapshot.preview
+        is_followup = request.refinement.automaticContinuation
+        module_grouping_line = (
+            "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
+            if not is_followup
+            else "Follow-up payloads may omit module labels; rely on settingId/actionPath and prior goal context.\n"
+        )
         preview_summary = (
             f"attached separately as {preview.mimeType} {preview.width}x{preview.height}"
             if preview is not None
@@ -614,8 +632,8 @@ class CodexAppServerBridge:
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             f"Preview: {preview_summary}\n"
             "\n"
-            "Use the editable settings and image state exactly as provided.\n"
-            "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
+            "Use the provided editable settings and image state exactly as provided.\n"
+            f"{module_grouping_line}"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
             "The preview image is attached separately when available; the JSON payload below only keeps preview metadata so the prompt stays compact.\n"

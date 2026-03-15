@@ -281,13 +281,70 @@ def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None
 
 
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
-    assert "Treat broad creative requests" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert "If visual context is present, do not answer with \"be more specific\"" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert "Use refinement.goalText as the root user goal" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert "moduleId/moduleLabel" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert "colorbalancergb" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Use the attached preview image as primary visual context." in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Only emit operations targeting provided settingId/actionPath pairs." in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "If user intent is broad, infer a reasonable plan" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Always optimize toward refinement.goalText." in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "colorequal" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "primaries" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert "attached as a separate image input" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "set-choice uses value.choiceValue" in _THREAD_DEVELOPER_INSTRUCTIONS
+
+
+def test_prompt_payload_trims_histogram_to_luma_only() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+
+    payload = bridge._build_prompt_payload(request)  # type: ignore[attr-defined]
+    histogram = payload["imageSnapshot"]["histogram"]
+
+    assert histogram == {
+        "binCount": 4,
+        "channels": {"luma": {"bins": [0, 20, 50, 30]}},
+    }
+
+
+def test_prompt_payload_rebins_histogram_when_luma_bin_count_exceeds_limit() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.imageSnapshot.histogram.binCount = 128  # type: ignore[union-attr]
+    request.imageSnapshot.histogram.channels["luma"].bins = [1] * 128  # type: ignore[union-attr]
+
+    payload = bridge._build_prompt_payload(request)  # type: ignore[attr-defined]
+    histogram = payload["imageSnapshot"]["histogram"]
+    rebinned = histogram["channels"]["luma"]["bins"]
+
+    assert histogram["binCount"] == 64
+    assert len(rebinned) == 64
+    assert sum(rebinned) == 128
+
+
+def test_followup_prompt_payload_is_context_light() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.automaticContinuation = True
+    request.refinement.passIndex = 2
+
+    payload = bridge._build_prompt_payload(request)  # type: ignore[attr-defined]
+    first_setting = payload["imageSnapshot"]["editableSettings"][0]
+
+    assert first_setting["settingId"] == "setting.exposure.primary"
+    assert first_setting["kind"] == "set-float"
+    assert first_setting["actionPath"] == "iop/exposure/exposure"
+    assert first_setting["supportedModes"] == ["set", "delta"]
+    assert first_setting["minNumber"] == -18.0
+    assert first_setting["maxNumber"] == 18.0
+    assert "moduleId" not in first_setting
+    assert "moduleLabel" not in first_setting
+    assert "stepNumber" not in first_setting
+
+    metadata = payload["imageSnapshot"]["metadata"]
+    assert metadata == {"width": 9504, "height": 6336}
+    assert payload["imageSnapshot"]["preview"] == {
+        "mimeType": "image/jpeg",
+        "width": 1000,
+        "height": 667,
+        "base64Data": None,
+    }
 
 
 def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() -> None:
