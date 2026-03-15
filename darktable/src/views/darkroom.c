@@ -2367,17 +2367,8 @@ static void _agent_chat_update_refinement_status(dt_develop_t *dev,
     return;
 
   (void)pass_index;
-
-  if(max_passes > 1)
-  {
-    g_autofree gchar *status
-      = g_strdup_printf(_("Agent run active (tool call budget %u)"), max_passes);
-    _agent_chat_set_status(dev, status);
-  }
-  else
-  {
-    _agent_chat_set_status(dev, _("Sending request..."));
-  }
+  (void)max_passes;
+  _agent_chat_set_status(dev, _("Sending request..."));
 }
 
 static void _agent_chat_multi_turn_toggled(GtkToggleButton *button, gpointer user_data)
@@ -4225,7 +4216,7 @@ void gui_init(dt_view_t *self)
     gtk_box_pack_start(GTK_BOX(outer), options_row, FALSE, FALSE, 0);
 
     dev->agent_chat.multi_turn_check_button
-      = gtk_check_button_new_with_label(_("agent run (live iterative)"));
+      = gtk_check_button_new_with_label(_("Live Agent Edits"));
     gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_check_button,
                                 _("run one live agent flow with iterative tool calls in a single request"));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.multi_turn_check_button),
