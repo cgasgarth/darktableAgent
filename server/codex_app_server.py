@@ -52,22 +52,21 @@ Return exactly one JSON object matching the output schema.
 You are given:
 - the latest user message
 - refinement state describing whether this is a single-turn request or an automatic continuation pass
-- a capability manifest describing writable darktable controls
-- a current image snapshot with metadata, editable setting targets, and optionally a 1k rendered JPEG preview and histogram
+- a compact image snapshot with edit-relevant metadata, editable setting targets, and optionally a 1k rendered JPEG preview and histogram
 - when available, the 1k preview is attached as a separate image input and the text payload only includes preview metadata
 
 Rules:
-- Only plan operations that are explicitly supported by the capability manifest and editable setting targets snapshot.
+- Only plan operations that are explicitly supported by the editable setting targets snapshot.
 - Never invent capability IDs, setting IDs, or action paths.
 - Use zero operations only when the request is unsupported, unsafe, or impossible with the supplied capabilities.
 - Keep assistantText brief and user-facing.
 - Every operation must be immediately executable by darktable.
 - Use the supplied preview and histogram when they are present.
 - Use the attached image input directly when it is present; do not expect raw preview bytes inside the text payload.
-- Prefer the supplied editable setting targets and capability metadata over generic photography assumptions.
+- Prefer the supplied editable setting targets and bounds over generic photography assumptions.
 - Use moduleId/moduleLabel to understand which controls belong to the same darktable module.
-- Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or current settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
-- When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the current settings.
+- Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or editable settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
+- When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the available controls.
 - Favor restrained, high-confidence edits over extreme changes. Preserve highlight detail, avoid crushed shadows, and avoid oversaturation unless the user explicitly asks for a stylized look.
 - Prefer existing supported controls for global tone, color, detail, and presence before giving up on the request.
 - When moduleId `colorequal`, `colorbalancergb`, or `primaries` is present, treat those controls as preferred advanced color tools for hue, chroma, brilliance, vibrance, contrast, color separation, and primary remapping work.
@@ -518,97 +517,59 @@ class CodexAppServerBridge:
 
     @staticmethod
     def _build_prompt_payload(request: RequestEnvelope) -> dict[str, Any]:
-        payload = request.model_dump(mode="json")
-        preview = payload.get("imageSnapshot", {}).get("preview")
-        if isinstance(preview, dict) and "base64Data" in preview:
-            preview["base64Data"] = None
-        capability_targets = payload.get("capabilityManifest", {}).get("targets")
-        if isinstance(capability_targets, list):
-            compact_targets: list[dict[str, Any]] = []
-            for target in capability_targets:
-                if not isinstance(target, dict):
-                    continue
-                compact_target: dict[str, Any] = {
-                    "moduleId": target.get("moduleId"),
-                    "moduleLabel": target.get("moduleLabel"),
-                    "capabilityId": target.get("capabilityId"),
-                    "kind": target.get("kind"),
-                    "targetType": target.get("targetType"),
-                    "actionPath": target.get("actionPath"),
-                    "supportedModes": target.get("supportedModes"),
-                }
-                if target.get("minNumber") is not None:
-                    compact_target["minNumber"] = target.get("minNumber")
-                if target.get("maxNumber") is not None:
-                    compact_target["maxNumber"] = target.get("maxNumber")
-                if target.get("stepNumber") is not None:
-                    compact_target["stepNumber"] = target.get("stepNumber")
-                if target.get("choices") is not None:
-                    compact_target["choices"] = target.get("choices")
-                compact_targets.append(compact_target)
-            payload["capabilityManifest"]["targets"] = compact_targets
-
-        image_snapshot = payload.get("imageSnapshot", {})
-        if isinstance(image_snapshot, dict):
-            editable_settings = image_snapshot.get("editableSettings")
-            if isinstance(editable_settings, list):
-                compact_settings: list[dict[str, Any]] = []
-                for setting in editable_settings:
-                    if not isinstance(setting, dict):
-                        continue
-                    compact_settings.append(
-                        {
-                            "moduleId": setting.get("moduleId"),
-                            "moduleLabel": setting.get("moduleLabel"),
-                            "settingId": setting.get("settingId"),
-                            "capabilityId": setting.get("capabilityId"),
-                            "kind": setting.get("kind"),
-                            "actionPath": setting.get("actionPath"),
-                            "supportedModes": setting.get("supportedModes"),
-                            "choices": setting.get("choices"),
-                        }
-                    )
-                image_snapshot["editableSettings"] = compact_settings
-
-            # Avoid sending full history stack in every turn; we keep summary counters.
-            image_snapshot.pop("history", None)
-        return payload
-
-    @staticmethod
-    def _build_module_summary(request: RequestEnvelope) -> str:
-        module_counts: dict[str, int] = {}
+        compact_settings: list[dict[str, Any]] = []
         for setting in request.imageSnapshot.editableSettings:
-            module_key = f"{setting.moduleId} ({setting.moduleLabel})"
-            module_counts[module_key] = module_counts.get(module_key, 0) + 1
-        return ", ".join(
-            f"{module_name}: {count}" for module_name, count in sorted(module_counts.items())
-        )
+            compact_setting: dict[str, Any] = {
+                "moduleId": setting.moduleId,
+                "moduleLabel": setting.moduleLabel,
+                "settingId": setting.settingId,
+                "capabilityId": setting.capabilityId,
+                "kind": setting.kind,
+                "actionPath": setting.actionPath,
+                "supportedModes": setting.supportedModes,
+            }
+            if setting.kind == "set-float":
+                compact_setting["minNumber"] = setting.minNumber
+                compact_setting["maxNumber"] = setting.maxNumber
+                compact_setting["stepNumber"] = setting.stepNumber
+            elif setting.kind == "set-choice":
+                compact_setting["choices"] = (
+                    [choice.model_dump(mode="json") for choice in setting.choices]
+                    if setting.choices
+                    else []
+                )
+            compact_settings.append(compact_setting)
 
-    @staticmethod
-    def _build_histogram_summary(request: RequestEnvelope) -> str:
-        histogram = request.imageSnapshot.histogram
-        if histogram is None:
-            return "unavailable"
-
-        luma = histogram.channels.get("luma")
-        if luma is None or not luma.bins:
-            return "available without luma channel"
-
-        total = sum(luma.bins)
-        if total <= 0:
-            return "empty"
-
-        bin_count = histogram.binCount
-        shadow_end = max(1, bin_count // 4)
-        highlight_start = max(shadow_end, (3 * bin_count) // 4)
-
-        shadows = sum(luma.bins[:shadow_end]) / total
-        highlights = sum(luma.bins[highlight_start:]) / total
-        midtones = max(0.0, 1.0 - shadows - highlights)
-
-        return (
-            f"shadows={shadows:.2f}, midtones={midtones:.2f}, highlights={highlights:.2f}"
-        )
+        metadata = request.imageSnapshot.metadata
+        compact_payload: dict[str, Any] = {
+            "imageSnapshot": {
+                "imageRevisionId": request.imageSnapshot.imageRevisionId,
+                "metadata": {
+                    "imageId": metadata.imageId,
+                    "imageName": metadata.imageName,
+                    "width": metadata.width,
+                    "height": metadata.height,
+                },
+                "editableSettings": compact_settings,
+                "histogram": (
+                    request.imageSnapshot.histogram.model_dump(mode="json")
+                    if request.imageSnapshot.histogram
+                    else None
+                ),
+                "preview": (
+                    {
+                        "previewId": request.imageSnapshot.preview.previewId,
+                        "mimeType": request.imageSnapshot.preview.mimeType,
+                        "width": request.imageSnapshot.preview.width,
+                        "height": request.imageSnapshot.preview.height,
+                        "base64Data": None,
+                    }
+                    if request.imageSnapshot.preview
+                    else None
+                ),
+            }
+        }
+        return compact_payload
 
     def _build_turn_input(
         self,
@@ -643,19 +604,15 @@ class CodexAppServerBridge:
             if preview is not None
             else "unavailable"
         )
-        module_summary = self._build_module_summary(request) or "none"
-        histogram_summary = self._build_histogram_summary(request)
         return (
             "Plan the next darktable response for this request.\n\n"
             f"Goal: {request.refinement.goalText}\n"
             f"Latest user message: {request.message.text}\n"
             f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
-            f"Fast mode: {str(request.fast).lower()}\n"
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             f"Preview: {preview_summary}\n"
-            f"Histogram summary: {histogram_summary}\n"
-            f"Editable modules: {module_summary}\n\n"
-            "Use the capability manifest and image state exactly as provided.\n"
+            "\n"
+            "Use the editable settings and image state exactly as provided.\n"
             "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"

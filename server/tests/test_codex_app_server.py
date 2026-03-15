@@ -303,13 +303,19 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert '"moduleId":"colorequal"' in prompt
     assert '"moduleId":"primaries"' in prompt
     assert "Preview: attached separately as image/jpeg 1000x667" in prompt
-    assert "Histogram summary: shadows=0.00, midtones=0.70, highlights=0.30" in prompt
-    assert "Editable modules: colorequal (color equalizer): 1, exposure (exposure): 1, primaries (rgb primaries): 1" in prompt
+    assert "Histogram summary:" not in prompt
+    assert "Editable modules:" not in prompt
+    assert "Fast mode:" not in prompt
     assert '"base64Data":null' in prompt
     assert '"currentNumber"' not in prompt
     assert '"history":[]' not in prompt
+    assert '"capabilityManifest"' not in prompt
+    assert '"session"' not in prompt
+    assert '"requestId"' not in prompt
+    assert '"fast"' not in prompt
+    assert '"uiContext"' not in prompt
     assert "ZmFrZS1wcmV2aWV3" not in prompt
-    assert '"text":"Do a full edit so this becomes a polished gallery-ready landscape photo."' in prompt
+    assert "Latest user message: Do a full edit so this becomes a polished gallery-ready landscape photo." in prompt
 
 
 def test_turn_input_sends_preview_as_separate_image_item() -> None:
