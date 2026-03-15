@@ -10,11 +10,12 @@ from server.codex_app_server import (
     _DEFAULT_REASONING_EFFORT,
     _FAST_MODE_MODEL,
     _FAST_MODE_REASONING_EFFORT,
+    _TOOL_APPLY_OPERATIONS,
     _TOOL_GET_IMAGE_STATE,
     _TOOL_GET_PREVIEW_IMAGE,
     _THREAD_DEVELOPER_INSTRUCTIONS,
 )
-from shared.protocol import RequestEnvelope
+from shared.protocol import AgentPlan, RequestEnvelope
 
 
 def _sample_request() -> RequestEnvelope:
@@ -286,6 +287,7 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Use tools to gather image context" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "get_preview_image" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "get_image_state" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "apply_operations" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "Only emit operations targeting provided settingId/actionPath pairs." in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "If user intent is broad, infer a reasonable plan" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "Always optimize toward refinement.goalText." in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -357,6 +359,8 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     prompt = bridge._build_turn_prompt(_sample_request())  # type: ignore[attr-defined]
 
     assert "Call get_preview_image and get_image_state before returning a final plan." in prompt
+    assert "Tool budget: maximum 10 tool calls in this run." in prompt
+    assert "Live run mode is enabled" in prompt
     assert "infer a conservative supported edit plan" in prompt
     assert "preview, histogram, and available controls" in prompt
     assert "Respect refinement state" in prompt
@@ -493,7 +497,7 @@ def test_get_or_create_thread_includes_native_dynamic_tools() -> None:
     params = captured["params"]  # type: ignore[assignment]
     tool_specs = params["dynamicTools"]  # type: ignore[index]
     names = {tool["name"] for tool in tool_specs}
-    assert names == {_TOOL_GET_PREVIEW_IMAGE, _TOOL_GET_IMAGE_STATE}
+    assert names == {_TOOL_GET_PREVIEW_IMAGE, _TOOL_GET_IMAGE_STATE, _TOOL_APPLY_OPERATIONS}
     for tool in tool_specs:
         assert tool["inputSchema"]["type"] == "object"
         assert tool["inputSchema"]["additionalProperties"] is False
@@ -593,6 +597,200 @@ def test_handle_server_request_routes_image_state_tool_call_to_dynamic_result() 
     assert '"editableSettings"' in state_payload
     assert '"histogram"' in state_payload
     assert '"base64Data":null' in state_payload
+
+
+def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 19,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/exposure/exposure",
+                                    "settingId": "setting.exposure.primary",
+                                },
+                                "value": {"mode": "delta", "number": 0.4},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+        result = sent_payloads[0]["result"]
+        assert result["success"] is True
+        assert "Staged 1 operations" in result["contentItems"][0]["text"]
+
+        sent_payloads.clear()
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 20,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-state-after-apply",
+                    "tool": _TOOL_GET_IMAGE_STATE,
+                    "arguments": {},
+                },
+            }
+        )
+        state_payload = sent_payloads[0]["result"]["contentItems"][0]["text"]
+        assert '"currentNumber":0.4' in state_payload
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+
+def test_apply_operations_tool_rejected_for_single_turn_mode() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.enabled = False
+    request.refinement.mode = "single-turn"
+    request.refinement.maxPasses = 1
+    request.refinement.passIndex = 1
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 21,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-single",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/exposure/exposure",
+                                    "settingId": "setting.exposure.primary",
+                                },
+                                "value": {"mode": "delta", "number": 0.1},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "only available when live run mode is enabled" in result["contentItems"][0]["text"]
+
+
+def test_tool_call_budget_limits_total_tool_calls() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.maxPasses = 2
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        for request_id in (22, 23, 24):
+            bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "item/tool/call",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "callId": f"call-budget-{request_id}",
+                        "tool": _TOOL_GET_IMAGE_STATE,
+                        "arguments": {},
+                    },
+                }
+            )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    assert sent_payloads[0]["result"]["success"] is True
+    assert sent_payloads[1]["result"]["success"] is True
+    assert sent_payloads[2]["result"]["success"] is False
+    assert "Tool call budget exceeded" in sent_payloads[2]["result"]["contentItems"][0]["text"]
+
+
+def test_finalize_plan_with_live_context_merges_staged_operations() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    try:
+        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert context is not None
+        context.staged_operations.append(
+            {
+                "operationId": "staged-1",
+                "sequence": 1,
+                "kind": "set-float",
+                "target": {
+                    "type": "darktable-action",
+                    "actionPath": "iop/exposure/exposure",
+                    "settingId": "setting.exposure.primary",
+                },
+                "value": {"mode": "delta", "number": 0.5},
+                "reason": None,
+                "constraints": {
+                    "onOutOfRange": "clamp",
+                    "onRevisionMismatch": "fail",
+                },
+            }
+        )
+        plan = bridge._finalize_plan_with_live_context(  # type: ignore[attr-defined]
+            AgentPlan.model_validate(
+                {
+                    "assistantText": "done",
+                    "continueRefining": True,
+                    "operations": [],
+                }
+            ),
+            context,
+        )
+        assert plan.continueRefining is False
+        assert len(plan.operations) == 1
+        assert plan.operations[0].operationId == "staged-1"
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 
 
 def test_handle_server_request_returns_failed_result_for_unsupported_tool() -> None:

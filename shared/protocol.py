@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = "3.0"
-DEFAULT_REFINEMENT_MAX_PASSES = 10
+DEFAULT_REFINEMENT_MAX_PASSES = 15
 
 OperationKind = Literal["set-float", "set-choice", "set-bool"]
 OperationMode = Literal["delta", "set"]

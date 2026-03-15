@@ -45,12 +45,14 @@ _DEFAULT_APPROVAL_POLICY = "never"
 _DEFAULT_HISTOGRAM_BINS = int(os.environ.get("DARKTABLE_AGENT_HISTOGRAM_BINS", "64"))
 _TOOL_GET_IMAGE_STATE = "get_image_state"
 _TOOL_GET_PREVIEW_IMAGE = "get_preview_image"
+_TOOL_APPLY_OPERATIONS = "apply_operations"
 
 _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing planner for darktable.
 
 Use tools to gather image context before planning edits:
 - call `get_preview_image` to inspect the latest rendered preview
 - call `get_image_state` to inspect editable settings and histogram
+- in live agent runs (`mode=multi-turn`), call `apply_operations` to stage edits iteratively
 Return exactly one JSON object matching the output schema after tool calls.
 
 Use preview as primary visual context. Use histogram + editable settings as constraints.
@@ -61,12 +63,13 @@ Prefer advanced color controls (`colorequal`, `colorbalancergb`, `primaries`) wh
 
 Refinement rules:
 - Always optimize toward refinement.goalText.
-- In single-turn mode, continueRefining must be false.
-- In multi-turn mode, set continueRefining true only if another pass is likely useful after these operations apply.
-- Set continueRefining false when image is good enough, gains are speculative, or operations is empty.
-- automaticContinuation=true means this is the same ongoing agent run after darktable already applied prior operations.
-- In continuation passes, treat the newly supplied preview + histogram as refreshed visual feedback for the same goal, and refine from there.
-- Do not ask the user to re-state intent during continuation passes.
+- In single-turn mode, return operations in the final JSON; do not use `apply_operations`.
+- In multi-turn mode, perform iterative tool calls within this same run:
+  1) inspect context with `get_preview_image`/`get_image_state`
+  2) stage edits with `apply_operations`
+  3) re-check state and continue until satisfied or tool budget is exhausted
+- In multi-turn mode, the final JSON should summarize the run and typically return empty operations because edits were staged via `apply_operations`.
+- In multi-turn mode, continueRefining must be false in the final JSON.
 
 Value rules:
 - Use mode `delta` only for set-float when supported.
@@ -107,8 +110,16 @@ class _ActiveRequestState:
 
 @dataclass(slots=True)
 class _TurnContext:
-    request: RequestEnvelope
+    base_request: RequestEnvelope
     preview_data_url: str
+    base_image_revision_id: str
+    state_payload: dict[str, Any]
+    setting_by_id: dict[str, dict[str, Any]]
+    live_run_enabled: bool
+    max_tool_calls: int
+    tool_calls_used: int = 0
+    staged_operations: list[dict[str, Any]] = field(default_factory=list)
+    next_operation_sequence: int = 1
 
 
 class CodexAppServerBridge:
@@ -310,6 +321,18 @@ class CodexAppServerBridge:
             "properties": {},
             "additionalProperties": False,
         }
+        apply_operations_schema = {
+            "type": "object",
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "object"},
+                }
+            },
+            "required": ["operations"],
+            "additionalProperties": False,
+        }
         return [
             {
                 "name": _TOOL_GET_IMAGE_STATE,
@@ -324,6 +347,13 @@ class CodexAppServerBridge:
                     "Get the current rendered preview image as a data URL for visual analysis."
                 ),
                 "inputSchema": empty_object_schema,
+            },
+            {
+                "name": _TOOL_APPLY_OPERATIONS,
+                "description": (
+                    "Stage one or more darktable operations in the live run and update image state for follow-up tool calls."
+                ),
+                "inputSchema": apply_operations_schema,
             },
         ]
 
@@ -455,6 +485,9 @@ class CodexAppServerBridge:
                     f"Codex returned invalid plan JSON: {raw_message}",
                 ) from exc
 
+            context = self._get_turn_context(thread_id, turn_id)
+            plan = self._finalize_plan_with_live_context(plan, context)
+
             duration_ms = int((time.monotonic() - started_at) * 1000)
             logger.info(
                 "codex_turn_completed",
@@ -516,10 +549,28 @@ class CodexAppServerBridge:
         request: RequestEnvelope,
         preview_data_url: str,
     ) -> None:
+        state_payload = json.loads(json.dumps(self._build_prompt_payload(request)))
+        image_snapshot = state_payload.get("imageSnapshot", {})
+        editable_settings = image_snapshot.get("editableSettings", [])
+        setting_by_id: dict[str, dict[str, Any]] = {}
+        if isinstance(editable_settings, list):
+            for setting in editable_settings:
+                if not isinstance(setting, dict):
+                    continue
+                setting_id = setting.get("settingId")
+                if isinstance(setting_id, str) and setting_id:
+                    setting_by_id[setting_id] = setting
+        base_image_revision_id = request.imageSnapshot.imageRevisionId
+        max_tool_calls = request.refinement.maxPasses if request.refinement.enabled else 1
         with self._state_lock:
             self._turn_contexts[(thread_id, turn_id)] = _TurnContext(
-                request=request,
+                base_request=request,
                 preview_data_url=preview_data_url,
+                base_image_revision_id=base_image_revision_id,
+                state_payload=state_payload,
+                setting_by_id=setting_by_id,
+                live_run_enabled=request.refinement.enabled,
+                max_tool_calls=max_tool_calls,
             )
 
     def _clear_turn_context(self, thread_id: str, turn_id: str) -> None:
@@ -529,6 +580,50 @@ class CodexAppServerBridge:
     def _get_turn_context(self, thread_id: str, turn_id: str) -> _TurnContext | None:
         with self._state_lock:
             return self._turn_contexts.get((thread_id, turn_id))
+
+    def _finalize_plan_with_live_context(
+        self,
+        plan: AgentPlan,
+        context: _TurnContext | None,
+    ) -> AgentPlan:
+        if context is None:
+            return plan
+
+        merged_operations = [operation.model_dump(mode="json") for operation in plan.operations]
+        if context.staged_operations:
+            merged_operations = list(context.staged_operations) + merged_operations
+
+        if not merged_operations:
+            return AgentPlan.model_validate(
+                {
+                    "assistantText": plan.assistantText,
+                    "continueRefining": False if context.live_run_enabled else plan.continueRefining,
+                    "operations": [],
+                }
+            )
+
+        normalized_operations: list[dict[str, Any]] = []
+        seen_operation_ids: set[str] = set()
+        for index, operation in enumerate(merged_operations, start=1):
+            operation_copy = dict(operation)
+            candidate_operation_id = str(operation_copy.get("operationId") or f"run-op-{index}")
+            operation_id = candidate_operation_id
+            duplicate_index = 2
+            while operation_id in seen_operation_ids:
+                operation_id = f"{candidate_operation_id}-{duplicate_index}"
+                duplicate_index += 1
+            seen_operation_ids.add(operation_id)
+            operation_copy["operationId"] = operation_id
+            operation_copy["sequence"] = index
+            normalized_operations.append(operation_copy)
+
+        return AgentPlan.model_validate(
+            {
+                "assistantText": plan.assistantText,
+                "continueRefining": False if context.live_run_enabled else plan.continueRefining,
+                "operations": normalized_operations,
+            }
+        )
 
     @staticmethod
     def _trim_histogram_payload(request: RequestEnvelope) -> dict[str, Any] | None:
@@ -578,16 +673,24 @@ class CodexAppServerBridge:
                 compact_setting["moduleId"] = setting.moduleId
                 compact_setting["moduleLabel"] = setting.moduleLabel
             if setting.kind == "set-float":
+                compact_setting["currentNumber"] = setting.currentNumber
                 compact_setting["minNumber"] = setting.minNumber
                 compact_setting["maxNumber"] = setting.maxNumber
+                compact_setting["defaultNumber"] = setting.defaultNumber
                 if not is_followup:
                     compact_setting["stepNumber"] = setting.stepNumber
             elif setting.kind == "set-choice":
+                compact_setting["currentChoiceValue"] = setting.currentChoiceValue
+                compact_setting["currentChoiceId"] = setting.currentChoiceId
+                compact_setting["defaultChoiceValue"] = setting.defaultChoiceValue
                 compact_setting["choices"] = (
                     [choice.model_dump(mode="json") for choice in setting.choices]
                     if setting.choices
                     else []
                 )
+            elif setting.kind == "set-bool":
+                compact_setting["currentBool"] = setting.currentBool
+                compact_setting["defaultBool"] = setting.defaultBool
             compact_settings.append(compact_setting)
 
         metadata = request.imageSnapshot.metadata
@@ -625,6 +728,8 @@ class CodexAppServerBridge:
 
     def _build_turn_prompt(self, request: RequestEnvelope) -> str:
         is_followup = request.refinement.automaticContinuation
+        live_run_enabled = request.refinement.enabled
+        max_tool_calls = request.refinement.maxPasses if live_run_enabled else 1
         module_grouping_line = (
             "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
             if not is_followup
@@ -635,15 +740,24 @@ class CodexAppServerBridge:
             if is_followup
             else ""
         )
+        live_run_line = (
+            "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
+            "After each apply_operations call, re-check get_image_state and optionally get_preview_image before the next adjustment.\n"
+            "When satisfied, return final JSON with continueRefining=false and usually empty operations.\n"
+            if live_run_enabled
+            else "Single-turn mode: do not call apply_operations; return operations directly in final JSON.\n"
+        )
         return (
             "Plan the next darktable response for this request.\n\n"
             f"Goal: {request.refinement.goalText}\n"
             f"Latest user message: {request.message.text}\n"
             f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
+            f"Tool budget: maximum {max_tool_calls} tool calls in this run.\n"
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             "\n"
             "Call get_preview_image and get_image_state before returning a final plan.\n"
             "Use only the tool-provided editable settings and image state.\n"
+            f"{live_run_line}"
             f"{continuation_line}"
             f"{module_grouping_line}"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
@@ -934,6 +1048,34 @@ class CodexAppServerBridge:
                 ],
             }
 
+        if not self._register_tool_call_budget(context):
+            return {
+                "success": False,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": (
+                            f"Tool call budget exceeded ({context.max_tool_calls}). "
+                            "Finalize the run now."
+                        ),
+                    }
+                ],
+            }
+
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return {
+                "success": False,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": "Tool arguments must be an object.",
+                    }
+                ],
+            }
+
         if tool_name == _TOOL_GET_PREVIEW_IMAGE:
             response = {
                 "success": True,
@@ -945,7 +1087,7 @@ class CodexAppServerBridge:
                 ],
             }
         elif tool_name == _TOOL_GET_IMAGE_STATE:
-            payload = self._build_prompt_payload(context.request)
+            payload = context.state_payload
             response = {
                 "success": True,
                 "contentItems": [
@@ -955,13 +1097,18 @@ class CodexAppServerBridge:
                     }
                 ],
             }
+        elif tool_name == _TOOL_APPLY_OPERATIONS:
+            response = self._apply_operations_tool_call(context, arguments)
         else:
             response = {
                 "success": False,
                 "contentItems": [
                     {
                         "type": "inputText",
-                        "text": f"Unsupported tool '{tool_name}'. Supported tools: {_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}.",
+                        "text": (
+                            f"Unsupported tool '{tool_name}'. Supported tools: "
+                            f"{_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_APPLY_OPERATIONS}."
+                        ),
                     }
                 ],
             }
@@ -979,6 +1126,207 @@ class CodexAppServerBridge:
             },
         )
         return response
+
+    @staticmethod
+    def _register_tool_call_budget(context: _TurnContext) -> bool:
+        context.tool_calls_used += 1
+        return context.tool_calls_used <= context.max_tool_calls
+
+    @staticmethod
+    def _tool_error_response(message: str) -> dict[str, Any]:
+        return {
+            "success": False,
+            "contentItems": [
+                {
+                    "type": "inputText",
+                    "text": message,
+                }
+            ],
+        }
+
+    def _apply_operations_tool_call(
+        self,
+        context: _TurnContext,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not context.live_run_enabled:
+            return self._tool_error_response(
+                "apply_operations is only available when live run mode is enabled."
+            )
+
+        raw_operations = arguments.get("operations")
+        if not isinstance(raw_operations, list) or not raw_operations:
+            return self._tool_error_response("apply_operations requires a non-empty operations array.")
+
+        staged_batch: list[dict[str, Any]] = []
+        for raw_operation in raw_operations:
+            if not isinstance(raw_operation, dict):
+                return self._tool_error_response("Every apply_operations entry must be an object.")
+            normalized_operation, error = self._normalize_tool_operation(context, raw_operation)
+            if error:
+                return self._tool_error_response(error)
+            apply_error = self._apply_operation_to_state(context, normalized_operation)
+            if apply_error:
+                return self._tool_error_response(apply_error)
+            staged_batch.append(normalized_operation)
+            context.staged_operations.append(normalized_operation)
+            context.next_operation_sequence += 1
+
+        image_snapshot = context.state_payload.get("imageSnapshot")
+        if isinstance(image_snapshot, dict):
+            image_snapshot["imageRevisionId"] = (
+                f"{context.base_image_revision_id}:tool-{len(context.staged_operations)}"
+            )
+
+        return {
+            "success": True,
+            "contentItems": [
+                {
+                    "type": "inputText",
+                    "text": (
+                        f"Staged {len(staged_batch)} operations in this call; "
+                        f"{len(context.staged_operations)} total staged operations."
+                    ),
+                }
+            ],
+        }
+
+    def _normalize_tool_operation(
+        self,
+        context: _TurnContext,
+        raw_operation: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        required_keys = ("kind", "target", "value")
+        for key in required_keys:
+            if key not in raw_operation:
+                return {}, f"operation is missing required member '{key}'"
+
+        operation_id = raw_operation.get("operationId")
+        if not isinstance(operation_id, str) or not operation_id:
+            operation_id = f"tool-op-{context.next_operation_sequence}"
+
+        operation_candidate = {
+            "operationId": operation_id,
+            "sequence": context.next_operation_sequence,
+            "kind": raw_operation["kind"],
+            "target": raw_operation["target"],
+            "value": raw_operation["value"],
+            "reason": raw_operation.get("reason"),
+            "constraints": raw_operation.get(
+                "constraints",
+                {
+                    "onOutOfRange": "clamp",
+                    "onRevisionMismatch": "fail",
+                },
+            ),
+        }
+
+        try:
+            validated = AgentPlan.model_validate(
+                {
+                    "assistantText": "tool staging",
+                    "continueRefining": False,
+                    "operations": [operation_candidate],
+                }
+            ).operations[0]
+        except Exception as exc:
+            return {}, f"operation failed schema validation: {exc}"
+
+        operation = validated.model_dump(mode="json")
+        setting_id = operation.get("target", {}).get("settingId")
+        if not isinstance(setting_id, str) or setting_id not in context.setting_by_id:
+            return {}, f"operation targets unknown settingId '{setting_id}'"
+        return operation, None
+
+    @staticmethod
+    def _choice_mapping(setting: dict[str, Any]) -> dict[int, str]:
+        choices = setting.get("choices")
+        mapping: dict[int, str] = {}
+        if not isinstance(choices, list):
+            return mapping
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            value = choice.get("choiceValue")
+            choice_id = choice.get("choiceId")
+            if isinstance(value, int) and isinstance(choice_id, str) and choice_id:
+                mapping[value] = choice_id
+        return mapping
+
+    def _apply_operation_to_state(self, context: _TurnContext, operation: dict[str, Any]) -> str | None:
+        target = operation.get("target")
+        if not isinstance(target, dict):
+            return "operation target must be an object"
+
+        setting_id = target.get("settingId")
+        action_path = target.get("actionPath")
+        if not isinstance(setting_id, str) or not isinstance(action_path, str):
+            return "operation target requires settingId and actionPath"
+
+        setting = context.setting_by_id.get(setting_id)
+        if not isinstance(setting, dict):
+            return f"unknown settingId '{setting_id}'"
+
+        if setting.get("actionPath") != action_path:
+            return (
+                f"actionPath mismatch for settingId '{setting_id}': expected "
+                f"{setting.get('actionPath')}, got {action_path}"
+            )
+
+        kind = operation.get("kind")
+        if setting.get("kind") != kind:
+            return f"kind mismatch for settingId '{setting_id}'"
+
+        value = operation.get("value")
+        if not isinstance(value, dict):
+            return "operation value must be an object"
+
+        mode = value.get("mode")
+        supported_modes = setting.get("supportedModes")
+        if not isinstance(mode, str):
+            return "operation value requires mode"
+        if isinstance(supported_modes, list) and mode not in supported_modes:
+            return f"mode '{mode}' is not supported by settingId '{setting_id}'"
+
+        if kind == "set-float":
+            number_value = value.get("number")
+            if not isinstance(number_value, (int, float)):
+                return f"set-float operation requires numeric value.number for '{setting_id}'"
+            current = setting.get("currentNumber")
+            if not isinstance(current, (int, float)):
+                current = setting.get("defaultNumber")
+            if not isinstance(current, (int, float)):
+                current = 0.0
+            next_value = float(current) + float(number_value) if mode == "delta" else float(number_value)
+            min_number = setting.get("minNumber")
+            max_number = setting.get("maxNumber")
+            if isinstance(min_number, (int, float)):
+                next_value = max(next_value, float(min_number))
+            if isinstance(max_number, (int, float)):
+                next_value = min(next_value, float(max_number))
+            setting["currentNumber"] = next_value
+            return None
+
+        if kind == "set-choice":
+            choice_value = value.get("choiceValue")
+            if not isinstance(choice_value, int):
+                return f"set-choice operation requires integer value.choiceValue for '{setting_id}'"
+            choice_mapping = self._choice_mapping(setting)
+            if choice_mapping and choice_value not in choice_mapping:
+                return f"choiceValue {choice_value} is not valid for '{setting_id}'"
+            setting["currentChoiceValue"] = choice_value
+            if choice_value in choice_mapping:
+                setting["currentChoiceId"] = choice_mapping[choice_value]
+            return None
+
+        if kind == "set-bool":
+            bool_value = value.get("boolValue")
+            if not isinstance(bool_value, bool):
+                return f"set-bool operation requires boolean value.boolValue for '{setting_id}'"
+            setting["currentBool"] = bool_value
+            return None
+
+        return f"unsupported operation kind '{kind}'"
 
     @staticmethod
     def _extract_error_message(message: str) -> str:

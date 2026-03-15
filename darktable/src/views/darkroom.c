@@ -2368,9 +2368,12 @@ static void _agent_chat_update_refinement_status(dt_develop_t *dev,
   if(!dev)
     return;
 
+  (void)pass_index;
+
   if(max_passes > 1)
   {
-    g_autofree gchar *status = g_strdup_printf(_("Agent run pass %u of %u"), pass_index, max_passes);
+    g_autofree gchar *status
+      = g_strdup_printf(_("Agent run active (tool call budget %u)"), max_passes);
     _agent_chat_set_status(dev, status);
   }
   else
@@ -2953,8 +2956,11 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     g_autofree gchar *response_error = NULL;
     const gboolean handled = _agent_chat_handle_response(dev, &result->response,
                                                          &execution_report, &response_error);
+    const gboolean legacy_refinement_loop_enabled
+      = _agent_chat_env_enabled("DARKTABLE_AGENT_LEGACY_MULTI_TURN_LOOP");
     const gboolean should_continue
-      = handled
+      = legacy_refinement_loop_enabled
+     && handled
      && submission
      && submission->refinement_enabled
      && result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI
@@ -4206,7 +4212,7 @@ void gui_init(dt_view_t *self)
 
     dev->agent_chat.cancel_button = gtk_button_new_with_label(_("cancel request"));
     gtk_widget_set_tooltip_text(dev->agent_chat.cancel_button,
-                                _("cancel the active chat request and stop further refinement passes"));
+                                _("cancel the active chat request and stop further live tool calls"));
     g_signal_connect(G_OBJECT(dev->agent_chat.cancel_button), "clicked",
                      G_CALLBACK(_agent_chat_cancel_clicked), dev);
     gtk_box_pack_start(GTK_BOX(status_row), dev->agent_chat.cancel_button, FALSE, FALSE, 0);
@@ -4223,7 +4229,7 @@ void gui_init(dt_view_t *self)
     dev->agent_chat.multi_turn_check_button
       = gtk_check_button_new_with_label(_("agent run (live iterative)"));
     gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_check_button,
-                                _("run one iterative agent flow: apply edits, refresh image state, and continue up to the turn limit"));
+                                _("run one live agent flow with iterative tool calls in a single request"));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.multi_turn_check_button),
                                  dev->agent_chat.multi_turn_enabled);
     g_signal_connect(G_OBJECT(dev->agent_chat.multi_turn_check_button), "toggled",
@@ -4231,14 +4237,14 @@ void gui_init(dt_view_t *self)
     gtk_box_pack_start(GTK_BOX(options_row), dev->agent_chat.multi_turn_check_button,
                        FALSE, FALSE, 0);
 
-    GtkWidget *turn_limit_label = gtk_label_new(_("turns"));
+    GtkWidget *turn_limit_label = gtk_label_new(_("tool calls"));
     gtk_widget_set_halign(turn_limit_label, GTK_ALIGN_START);
     gtk_box_pack_start(GTK_BOX(options_row), turn_limit_label, FALSE, FALSE, 0);
 
     dev->agent_chat.multi_turn_turn_limit_spin
       = gtk_spin_button_new_with_range(1.0, DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS, 1.0);
     gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_turn_limit_spin,
-                                _("maximum passes for the live iterative agent run"));
+                                _("maximum tool calls for the live iterative agent run"));
     gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin), TRUE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin),
                               (gdouble)_agent_chat_max_refinement_passes(dev));

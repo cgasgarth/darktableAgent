@@ -1,3 +1,4 @@
+import pytest
 from pydantic import ValidationError
 
 from shared.protocol import AgentPlan, RequestEnvelope, build_response_from_plan
@@ -602,6 +603,38 @@ def test_request_envelope_accepts_multi_turn_refinement() -> None:
     assert envelope.refinement.enabled is True
     assert envelope.fast is False
     assert envelope.refinement.passIndex == 2
+
+
+def test_request_envelope_accepts_multi_turn_refinement_with_budget_15() -> None:
+    payload = _sample_request_payload()
+    payload["refinement"] = {
+        "mode": "multi-turn",
+        "enabled": True,
+        "maxPasses": 15,
+        "passIndex": 15,
+        "automaticContinuation": True,
+        "goalText": "Push this to a final polished look",
+    }
+
+    envelope = RequestEnvelope.model_validate(payload)
+
+    assert envelope.refinement.maxPasses == 15
+    assert envelope.refinement.passIndex == 15
+
+
+def test_request_envelope_rejects_multi_turn_refinement_with_budget_16() -> None:
+    payload = _sample_request_payload()
+    payload["refinement"] = {
+        "mode": "multi-turn",
+        "enabled": True,
+        "maxPasses": 16,
+        "passIndex": 1,
+        "automaticContinuation": False,
+        "goalText": "Push this to a final polished look",
+    }
+
+    with pytest.raises(ValidationError):
+        RequestEnvelope.model_validate(payload)
 
 
 def test_request_envelope_rejects_single_turn_refinement_with_invalid_budget() -> None:

@@ -29,7 +29,7 @@ G_BEGIN_DECLS
 #define DT_AGENT_CHAT_SERVER_URL_CONF "plugins/ai/agent/server_url"
 #define DT_AGENT_CHAT_TIMEOUT_SECONDS_CONF "plugins/ai/agent/timeout_seconds"
 #define DT_AGENT_CHAT_DEFAULT_ENDPOINT "http://127.0.0.1:8001/v1/chat"
-#define DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS 10
+#define DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS 15
 
 typedef enum dt_agent_operation_kind_t
 {
