@@ -339,10 +339,23 @@ def test_turn_input_omits_image_item_without_preview() -> None:
     request.imageSnapshot.preview = None
     preview_local_paths: list[str] = []
 
-    items = bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
+    with pytest.raises(CodexAppServerError) as exc:
+        bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
 
-    assert len(items) == 1
-    assert items[0]["type"] == "text"
+    assert exc.value.code == "codex_preview_unavailable"
+    assert preview_local_paths == []
+
+
+def test_turn_input_fails_when_preview_base64_is_invalid() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.imageSnapshot.preview.base64Data = "not-valid-base64!!!"  # type: ignore[union-attr]
+    preview_local_paths: list[str] = []
+
+    with pytest.raises(CodexAppServerError) as exc:
+        bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
+
+    assert exc.value.code == "codex_preview_decode_failed"
     assert preview_local_paths == []
 
 

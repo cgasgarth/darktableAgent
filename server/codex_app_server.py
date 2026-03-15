@@ -463,13 +463,6 @@ class CodexAppServerBridge:
             self._cleanup_local_image_paths(preview_local_paths)
 
     @staticmethod
-    def _build_preview_data_url(request: RequestEnvelope) -> str | None:
-        preview = request.imageSnapshot.preview
-        if preview is None:
-            return None
-        return f"data:{preview.mimeType};base64,{preview.base64Data}"
-
-    @staticmethod
     def _preview_suffix_for_mime(mime_type: str | None) -> str:
         normalized = (mime_type or "").lower()
         if normalized in {"image/jpeg", "image/jpg"}:
@@ -482,24 +475,38 @@ class CodexAppServerBridge:
             return ".avif"
         return ".img"
 
-    def _materialize_preview_file(self, request: RequestEnvelope) -> str | None:
+    def _materialize_preview_file(self, request: RequestEnvelope) -> str:
         preview = request.imageSnapshot.preview
         if preview is None:
-            return None
+            raise CodexAppServerError(
+                "codex_preview_unavailable",
+                "Image preview is required for agent planning",
+                status_code=422,
+            )
 
         try:
             image_bytes = base64.b64decode(preview.base64Data, validate=True)
         except (binascii.Error, ValueError) as exc:
-            logger.warning(
+            raise CodexAppServerError(
                 "codex_preview_decode_failed",
-                extra={"structured": {"previewId": preview.previewId, "error": str(exc)}},
-            )
-            return None
+                "Image preview could not be decoded for agent planning",
+                status_code=422,
+            ) from exc
 
         suffix = self._preview_suffix_for_mime(preview.mimeType)
-        file_descriptor, file_path = tempfile.mkstemp(prefix="darktable-agent-preview-", suffix=suffix)
-        with os.fdopen(file_descriptor, "wb") as preview_file:
-            preview_file.write(image_bytes)
+        try:
+            file_descriptor, file_path = tempfile.mkstemp(
+                prefix="darktable-agent-preview-",
+                suffix=suffix,
+            )
+            with os.fdopen(file_descriptor, "wb") as preview_file:
+                preview_file.write(image_bytes)
+        except OSError as exc:
+            raise CodexAppServerError(
+                "codex_preview_materialize_failed",
+                "Image preview could not be prepared for agent planning",
+                status_code=503,
+            ) from exc
         return file_path
 
     @staticmethod
@@ -585,14 +592,9 @@ class CodexAppServerBridge:
         ]
 
         preview_path = self._materialize_preview_file(request)
-        if preview_path:
-            items.append({"type": "localImage", "path": preview_path})
-            if preview_local_paths is not None:
-                preview_local_paths.append(preview_path)
-        else:
-            preview_url = self._build_preview_data_url(request)
-            if preview_url:
-                items.append({"type": "image", "url": preview_url})
+        items.append({"type": "localImage", "path": preview_path})
+        if preview_local_paths is not None:
+            preview_local_paths.append(preview_path)
 
         return items
 
