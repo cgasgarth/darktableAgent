@@ -101,8 +101,6 @@ static void _darkroom_ui_second_window_write_config(GtkWidget *widget);
 static void _agent_chat_window_write_config(GtkWidget *widget);
 static gboolean _toolbar_show_popup(gpointer user_data);
 
-#define DT_AGENT_CHAT_REFINEMENT_DELAY_MS 450u
-
 typedef struct dt_agent_chat_submission_t
 {
   gchar *request_id;
@@ -137,20 +135,6 @@ typedef struct dt_agent_chat_session_t
   gboolean last_refinement_enabled;
   gboolean last_fast_mode_enabled;
 } dt_agent_chat_session_t;
-
-typedef struct dt_agent_chat_continuation_t
-{
-  gchar *prompt_text;
-  gchar *goal_text;
-  gchar *conversation_id;
-  gchar *image_session_id;
-  gboolean autorun;
-  gboolean fast_mode_enabled;
-  guint next_pass_index;
-  guint max_passes;
-} dt_agent_chat_continuation_t;
-
-static void _agent_chat_cancel_pending_refinement(dt_develop_t *dev);
 static struct dt_agent_chat_session_t *_agent_chat_lookup_session(dt_develop_t *dev,
                                                                   dt_imgid_t image_id);
 static void _agent_chat_session_set_status(dt_agent_chat_session_t *session,
@@ -166,9 +150,6 @@ static void _agent_chat_fast_mode_toggled(GtkToggleButton *button, gpointer user
 static void _agent_chat_cancel_active_request(dt_develop_t *dev,
                                               const char *status_text,
                                               const char *stop_reason);
-static void _agent_chat_schedule_refinement_continue(dt_develop_t *dev,
-                                                     const dt_agent_chat_submission_t *submission,
-                                                     const dt_agent_chat_response_t *response);
 static void _agent_chat_progress_finished(const dt_agent_client_progress_t *progress,
                                           gpointer user_data);
 static gboolean _agent_chat_apply_operation_range(const GPtrArray *operations,
@@ -294,7 +275,6 @@ void cleanup(dt_view_t *self)
   if(dev->agent_chat.autorun_source_id)
     g_source_remove(dev->agent_chat.autorun_source_id);
   _agent_chat_cancel_active_request(dev, NULL, "shutdown");
-  _agent_chat_cancel_pending_refinement(dev);
   if(dev->agent_chat.floating_window)
   {
     _agent_chat_window_write_config(dev->agent_chat.floating_window);
@@ -1709,19 +1689,6 @@ static void _agent_chat_session_free(gpointer data)
   g_free(session);
 }
 
-static void _agent_chat_continuation_free(gpointer data)
-{
-  dt_agent_chat_continuation_t *continuation = data;
-  if(!continuation)
-    return;
-
-  g_free(continuation->prompt_text);
-  g_free(continuation->goal_text);
-  g_free(continuation->conversation_id);
-  g_free(continuation->image_session_id);
-  g_free(continuation);
-}
-
 static dt_imgid_t _agent_chat_current_image_id(void)
 {
   if(darktable.develop && darktable.develop->image_storage.id > 0)
@@ -1787,23 +1754,12 @@ static void _agent_chat_clear_active_request(dt_develop_t *dev,
   dev->agent_chat.active_request_tool_calls_max = 0;
 }
 
-static void _agent_chat_cancel_pending_refinement(dt_develop_t *dev)
-{
-  if(!dev || !dev->agent_chat.continuation_source_id)
-    return;
-
-  g_source_remove(dev->agent_chat.continuation_source_id);
-  dev->agent_chat.continuation_source_id = 0;
-}
-
 static void _agent_chat_cancel_active_request(dt_develop_t *dev,
                                               const char *status_text,
                                               const char *stop_reason)
 {
   if(!dev)
     return;
-
-  _agent_chat_cancel_pending_refinement(dev);
 
   dt_agent_chat_session_t *session
     = _agent_chat_lookup_session(dev, dev->agent_chat.current_image_id);
@@ -1993,9 +1949,6 @@ static void _agent_chat_switch_to_image_session(dt_develop_t *dev,
 {
   if(!dev)
     return;
-
-  if(force_new_chat || dev->agent_chat.current_image_id != image_id)
-    _agent_chat_cancel_pending_refinement(dev);
 
   if(dev->agent_chat.current_image_id || dev->agent_chat.conversation_id || dev->agent_chat.image_session_id)
     _agent_chat_sync_current_session(dev);
@@ -2353,8 +2306,7 @@ static void _agent_chat_update_sensitivity(dt_develop_t *dev)
   gtk_widget_set_sensitive(dev->agent_chat.send_button, sensitive);
   if(dev->agent_chat.cancel_button)
     gtk_widget_set_sensitive(dev->agent_chat.cancel_button,
-                             dev->agent_chat.active_request != NULL
-                               || dev->agent_chat.continuation_source_id != 0);
+                             dev->agent_chat.active_request != NULL);
   if(dev->agent_chat.new_chat_button)
     gtk_widget_set_sensitive(dev->agent_chat.new_chat_button, sensitive);
   if(dev->agent_chat.multi_turn_check_button)
@@ -2415,8 +2367,6 @@ static void _agent_chat_multi_turn_toggled(GtkToggleButton *button, gpointer use
   dev->agent_chat.multi_turn_enabled = gtk_toggle_button_get_active(button);
   dt_conf_set_bool("plugins/darkroom/agent_chat/multi_turn_enabled",
                    dev->agent_chat.multi_turn_enabled);
-  if(!dev->agent_chat.multi_turn_enabled)
-    _agent_chat_cancel_pending_refinement(dev);
   _agent_chat_update_sensitivity(dev);
   _agent_chat_sync_current_session(dev);
 }
@@ -2582,7 +2532,6 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
                                           const dt_agent_refinement_mode_t refinement_mode,
                                           const guint refinement_pass_index,
                                           const guint refinement_max_passes,
-                                          const gboolean automatic_continuation,
                                           dt_agent_chat_request_t *request,
                                           GError **error)
 {
@@ -2602,7 +2551,6 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
   request->refinement_pass_index = refinement_pass_index;
   request->refinement_max_passes = refinement_max_passes;
   request->fast_mode = fast_mode_enabled;
-  request->refinement_automatic_continuation = automatic_continuation;
   request->refinement_goal_text = g_strdup(goal_text && goal_text[0] ? goal_text : message_text);
   _agent_chat_fill_ui_context(request);
   if(!dt_agent_capabilities_collect(dev, request->capabilities, error))
@@ -2793,7 +2741,7 @@ static void _agent_chat_progress_finished(const dt_agent_client_progress_t *prog
 
     const guint live_edit_count = progress->has_response && progress->response.operations
                                     ? progress->response.operations->len
-                                    : progress->staged_operation_count;
+                                    : progress->applied_operation_count;
 
     if(_agent_chat_darkroom_is_visible()
        && progress->has_response
@@ -3094,43 +3042,16 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     const gboolean handled = _agent_chat_handle_response(dev, &result->response,
                                                          &execution_report, &response_error,
                                                          live_applied_before_finish);
-    const gboolean legacy_refinement_loop_enabled
-      = _agent_chat_env_enabled("DARKTABLE_AGENT_LEGACY_MULTI_TURN_LOOP");
-    const gboolean should_continue
-      = legacy_refinement_loop_enabled
-     && handled
-     && submission
-     && submission->refinement_enabled
-     && result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI
-     && result->response.refinement_continue
-     && result->response.operations
-     && result->response.operations->len > 0
-     && submission->refinement_pass_index < submission->refinement_max_passes;
     const char *status = handled ? "ok"
                                  : (g_strcmp0(result->response.status, "error") == 0
                                       ? "server_error"
                                       : "apply_failed");
-    if(handled && !should_continue
-       && result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI)
+    if(handled && result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI)
       _agent_chat_set_status(dev, _("Agent run complete"));
     _agent_chat_write_test_report(dev, status, result, &execution_report, response_error,
                                   submission ? submission->exposure_before : NAN);
-    if(should_continue)
-    {
-      if(matches_current_session)
-      {
-        _agent_chat_set_loading(dev, TRUE);
-        _agent_chat_update_refinement_status(dev,
-                                             submission->refinement_pass_index + 1,
-                                             submission->refinement_max_passes);
-      }
-      if(session)
-        session->is_loading = TRUE;
-      _agent_chat_schedule_refinement_continue(dev, submission, &result->response);
-    }
     dt_agent_execution_report_clear(&execution_report);
-    if(!should_continue)
-      _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
+    _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
     return;
   }
 
@@ -3145,17 +3066,15 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
                                             const gboolean fast_mode_enabled,
                                             const dt_agent_refinement_mode_t refinement_mode,
                                             const guint refinement_pass_index,
-                                            const guint refinement_max_passes,
-                                            const gboolean automatic_continuation)
+                                            const guint refinement_max_passes)
 {
   g_autofree gchar *message = g_strstrip(g_strdup(prompt ? prompt : ""));
   _agent_chat_switch_to_image_session(dev, _agent_chat_current_image_id(), FALSE);
-  if((dev->agent_chat.is_loading && !automatic_continuation) || !message[0])
+  if(dev->agent_chat.is_loading || !message[0])
     return FALSE;
 
   if(append_user_message)
   {
-    _agent_chat_cancel_pending_refinement(dev);
     _agent_chat_append_message(dev, _("you"), message);
   }
 
@@ -3175,7 +3094,7 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
     session->last_refinement_pass_index = refinement_pass_index;
     session->last_refinement_max_passes = refinement_max_passes;
     session->last_fast_mode_enabled = fast_mode_enabled;
-    session->last_continue_refining = automatic_continuation;
+    session->last_continue_refining = FALSE;
   }
 
   dt_agent_chat_request_t request;
@@ -3186,7 +3105,6 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
                                 refinement_mode,
                                 refinement_pass_index,
                                 refinement_max_passes,
-                                automatic_continuation,
                                 &request, &error))
   {
     const char *failure_message = error && error->message ? error->message
@@ -3256,74 +3174,6 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
   return TRUE;
 }
 
-static gboolean _agent_chat_continue_refinement(gpointer user_data)
-{
-  dt_agent_chat_continuation_t *continuation = user_data;
-  dt_develop_t *dev = _agent_chat_get_darkroom_dev();
-  if(dev)
-    dev->agent_chat.continuation_source_id = 0;
-
-  if(!dev || !continuation)
-  {
-    _agent_chat_continuation_free(continuation);
-    return G_SOURCE_REMOVE;
-  }
-
-  if(!_agent_chat_darkroom_is_visible()
-     || !dev->agent_chat.multi_turn_enabled
-     || g_strcmp0(dev->agent_chat.conversation_id, continuation->conversation_id) != 0
-     || g_strcmp0(dev->agent_chat.image_session_id, continuation->image_session_id) != 0)
-  {
-    _agent_chat_continuation_free(continuation);
-    return G_SOURCE_REMOVE;
-  }
-
-  _agent_chat_submit_internal(dev,
-                              continuation->prompt_text,
-                              continuation->goal_text,
-                              continuation->autorun,
-                              FALSE,
-                              continuation->fast_mode_enabled,
-                              DT_AGENT_REFINEMENT_MODE_MULTI,
-                              continuation->next_pass_index,
-                              continuation->max_passes,
-                              TRUE);
-  _agent_chat_continuation_free(continuation);
-  return G_SOURCE_REMOVE;
-}
-
-static void _agent_chat_schedule_refinement_continue(dt_develop_t *dev,
-                                                     const dt_agent_chat_submission_t *submission,
-                                                     const dt_agent_chat_response_t *response)
-{
-  if(!dev || !submission || !response)
-    return;
-
-  if(!submission->refinement_enabled
-     || response->refinement_mode != DT_AGENT_REFINEMENT_MODE_MULTI
-     || !response->refinement_continue
-     || !response->operations || response->operations->len == 0
-     || submission->refinement_pass_index >= submission->refinement_max_passes)
-    return;
-
-  _agent_chat_cancel_pending_refinement(dev);
-
-  dt_agent_chat_continuation_t *continuation = g_malloc0(sizeof(*continuation));
-  continuation->prompt_text = g_strdup(submission->goal_text && submission->goal_text[0]
-                                         ? submission->goal_text
-                                         : submission->prompt_text);
-  continuation->goal_text = g_strdup(submission->goal_text);
-  continuation->conversation_id = g_strdup(submission->conversation_id);
-  continuation->image_session_id = g_strdup(submission->image_session_id);
-  continuation->autorun = submission->autorun;
-  continuation->fast_mode_enabled = submission->fast_mode_enabled;
-  continuation->next_pass_index = submission->refinement_pass_index + 1;
-  continuation->max_passes = submission->refinement_max_passes;
-  dev->agent_chat.continuation_source_id = g_timeout_add(DT_AGENT_CHAT_REFINEMENT_DELAY_MS,
-                                                         _agent_chat_continue_refinement,
-                                                         continuation);
-}
-
 static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboolean autorun)
 {
   const gboolean fast_mode_enabled = dev && dev->agent_chat.fast_mode_enabled;
@@ -3335,7 +3185,7 @@ static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboo
 
   _agent_chat_submit_internal(dev, prompt, prompt, autorun, TRUE,
                               fast_mode_enabled,
-                              refinement_mode, 1u, refinement_max_passes, FALSE);
+                              refinement_mode, 1u, refinement_max_passes);
 }
 
 static gboolean _agent_chat_autorun_if_requested(gpointer user_data)
@@ -5150,7 +5000,6 @@ void enter(dt_view_t *self)
     g_source_remove(dev->agent_chat.autorun_source_id);
     dev->agent_chat.autorun_source_id = 0;
   }
-  _agent_chat_cancel_pending_refinement(dev);
   dev->agent_chat.autorun_sent = FALSE;
   if(dev->agent_chat.autorun_message && dev->agent_chat.autorun_message[0])
     dev->agent_chat.autorun_source_id = g_timeout_add(750, _agent_chat_autorun_if_requested, dev);
@@ -5175,7 +5024,6 @@ void leave(dt_view_t *self)
     g_source_remove(dev->agent_chat.autorun_source_id);
     dev->agent_chat.autorun_source_id = 0;
   }
-  _agent_chat_cancel_pending_refinement(dev);
 
   DT_CONTROL_SIGNAL_DISCONNECT_ALL(self, "darkroom");
 

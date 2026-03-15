@@ -352,7 +352,6 @@ typedef struct dt_develop_t
     gchar *autorun_message;
     gchar *test_report_path;
     guint autorun_source_id;
-    guint continuation_source_id;
     guint max_refinement_passes;
     guint active_request_live_applied_count;
     guint active_request_refinement_pass_index;

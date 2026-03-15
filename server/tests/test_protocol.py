@@ -231,7 +231,6 @@ def _sample_request_payload() -> dict:
             "enabled": False,
             "maxPasses": 1,
             "passIndex": 1,
-            "automaticContinuation": False,
             "goalText": "Make it brighter",
         },
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
@@ -365,7 +364,6 @@ def test_build_response_from_plan_marks_multi_turn_continuation() -> None:
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 2,
-        "automaticContinuation": True,
         "goalText": "Do a full edit",
     }
     request = RequestEnvelope.model_validate(payload)
@@ -592,7 +590,6 @@ def test_request_envelope_accepts_multi_turn_refinement() -> None:
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 2,
-        "automaticContinuation": True,
         "goalText": "Make this a polished landscape",
     }
 
@@ -611,7 +608,6 @@ def test_request_envelope_accepts_multi_turn_refinement_with_budget_15() -> None
         "enabled": True,
         "maxPasses": 15,
         "passIndex": 15,
-        "automaticContinuation": True,
         "goalText": "Push this to a final polished look",
     }
 
@@ -628,7 +624,6 @@ def test_request_envelope_accepts_multi_turn_refinement_with_budget_16() -> None
         "enabled": True,
         "maxPasses": 16,
         "passIndex": 1,
-        "automaticContinuation": False,
         "goalText": "Push this to a final polished look",
     }
 
@@ -657,7 +652,6 @@ def test_build_response_from_plan_sets_multi_turn_continue_state() -> None:
         "enabled": True,
         "maxPasses": 4,
         "passIndex": 2,
-        "automaticContinuation": True,
         "goalText": "Do a polished edit",
     }
     request = RequestEnvelope.model_validate(payload)
@@ -705,7 +699,6 @@ def test_build_response_from_plan_stops_multi_turn_without_operations() -> None:
         "enabled": True,
         "maxPasses": 4,
         "passIndex": 3,
-        "automaticContinuation": True,
         "goalText": "Do a polished edit",
     }
     request = RequestEnvelope.model_validate(payload)

@@ -130,6 +130,6 @@ class MockPlannerBridge:
             "message": "No active request found for that requestId.",
             "toolCallsUsed": 0,
             "maxToolCalls": 0,
-            "stagedOperationCount": 0,
+            "appliedOperationCount": 0,
             "operations": [],
         }

@@ -19,7 +19,6 @@ def _sample_request_payload() -> dict:
             "enabled": False,
             "maxPasses": 1,
             "passIndex": 1,
-            "automaticContinuation": False,
             "goalText": "Increase exposure by exactly 0.7 EV.",
         },
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "_DSC8809.ARW"},
@@ -100,14 +99,12 @@ def test_mock_planner_splits_multi_turn_response_across_two_passes() -> None:
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 1,
-        "automaticContinuation": False,
         "goalText": "Increase exposure by exactly 0.7 EV.",
     }
     first = planner.plan(RequestEnvelope.model_validate(payload))
 
     payload["session"]["turnId"] = "turn-2"
     payload["refinement"]["passIndex"] = 2
-    payload["refinement"]["automaticContinuation"] = True
     second = planner.plan(RequestEnvelope.model_validate(payload))
 
     assert first.plan.continueRefining is True

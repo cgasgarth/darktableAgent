@@ -335,7 +335,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                     progress_payload.get("status"),
                     progress_payload.get("toolCallsUsed"),
                     progress_payload.get("maxToolCalls"),
-                    progress_payload.get("stagedOperationCount"),
+                    progress_payload.get("appliedOperationCount"),
                     len(progress_payload.get("operations", [])),
                     progress_payload.get("message"),
                 )

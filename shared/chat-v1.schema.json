@@ -79,7 +79,6 @@
         "enabled",
         "maxPasses",
         "passIndex",
-        "automaticContinuation",
         "goalText"
       ],
       "properties": {
@@ -99,9 +98,6 @@
         "passIndex": {
           "type": "integer",
           "minimum": 1
-        },
-        "automaticContinuation": {
-          "type": "boolean"
         },
         "goalText": {
           "type": "string",

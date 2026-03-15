@@ -511,9 +511,9 @@ char *dt_agent_client_dup_endpoint(void)
   return g_strdup(DT_AGENT_CHAT_DEFAULT_ENDPOINT);
 }
 
-static gchar *_build_synthetic_progress_response_json(const dt_agent_client_request_t *request,
-                                                      JsonNode *operations_node,
-                                                      GError **error)
+static gchar *_build_progress_response_json(const dt_agent_client_request_t *request,
+                                            JsonNode *operations_node,
+                                            GError **error)
 {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
@@ -647,10 +647,10 @@ static gboolean _parse_progress_payload(const dt_agent_client_request_t *request
      && g_type_is_a(json_node_get_value_type(tool_max_node), G_TYPE_INT64))
     progress->tool_calls_max = (guint)MAX(0, json_node_get_int(tool_max_node));
 
-  JsonNode *staged_count_node = json_object_get_member(object, "stagedOperationCount");
-  if(staged_count_node && JSON_NODE_HOLDS_VALUE(staged_count_node)
-     && g_type_is_a(json_node_get_value_type(staged_count_node), G_TYPE_INT64))
-    progress->staged_operation_count = (guint)MAX(0, json_node_get_int(staged_count_node));
+  JsonNode *applied_count_node = json_object_get_member(object, "appliedOperationCount");
+  if(applied_count_node && JSON_NODE_HOLDS_VALUE(applied_count_node)
+     && g_type_is_a(json_node_get_value_type(applied_count_node), G_TYPE_INT64))
+    progress->applied_operation_count = (guint)MAX(0, json_node_get_int(applied_count_node));
 
   JsonNode *operations_node = json_object_get_member(object, "operations");
   if(operations_node && !JSON_NODE_HOLDS_ARRAY(operations_node))
@@ -663,23 +663,23 @@ static gboolean _parse_progress_payload(const dt_agent_client_request_t *request
 
   if(progress->found)
   {
-    g_autofree gchar *synthetic = _build_synthetic_progress_response_json(request,
-                                                                          operations_node,
-                                                                          error);
-    if(!synthetic)
+    g_autofree gchar *response_json = _build_progress_response_json(request,
+                                                                    operations_node,
+                                                                    error);
+    if(!response_json)
     {
       g_object_unref(parser);
       return FALSE;
     }
-    progress->has_response = dt_agent_chat_response_parse_data(synthetic, -1,
+    progress->has_response = dt_agent_chat_response_parse_data(response_json, -1,
                                                                &progress->response, error);
     if(!progress->has_response)
     {
       g_object_unref(parser);
       return FALSE;
     }
-    if(progress->staged_operation_count == 0 && progress->response.operations)
-      progress->staged_operation_count = progress->response.operations->len;
+    if(progress->applied_operation_count == 0 && progress->response.operations)
+      progress->applied_operation_count = progress->response.operations->len;
   }
 
   if(g_strcmp0(progress->status, "cancelled") == 0)

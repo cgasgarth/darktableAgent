@@ -206,7 +206,6 @@ def _sample_request_payload() -> dict:
             "enabled": False,
             "maxPasses": 1,
             "passIndex": 1,
-            "automaticContinuation": False,
             "goalText": "Make it brighter",
         },
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "_DSC8809.ARW"},
@@ -473,7 +472,6 @@ async def test_chat_returns_multi_turn_refinement_status(
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 1,
-        "automaticContinuation": False,
         "goalText": "Do a full edit",
     }
 

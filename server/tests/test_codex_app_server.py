@@ -39,7 +39,6 @@ def _sample_request() -> RequestEnvelope:
                 "enabled": True,
                 "maxPasses": 10,
                 "passIndex": 1,
-                "automaticContinuation": False,
                 "goalText": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
             },
             "uiContext": {
@@ -324,11 +323,9 @@ def test_prompt_payload_rebins_histogram_when_luma_bin_count_exceeds_limit() -> 
     assert sum(rebinned) == 128
 
 
-def test_followup_prompt_payload_is_context_light() -> None:
+def test_prompt_payload_includes_module_context_for_live_runs() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
-    request.refinement.automaticContinuation = True
-    request.refinement.passIndex = 2
 
     payload = bridge._build_prompt_payload(request)  # type: ignore[attr-defined]
     first_setting = payload["imageSnapshot"]["editableSettings"][0]
@@ -339,9 +336,9 @@ def test_followup_prompt_payload_is_context_light() -> None:
     assert first_setting["supportedModes"] == ["set", "delta"]
     assert first_setting["minNumber"] == -18.0
     assert first_setting["maxNumber"] == 18.0
-    assert "moduleId" not in first_setting
-    assert "moduleLabel" not in first_setting
-    assert "stepNumber" not in first_setting
+    assert first_setting["moduleId"] == "exposure"
+    assert first_setting["moduleLabel"] == "exposure"
+    assert first_setting["stepNumber"] == 0.01
 
     metadata = payload["imageSnapshot"]["metadata"]
     assert metadata == {"width": 9504, "height": 6336}
@@ -495,13 +492,13 @@ def test_get_request_progress_returns_not_found_for_unknown_request() -> None:
         "status": "not_found",
         "toolCallsUsed": 0,
         "maxToolCalls": 0,
-        "stagedOperationCount": 0,
+        "appliedOperationCount": 0,
         "operations": [],
         "message": "No active request found for that requestId.",
     }
 
 
-def test_get_request_progress_returns_live_staged_operations_for_active_turn() -> None:
+def test_get_request_progress_returns_live_applied_operations_for_active_turn() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
     active_request = bridge._register_request(request)  # type: ignore[attr-defined]
@@ -515,7 +512,7 @@ def test_get_request_progress_returns_live_staged_operations_for_active_turn() -
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
         context.tool_calls_used = 3
-        context.staged_operations = [
+        context.applied_operations = [
             {
                 "operationId": "tool-op-1",
                 "sequence": 1,
@@ -545,7 +542,7 @@ def test_get_request_progress_returns_live_staged_operations_for_active_turn() -
         assert progress["status"] == "running"
         assert progress["toolCallsUsed"] == 3
         assert progress["maxToolCalls"] == request.refinement.maxPasses
-        assert progress["stagedOperationCount"] == 1
+        assert progress["appliedOperationCount"] == 1
         assert len(progress["operations"]) == 1
     finally:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
@@ -988,7 +985,7 @@ def test_read_only_guardrail_requires_apply_or_finalize_after_streak() -> None:
     )
 
 
-def test_finalize_plan_with_live_context_merges_staged_operations() -> None:
+def test_finalize_plan_with_live_context_merges_applied_operations() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
     data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
@@ -996,9 +993,9 @@ def test_finalize_plan_with_live_context_merges_staged_operations() -> None:
     try:
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
-        context.staged_operations.append(
+        context.applied_operations.append(
             {
-                "operationId": "staged-1",
+                "operationId": "applied-1",
                 "sequence": 1,
                 "kind": "set-float",
                 "target": {
@@ -1026,7 +1023,7 @@ def test_finalize_plan_with_live_context_merges_staged_operations() -> None:
         )
         assert plan.continueRefining is False
         assert len(plan.operations) == 1
-        assert plan.operations[0].operationId == "staged-1"
+        assert plan.operations[0].operationId == "applied-1"
     finally:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 

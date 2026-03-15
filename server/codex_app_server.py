@@ -50,9 +50,6 @@ _FAST_MODE_REASONING_EFFORT = os.environ.get(
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
 _DEFAULT_HISTOGRAM_BINS = int(os.environ.get("DARKTABLE_AGENT_HISTOGRAM_BINS", "64"))
-_DEFAULT_PROGRESS_LOG_INTERVAL_SECONDS = float(
-    os.environ.get("DARKTABLE_AGENT_CODEX_PROGRESS_LOG_INTERVAL_SECONDS", "5")
-)
 _DEFAULT_MAX_IDLE_SECONDS = float(
     os.environ.get("DARKTABLE_AGENT_CODEX_MAX_IDLE_SECONDS", "120")
 )
@@ -127,8 +124,6 @@ class _ActiveRequestState:
     codex_turn_id: str | None = None
     status: str = "queued"
     message: str = "Request accepted"
-    started_at_monotonic: float = field(default_factory=time.monotonic)
-    last_progress_log_at: float = 0.0
     last_tool_name: str | None = None
 
 
@@ -147,7 +142,7 @@ class _TurnContext:
     max_tool_calls: int
     tool_calls_used: int = 0
     consecutive_read_only_tool_calls: int = 0
-    staged_operations: list[dict[str, Any]] = field(default_factory=list)
+    applied_operations: list[dict[str, Any]] = field(default_factory=list)
     next_operation_sequence: int = 1
 
 
@@ -350,7 +345,7 @@ class CodexAppServerBridge:
                     "status": "not_found",
                     "toolCallsUsed": 0,
                     "maxToolCalls": 0,
-                    "stagedOperationCount": 0,
+                    "appliedOperationCount": 0,
                     "operations": [],
                     "message": "No active request found for that requestId.",
                 }
@@ -366,7 +361,7 @@ class CodexAppServerBridge:
                     "status": "not_found",
                     "toolCallsUsed": 0,
                     "maxToolCalls": 0,
-                    "stagedOperationCount": 0,
+                    "appliedOperationCount": 0,
                     "operations": [],
                     "message": "No active request matched the provided session identifiers.",
                 }
@@ -375,7 +370,7 @@ class CodexAppServerBridge:
             if active_request.thread_id and active_request.codex_turn_id:
                 context = self._turn_contexts.get((active_request.thread_id, active_request.codex_turn_id))
 
-            operations = list(context.staged_operations) if context else []
+            operations = list(context.applied_operations) if context else []
             tool_calls_used = context.tool_calls_used if context else 0
             max_tool_calls = context.max_tool_calls if context else 0
 
@@ -384,7 +379,7 @@ class CodexAppServerBridge:
                 "status": active_request.status,
                 "toolCallsUsed": tool_calls_used,
                 "maxToolCalls": max_tool_calls,
-                "stagedOperationCount": len(operations),
+                "appliedOperationCount": len(operations),
                 "operations": operations,
                 "message": active_request.message,
             }
@@ -458,59 +453,6 @@ class CodexAppServerBridge:
                     if last_tool_name is not None:
                         active_request.last_tool_name = last_tool_name
                     return
-
-    def _log_turn_progress_locked(
-        self,
-        active_request: _ActiveRequestState,
-        *,
-        force: bool = False,
-        reason: str = "heartbeat",
-    ) -> None:
-        now = time.monotonic()
-        with self._state_lock:
-            tracked_request = self._active_requests.get(active_request.request_id)
-            if tracked_request is None:
-                return
-            if (
-                not force
-                and tracked_request.last_progress_log_at > 0.0
-                and now - tracked_request.last_progress_log_at < _DEFAULT_PROGRESS_LOG_INTERVAL_SECONDS
-            ):
-                return
-
-            context = None
-            if tracked_request.thread_id and tracked_request.codex_turn_id:
-                context = self._turn_contexts.get((tracked_request.thread_id, tracked_request.codex_turn_id))
-
-            tracked_request.last_progress_log_at = now
-            status = tracked_request.status
-            message = tracked_request.message
-            last_tool_name = tracked_request.last_tool_name
-            tool_calls_used = context.tool_calls_used if context else 0
-            max_tool_calls = context.max_tool_calls if context else 0
-            staged_operation_count = len(context.staged_operations) if context else 0
-            read_only_streak = context.consecutive_read_only_tool_calls if context else 0
-
-        logger.info(
-            "codex_turn_progress",
-            extra={
-                "structured": {
-                    "requestId": active_request.request_id,
-                    "conversationId": active_request.conversation_id,
-                    "threadId": active_request.thread_id,
-                    "turnId": active_request.codex_turn_id,
-                    "status": status,
-                    "message": message,
-                    "reason": reason,
-                    "elapsedMs": int((now - active_request.started_at_monotonic) * 1000),
-                    "toolCallsUsed": tool_calls_used,
-                    "maxToolCalls": max_tool_calls,
-                    "stagedOperationCount": staged_operation_count,
-                    "readOnlyToolCallStreak": read_only_streak,
-                    "lastToolName": last_tool_name,
-                }
-            },
-        )
 
     def _ensure_initialized_locked(self, deadline: float) -> None:
         if self._process and self._process.poll() is not None:
@@ -706,7 +648,6 @@ class CodexAppServerBridge:
                     }
                 },
             )
-            self._log_turn_progress_locked(active_request, force=True, reason="turn_started")
 
             state = {
                 "thread_id": thread_id,
@@ -905,8 +846,8 @@ class CodexAppServerBridge:
             return plan
 
         merged_operations = [operation.model_dump(mode="json") for operation in plan.operations]
-        if context.staged_operations:
-            merged_operations = list(context.staged_operations) + merged_operations
+        if context.applied_operations:
+            merged_operations = list(context.applied_operations) + merged_operations
 
         if not merged_operations:
             return AgentPlan.model_validate(
@@ -975,25 +916,22 @@ class CodexAppServerBridge:
         }
 
     def _build_prompt_payload(self, request: RequestEnvelope) -> dict[str, Any]:
-        is_followup = request.refinement.automaticContinuation
         compact_settings: list[dict[str, Any]] = []
         for setting in request.imageSnapshot.editableSettings:
             compact_setting: dict[str, Any] = {
+                "moduleId": setting.moduleId,
+                "moduleLabel": setting.moduleLabel,
                 "settingId": setting.settingId,
                 "kind": setting.kind,
                 "actionPath": setting.actionPath,
                 "supportedModes": setting.supportedModes,
             }
-            if not is_followup:
-                compact_setting["moduleId"] = setting.moduleId
-                compact_setting["moduleLabel"] = setting.moduleLabel
             if setting.kind == "set-float":
                 compact_setting["currentNumber"] = setting.currentNumber
                 compact_setting["minNumber"] = setting.minNumber
                 compact_setting["maxNumber"] = setting.maxNumber
                 compact_setting["defaultNumber"] = setting.defaultNumber
-                if not is_followup:
-                    compact_setting["stepNumber"] = setting.stepNumber
+                compact_setting["stepNumber"] = setting.stepNumber
             elif setting.kind == "set-choice":
                 compact_setting["currentChoiceValue"] = setting.currentChoiceValue
                 compact_setting["currentChoiceId"] = setting.currentChoiceId
@@ -1047,7 +985,7 @@ class CodexAppServerBridge:
         ]
         # In live mode, provide the current preview image up front so the first
         # tool call can focus on state or edits instead of fetching an initial image.
-        if request.refinement.enabled and not request.refinement.automaticContinuation:
+        if request.refinement.enabled:
             if preview_data_url is None:
                 preview_data_url = self._preview_data_url(request)
             items.append(
@@ -1059,19 +997,8 @@ class CodexAppServerBridge:
         return items
 
     def _build_turn_prompt(self, request: RequestEnvelope) -> str:
-        is_followup = request.refinement.automaticContinuation
         live_run_enabled = request.refinement.enabled
         max_tool_calls = request.refinement.maxPasses if live_run_enabled else 1
-        module_grouping_line = (
-            "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
-            if not is_followup
-            else "Follow-up state may omit module labels; rely on settingId/actionPath and goal continuity.\n"
-        )
-        continuation_line = (
-            "This is an automatic continuation pass after darktable applied prior operations and refreshed image state.\n"
-            if is_followup
-            else ""
-        )
         live_run_line = (
             "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
             "Initial turn input includes the current preview image.\n"
@@ -1085,15 +1012,14 @@ class CodexAppServerBridge:
             "Plan the next darktable response for this request.\n\n"
             f"Goal: {request.refinement.goalText}\n"
             f"Latest user message: {request.message.text}\n"
-            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
+            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}\n"
             f"Tool budget: maximum {max_tool_calls} tool calls in this run.\n"
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             "\n"
             "Call get_preview_image and get_image_state before returning a final plan.\n"
             "Use only the tool-provided editable settings and image state.\n"
             f"{live_run_line}"
-            f"{continuation_line}"
-            f"{module_grouping_line}"
+            "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
@@ -1445,7 +1371,7 @@ class CodexAppServerBridge:
                 }
             tool_calls_used = context.tool_calls_used
             max_tool_calls = context.max_tool_calls
-            staged_operation_count = len(context.staged_operations)
+            applied_operation_count = len(context.applied_operations)
             read_only_streak = context.consecutive_read_only_tool_calls
             tool_error = None
             if not response["success"]:
@@ -1466,7 +1392,7 @@ class CodexAppServerBridge:
             message=(
                 (
                     f"Handled tool {tool_name} ({tool_calls_used}/{max_tool_calls}); "
-                    f"{staged_operation_count} live edits"
+                    f"{applied_operation_count} live edits"
                 )
                 if response["success"]
                 else (
@@ -1488,18 +1414,13 @@ class CodexAppServerBridge:
                     "success": response["success"],
                     "toolCallsUsed": tool_calls_used,
                     "maxToolCalls": max_tool_calls,
-                    "stagedOperationCount": staged_operation_count,
+                    "appliedOperationCount": applied_operation_count,
                     "readOnlyToolCallStreak": read_only_streak,
                     "toolError": tool_error,
                 }
             },
         )
         return response
-
-    @staticmethod
-    def _register_tool_call_budget(context: _TurnContext) -> bool:
-        context.tool_calls_used += 1
-        return context.tool_calls_used <= context.max_tool_calls
 
     @staticmethod
     def _is_read_only_tool(tool_name: str) -> bool:
@@ -1519,7 +1440,7 @@ class CodexAppServerBridge:
 
         if (
             context.live_run_enabled
-            and not context.staged_operations
+            and not context.applied_operations
             and tool_name != _TOOL_APPLY_OPERATIONS
             and context.tool_calls_used > _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
         ):
@@ -1574,7 +1495,7 @@ class CodexAppServerBridge:
         if not isinstance(raw_operations, list) or not raw_operations:
             return self._tool_error_response("apply_operations requires a non-empty operations array.")
 
-        staged_batch: list[dict[str, Any]] = []
+        applied_batch: list[dict[str, Any]] = []
         for raw_operation in raw_operations:
             if not isinstance(raw_operation, dict):
                 return self._tool_error_response("Every apply_operations entry must be an object.")
@@ -1584,14 +1505,14 @@ class CodexAppServerBridge:
             apply_error = self._apply_operation_to_state(context, normalized_operation)
             if apply_error:
                 return self._tool_error_response(apply_error)
-            staged_batch.append(normalized_operation)
-            context.staged_operations.append(normalized_operation)
+            applied_batch.append(normalized_operation)
+            context.applied_operations.append(normalized_operation)
             context.next_operation_sequence += 1
 
         image_snapshot = context.state_payload.get("imageSnapshot")
         if isinstance(image_snapshot, dict):
             image_snapshot["imageRevisionId"] = (
-                f"{context.base_image_revision_id}:tool-{len(context.staged_operations)}"
+                f"{context.base_image_revision_id}:tool-{len(context.applied_operations)}"
             )
         self._refresh_preview_after_operations(context)
 
@@ -1601,8 +1522,8 @@ class CodexAppServerBridge:
                 {
                     "type": "inputText",
                     "text": (
-                        f"Applied {len(staged_batch)} operations in this call; "
-                        f"{len(context.staged_operations)} total live edits applied. "
+                        f"Applied {len(applied_batch)} operations in this call; "
+                        f"{len(context.applied_operations)} total live edits applied. "
                         "Preview refreshed for get_preview_image."
                     ),
                 }
@@ -1654,7 +1575,7 @@ class CodexAppServerBridge:
 
         return brightness_ev, contrast_delta, saturation_delta
 
-    def _render_staged_preview(self, context: _TurnContext) -> tuple[str, bytes] | None:
+    def _render_applied_preview(self, context: _TurnContext) -> tuple[str, bytes] | None:
         if Image is None or ImageEnhance is None:
             return None
 
@@ -1686,21 +1607,21 @@ class CodexAppServerBridge:
         return "image/jpeg", output.getvalue()
 
     def _refresh_preview_after_operations(self, context: _TurnContext) -> None:
-        staged_count = len(context.staged_operations)
-        rendered = self._render_staged_preview(context)
+        applied_count = len(context.applied_operations)
+        rendered = self._render_applied_preview(context)
         if rendered is not None:
             context.preview_mime_type, rendered_bytes = rendered
             context.preview_data_url = self._build_data_url(
                 context.preview_mime_type,
                 rendered_bytes,
-                revision_token=str(staged_count),
+                revision_token=str(applied_count),
             )
             return
 
         context.preview_data_url = self._build_data_url(
             context.preview_mime_type,
             context.base_preview_bytes,
-            revision_token=str(staged_count),
+            revision_token=str(applied_count),
         )
 
     def _normalize_tool_operation(

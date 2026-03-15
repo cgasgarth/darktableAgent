@@ -37,7 +37,6 @@ class RefinementRequest(StrictBaseModel):
     enabled: bool
     maxPasses: int = Field(ge=1)
     passIndex: int = Field(ge=1)
-    automaticContinuation: bool
     goalText: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -52,8 +51,6 @@ class RefinementRequest(StrictBaseModel):
                 raise ValueError("single-turn refinement must use maxPasses=1")
             if self.passIndex != 1:
                 raise ValueError("single-turn refinement must use passIndex=1")
-            if self.automaticContinuation:
-                raise ValueError("single-turn refinement must not be an automatic continuation")
         return self
 
 

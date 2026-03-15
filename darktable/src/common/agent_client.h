@@ -47,7 +47,7 @@ typedef struct dt_agent_client_progress_t
   gchar *message;
   guint tool_calls_used;
   guint tool_calls_max;
-  guint staged_operation_count;
+  guint applied_operation_count;
   dt_agent_chat_response_t response;
 } dt_agent_client_progress_t;
 
