@@ -2,6 +2,7 @@
   "name": "darktable-agent",
   "private": true,
   "scripts": {
+    "build:serve": "npm run darktable:build-and-start && npm run server:start",
     "darktable:build": "./scripts/build_darktable_local.sh",
     "darktable:start": "./scripts/run_darktable_local.sh",
     "darktable:build-and-start": "npm run darktable:build && npm run darktable:start",
