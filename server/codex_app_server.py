@@ -8,7 +8,6 @@ import os
 import select
 import shlex
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -44,13 +43,17 @@ _FAST_MODE_REASONING_EFFORT = os.environ.get(
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
 _DEFAULT_HISTOGRAM_BINS = int(os.environ.get("DARKTABLE_AGENT_HISTOGRAM_BINS", "64"))
+_TOOL_GET_IMAGE_STATE = "get_image_state"
+_TOOL_GET_PREVIEW_IMAGE = "get_preview_image"
 
 _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing planner for darktable.
 
-Never use tools, never ask for approvals, and never request user input.
-Return exactly one JSON object matching the output schema.
+Use tools to gather image context before planning edits:
+- call `get_preview_image` to inspect the latest rendered preview
+- call `get_image_state` to inspect editable settings and histogram
+Return exactly one JSON object matching the output schema after tool calls.
 
-Use the attached preview image as primary visual context. Use histogram + editable settings as constraints.
+Use preview as primary visual context. Use histogram + editable settings as constraints.
 Only emit operations targeting provided settingId/actionPath pairs. Never invent IDs or paths.
 Keep edits coherent, conservative, and executable.
 If user intent is broad, infer a reasonable plan from the visible image instead of asking for more specificity.
@@ -102,6 +105,12 @@ class _ActiveRequestState:
     codex_turn_id: str | None = None
 
 
+@dataclass(slots=True)
+class _TurnContext:
+    request: RequestEnvelope
+    preview_data_url: str
+
+
 class CodexAppServerBridge:
     def __init__(
         self,
@@ -125,6 +134,7 @@ class CodexAppServerBridge:
         self._conversation_turn_counts: dict[str, int] = {}
         self._active_requests: dict[str, _ActiveRequestState] = {}
         self._cancelled_request_ids: set[str] = set()
+        self._turn_contexts: dict[tuple[str, str], _TurnContext] = {}
 
     @staticmethod
     def _build_output_schema() -> dict[str, Any]:
@@ -269,7 +279,7 @@ class CodexAppServerBridge:
             {
                 "clientInfo": _CLIENT_INFO,
                 "capabilities": {
-                    "experimentalApi": False,
+                    "experimentalApi": True,
                     "optOutNotificationMethods": [],
                 },
             },
@@ -293,6 +303,30 @@ class CodexAppServerBridge:
             return _FAST_MODE_REASONING_EFFORT
         return _DEFAULT_REASONING_EFFORT
 
+    @staticmethod
+    def _dynamic_tools() -> list[dict[str, Any]]:
+        empty_object_schema = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        return [
+            {
+                "name": _TOOL_GET_IMAGE_STATE,
+                "description": (
+                    "Get current image state for planning: editable settings and trimmed histogram."
+                ),
+                "inputSchema": empty_object_schema,
+            },
+            {
+                "name": _TOOL_GET_PREVIEW_IMAGE,
+                "description": (
+                    "Get the current rendered preview image as a data URL for visual analysis."
+                ),
+                "inputSchema": empty_object_schema,
+            },
+        ]
+
     def _get_or_create_thread_locked(
         self, conversation_id: str, model: str | None, deadline: float
     ) -> str:
@@ -315,6 +349,7 @@ class CodexAppServerBridge:
             "sandbox": _DEFAULT_SANDBOX,
             "personality": _DEFAULT_PERSONALITY,
             "developerInstructions": _THREAD_DEVELOPER_INSTRUCTIONS,
+            "dynamicTools": self._dynamic_tools(),
         }
         if model:
             params["model"] = model
@@ -350,8 +385,8 @@ class CodexAppServerBridge:
         thread_reused: bool,
     ) -> CodexTurnResult:
         started_at = time.monotonic()
-        preview_local_paths: list[str] = []
-        turn_input = self._build_turn_input(request, preview_local_paths)
+        preview_data_url = self._preview_data_url(request)
+        turn_input = self._build_turn_input(request)
         self._conversation_turn_counts[active_request.conversation_id] = (
             self._conversation_turn_counts.get(active_request.conversation_id, 0) + 1
         )
@@ -363,10 +398,9 @@ class CodexAppServerBridge:
                 prompt_text_chars += len(str(item.get("text", "")))
             elif item.get("type") == "image":
                 image_input_chars += len(str(item.get("url", "")))
-            elif item.get("type") == "localImage":
-                image_input_chars += len(str(item.get("path", "")))
 
         try:
+            turn_id: str | None = None
             turn_request = {
                 "threadId": thread_id,
                 "input": turn_input,
@@ -386,6 +420,7 @@ class CodexAppServerBridge:
                     "codex_turn_start_failed", "Codex did not return a turn id"
                 ) from exc
             active_request.codex_turn_id = turn_id
+            self._register_turn_context(thread_id, turn_id, request, preview_data_url)
 
             state = {
                 "thread_id": thread_id,
@@ -447,22 +482,12 @@ class CodexAppServerBridge:
                 raw_message=raw_message,
             )
         finally:
-            self._cleanup_local_image_paths(preview_local_paths)
+            if active_request.codex_turn_id is not None:
+                self._clear_turn_context(thread_id, active_request.codex_turn_id)
+                active_request.codex_turn_id = None
 
     @staticmethod
-    def _preview_suffix_for_mime(mime_type: str | None) -> str:
-        normalized = (mime_type or "").lower()
-        if normalized in {"image/jpeg", "image/jpg"}:
-            return ".jpg"
-        if normalized == "image/png":
-            return ".png"
-        if normalized == "image/webp":
-            return ".webp"
-        if normalized == "image/avif":
-            return ".avif"
-        return ".img"
-
-    def _materialize_preview_file(self, request: RequestEnvelope) -> str:
+    def _preview_data_url(request: RequestEnvelope) -> str:
         preview = request.imageSnapshot.preview
         if preview is None:
             raise CodexAppServerError(
@@ -480,34 +505,30 @@ class CodexAppServerBridge:
                 status_code=422,
             ) from exc
 
-        suffix = self._preview_suffix_for_mime(preview.mimeType)
-        try:
-            file_descriptor, file_path = tempfile.mkstemp(
-                prefix="darktable-agent-preview-",
-                suffix=suffix,
-            )
-            with os.fdopen(file_descriptor, "wb") as preview_file:
-                preview_file.write(image_bytes)
-        except OSError as exc:
-            raise CodexAppServerError(
-                "codex_preview_materialize_failed",
-                "Image preview could not be prepared for agent planning",
-                status_code=503,
-            ) from exc
-        return file_path
+        mime_type = preview.mimeType or "image/jpeg"
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
 
-    @staticmethod
-    def _cleanup_local_image_paths(paths: list[str]) -> None:
-        for path in paths:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                logger.warning(
-                    "codex_preview_cleanup_failed",
-                    extra={"structured": {"path": path, "error": str(exc)}},
-                )
+    def _register_turn_context(
+        self,
+        thread_id: str,
+        turn_id: str,
+        request: RequestEnvelope,
+        preview_data_url: str,
+    ) -> None:
+        with self._state_lock:
+            self._turn_contexts[(thread_id, turn_id)] = _TurnContext(
+                request=request,
+                preview_data_url=preview_data_url,
+            )
+
+    def _clear_turn_context(self, thread_id: str, turn_id: str) -> None:
+        with self._state_lock:
+            self._turn_contexts.pop((thread_id, turn_id), None)
+
+    def _get_turn_context(self, thread_id: str, turn_id: str) -> _TurnContext | None:
+        with self._state_lock:
+            return self._turn_contexts.get((thread_id, turn_id))
 
     @staticmethod
     def _trim_histogram_payload(request: RequestEnvelope) -> dict[str, Any] | None:
@@ -593,12 +614,8 @@ class CodexAppServerBridge:
         }
         return compact_payload
 
-    def _build_turn_input(
-        self,
-        request: RequestEnvelope,
-        preview_local_paths: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = [
+    def _build_turn_input(self, request: RequestEnvelope) -> list[dict[str, Any]]:
+        return [
             {
                 "type": "text",
                 "text": self._build_turn_prompt(request),
@@ -606,31 +623,17 @@ class CodexAppServerBridge:
             }
         ]
 
-        preview_path = self._materialize_preview_file(request)
-        items.append({"type": "localImage", "path": preview_path})
-        if preview_local_paths is not None:
-            preview_local_paths.append(preview_path)
-
-        return items
-
     def _build_turn_prompt(self, request: RequestEnvelope) -> str:
-        payload = self._build_prompt_payload(request)
-        preview = request.imageSnapshot.preview
         is_followup = request.refinement.automaticContinuation
         module_grouping_line = (
-            "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
+            "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
             if not is_followup
-            else "Follow-up payloads may omit module labels; rely on settingId/actionPath and prior goal context.\n"
+            else "Follow-up state may omit module labels; rely on settingId/actionPath and goal continuity.\n"
         )
         continuation_line = (
-            "This pass is an automatic continuation of the same run after darktable applied prior operations and refreshed the image state.\n"
+            "This is an automatic continuation pass after darktable applied prior operations and refreshed image state.\n"
             if is_followup
             else ""
-        )
-        preview_summary = (
-            f"attached separately as {preview.mimeType} {preview.width}x{preview.height}"
-            if preview is not None
-            else "unavailable"
         )
         return (
             "Plan the next darktable response for this request.\n\n"
@@ -638,18 +641,16 @@ class CodexAppServerBridge:
             f"Latest user message: {request.message.text}\n"
             f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
-            f"Preview: {preview_summary}\n"
             "\n"
-            "Use the provided editable settings and image state exactly as provided.\n"
+            "Call get_preview_image and get_image_state before returning a final plan.\n"
+            "Use only the tool-provided editable settings and image state.\n"
             f"{continuation_line}"
             f"{module_grouping_line}"
-            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, and available controls instead of asking for more specificity.\n"
+            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
-            "The preview image is attached separately when available; the JSON payload below only keeps preview metadata so the prompt stays compact.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
             "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
-            "Return only the JSON object required by the output schema.\n\n"
-            f"{json.dumps(payload, separators=(',', ':'))}"
+            "Return only the JSON object required by the output schema."
         )
 
     def _start_process_locked(self) -> None:
@@ -674,6 +675,7 @@ class CodexAppServerBridge:
         self._next_request_id = 1
         self._conversation_threads.clear()
         self._conversation_turn_counts.clear()
+        self._turn_contexts.clear()
 
     def _reset_process_locked(self) -> None:
         if self._process:
@@ -690,6 +692,7 @@ class CodexAppServerBridge:
         self._next_request_id = 1
         self._conversation_threads.clear()
         self._conversation_turn_counts.clear()
+        self._turn_contexts.clear()
 
     def _send_request_locked(
         self,
@@ -854,7 +857,6 @@ class CodexAppServerBridge:
         if request_id is None:
             return
 
-        rejection_result: dict[str, Any] | None = None
         if method in {
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
@@ -862,14 +864,18 @@ class CodexAppServerBridge:
             "applyPatchApproval",
             "execCommandApproval",
         }:
-            rejection_result = {"decision": "denied"}
-
-        if rejection_result is not None:
             logger.warning(
                 "codex_request_denied",
                 extra={"structured": {"method": method}},
             )
-            self._send_json_locked({"jsonrpc": "2.0", "id": request_id, "result": rejection_result})
+            self._send_json_locked(
+                {"jsonrpc": "2.0", "id": request_id, "result": {"decision": "decline"}}
+            )
+            return
+
+        if method == "item/tool/call":
+            response_payload = self._handle_dynamic_tool_call_locked(message)
+            self._send_json_locked({"jsonrpc": "2.0", "id": request_id, "result": response_payload})
             return
 
         logger.warning(
@@ -886,6 +892,93 @@ class CodexAppServerBridge:
                 },
             }
         )
+
+    def _handle_dynamic_tool_call_locked(self, message: dict[str, Any]) -> dict[str, Any]:
+        params = message.get("params", {})
+        thread_id = params.get("threadId")
+        turn_id = params.get("turnId")
+        tool_name = params.get("tool")
+        call_id = params.get("callId")
+
+        if not isinstance(thread_id, str) or not isinstance(turn_id, str):
+            return {
+                "success": False,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": "Missing threadId/turnId for tool call.",
+                    }
+                ],
+            }
+
+        if not isinstance(tool_name, str):
+            return {
+                "success": False,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": "Missing tool name for tool call.",
+                    }
+                ],
+            }
+
+        context = self._get_turn_context(thread_id, turn_id)
+        if context is None:
+            return {
+                "success": False,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": "No active image context is available for this tool call.",
+                    }
+                ],
+            }
+
+        if tool_name == _TOOL_GET_PREVIEW_IMAGE:
+            response = {
+                "success": True,
+                "contentItems": [
+                    {
+                        "type": "inputImage",
+                        "imageUrl": context.preview_data_url,
+                    }
+                ],
+            }
+        elif tool_name == _TOOL_GET_IMAGE_STATE:
+            payload = self._build_prompt_payload(context.request)
+            response = {
+                "success": True,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": json.dumps(payload, separators=(",", ":")),
+                    }
+                ],
+            }
+        else:
+            response = {
+                "success": False,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": f"Unsupported tool '{tool_name}'. Supported tools: {_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}.",
+                    }
+                ],
+            }
+
+        logger.info(
+            "codex_tool_call_handled",
+            extra={
+                "structured": {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "tool": tool_name,
+                    "callId": call_id,
+                    "success": response["success"],
+                }
+            },
+        )
+        return response
 
     @staticmethod
     def _extract_error_message(message: str) -> str:

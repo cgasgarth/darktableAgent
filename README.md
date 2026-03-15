@@ -41,6 +41,7 @@ This repository is in its initial agent-integration stage.
 - `darktable/` now contains the official darktable 5.4.1 stable source release as plain source files, not a nested git clone.
 - The custom local build installs into `darktable/.install-5.4.1`.
 - `server/` now bridges darktable requests into the Codex app server and returns structured operation plans back to darktable.
+- The Codex bridge now uses native app-server dynamic tools (`get_preview_image`, `get_image_state`) so turns stay prompt-light while the agent can fetch live image context on demand.
 - `shared/` defines the live chat/edit contract used between darktable and the local Python server.
 - darktable now sends a 1k rendered preview, histogram, metadata, history, and dynamically discovered editable controls with each request.
 - chat sessions are now image-scoped in darkroom, with one conversation surface per image plus a `new chat` reset action.
@@ -75,6 +76,7 @@ The current protocol details live in [docs/protocol-v1.md](docs/protocol-v1.md).
 - The smoke harness always starts the Python server in deterministic mock-response mode, so smoke validation does not depend on a live Codex agent run
 - Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, `npm run darktable:build-and-start`, `npm run server:start`, and `npm run agent:smoke`
 - The Codex bridge defaults to `gpt-5.3-codex` with `high` reasoning effort; override with `DARKTABLE_AGENT_CODEX_MODEL` and `DARKTABLE_AGENT_CODEX_REASONING_EFFORT` if needed
+- The bridge hard-disables execution/file-change approvals (`approvalPolicy=never`) and handles preview/state as native Codex tool calls rather than embedding full payloads in each prompt
 - The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
 - The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
 - The server expects a working local `codex` CLI login because it uses `codex app-server` as the planning backend
