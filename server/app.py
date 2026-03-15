@@ -203,15 +203,17 @@ async def chat(request: RequestEnvelope) -> ResponseEnvelope:
                 "imageSessionId": request.session.imageSessionId,
                 "conversationId": request.session.conversationId,
                 "turnId": request.session.turnId,
+                "fast": request.fast,
                 "refinement": request.refinement.model_dump(),
                 "view": request.uiContext.view,
                 "imageId": request.uiContext.imageId,
                 "imageName": request.uiContext.imageName,
                 "capabilityCount": len(request.capabilityManifest.targets),
-                "capabilities": [
-                    capability.model_dump() for capability in request.capabilityManifest.targets
-                ],
-                "imageSnapshot": request.imageSnapshot.model_dump(),
+                "editableSettingCount": len(request.imageSnapshot.editableSettings),
+                "historyPosition": request.imageSnapshot.historyPosition,
+                "historyCount": request.imageSnapshot.historyCount,
+                "hasPreview": request.imageSnapshot.preview is not None,
+                "hasHistogram": request.imageSnapshot.histogram is not None,
                 "messageText": request.message.text,
             }
         },

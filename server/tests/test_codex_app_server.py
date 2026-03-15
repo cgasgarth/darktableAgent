@@ -1,8 +1,15 @@
+import time
+from pathlib import Path
+
 import pytest
 
 from server.codex_app_server import (
     CodexAppServerBridge,
     CodexAppServerError,
+    _DEFAULT_MODEL,
+    _DEFAULT_REASONING_EFFORT,
+    _FAST_MODE_MODEL,
+    _FAST_MODE_REASONING_EFFORT,
     _THREAD_DEVELOPER_INSTRUCTIONS,
 )
 from shared.protocol import RequestEnvelope
@@ -23,6 +30,7 @@ def _sample_request() -> RequestEnvelope:
                 "role": "user",
                 "text": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
             },
+            "fast": False,
             "refinement": {
                 "mode": "multi-turn",
                 "enabled": True,
@@ -246,6 +254,32 @@ def test_output_schema_marks_nullable_object_fields_as_required() -> None:
     ]
 
 
+def test_model_selection_uses_default_model_when_fast_mode_disabled() -> None:
+    request = _sample_request()
+
+    assert CodexAppServerBridge._model_for_request(request) == _DEFAULT_MODEL
+
+
+def test_model_selection_uses_fast_mode_model_when_fast_mode_enabled() -> None:
+    request = _sample_request()
+    request.fast = True
+
+    assert CodexAppServerBridge._model_for_request(request) == _FAST_MODE_MODEL
+
+
+def test_effort_selection_uses_default_effort_when_fast_mode_disabled() -> None:
+    request = _sample_request()
+
+    assert CodexAppServerBridge._effort_for_request(request) == _DEFAULT_REASONING_EFFORT
+
+
+def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None:
+    request = _sample_request()
+    request.fast = True
+
+    assert CodexAppServerBridge._effort_for_request(request) == _FAST_MODE_REASONING_EFFORT
+
+
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Treat broad creative requests" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "If visual context is present, do not answer with \"be more specific\"" in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -262,39 +296,67 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     prompt = bridge._build_turn_prompt(_sample_request())  # type: ignore[attr-defined]
 
     assert "infer a conservative supported edit plan" in prompt
-    assert "preview, histogram, history, and current settings" in prompt
+    assert "preview, histogram, and available controls" in prompt
     assert "Respect refinement state" in prompt
     assert "Use moduleId/moduleLabel to group related controls" in prompt
     assert "rgb primaries, color equalizer, or color balance rgb" in prompt
     assert '"moduleId":"colorequal"' in prompt
     assert '"moduleId":"primaries"' in prompt
     assert "Preview: attached separately as image/jpeg 1000x667" in prompt
-    assert "Histogram summary: shadows=0.00, midtones=0.70, highlights=0.30" in prompt
-    assert "Editable modules: colorequal (color equalizer): 1, exposure (exposure): 1, primaries (rgb primaries): 1" in prompt
+    assert "Histogram summary:" not in prompt
+    assert "Editable modules:" not in prompt
+    assert "Fast mode:" not in prompt
     assert '"base64Data":null' in prompt
+    assert '"currentNumber"' not in prompt
+    assert '"history":[]' not in prompt
+    assert '"capabilityManifest"' not in prompt
+    assert '"session"' not in prompt
+    assert '"requestId"' not in prompt
+    assert '"fast"' not in prompt
+    assert '"uiContext"' not in prompt
     assert "ZmFrZS1wcmV2aWV3" not in prompt
-    assert '"text":"Do a full edit so this becomes a polished gallery-ready landscape photo."' in prompt
+    assert "Latest user message: Do a full edit so this becomes a polished gallery-ready landscape photo." in prompt
 
 
 def test_turn_input_sends_preview_as_separate_image_item() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    preview_local_paths: list[str] = []
 
-    items = bridge._build_turn_input(_sample_request())  # type: ignore[attr-defined]
+    items = bridge._build_turn_input(_sample_request(), preview_local_paths)  # type: ignore[attr-defined]
 
-    assert items[0]["type"] == "text"
-    assert items[1]["type"] == "image"
-    assert items[1]["url"] == "data:image/jpeg;base64,ZmFrZS1wcmV2aWV3"
+    try:
+        assert items[0]["type"] == "text"
+        assert items[1]["type"] == "localImage"
+        assert Path(items[1]["path"]).exists()
+        assert items[1]["path"] in preview_local_paths
+    finally:
+        bridge._cleanup_local_image_paths(preview_local_paths)  # type: ignore[attr-defined]
 
 
 def test_turn_input_omits_image_item_without_preview() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
     request.imageSnapshot.preview = None
+    preview_local_paths: list[str] = []
 
-    items = bridge._build_turn_input(request)  # type: ignore[attr-defined]
+    with pytest.raises(CodexAppServerError) as exc:
+        bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
 
-    assert len(items) == 1
-    assert items[0]["type"] == "text"
+    assert exc.value.code == "codex_preview_unavailable"
+    assert preview_local_paths == []
+
+
+def test_turn_input_fails_when_preview_base64_is_invalid() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.imageSnapshot.preview.base64Data = "not-valid-base64!!!"  # type: ignore[union-attr]
+    preview_local_paths: list[str] = []
+
+    with pytest.raises(CodexAppServerError) as exc:
+        bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
+
+    assert exc.value.code == "codex_preview_decode_failed"
+    assert preview_local_paths == []
 
 
 def test_cancel_request_marks_matching_active_turn_cancelled() -> None:
@@ -339,3 +401,107 @@ def test_cancel_request_records_unknown_request_ids_for_future_preflight() -> No
         assert active_request.cancel_event.is_set() is True
     finally:
         bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
+
+
+def test_get_or_create_thread_reuses_cached_thread_without_rpc() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    bridge._conversation_threads["conv-1"] = "thread-existing"  # type: ignore[attr-defined]
+
+    def _unexpected_send_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("thread/start should not be called for cached conversations")
+
+    bridge._send_request_locked = _unexpected_send_request  # type: ignore[method-assign,attr-defined]
+
+    thread_id = bridge._get_or_create_thread_locked(  # type: ignore[attr-defined]
+        "conv-1", _DEFAULT_MODEL, time.monotonic() + 5.0
+    )
+
+    assert thread_id == "thread-existing"
+
+
+def test_token_usage_notification_updates_turn_state() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    turn_state = {
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+        "chunks": [],
+        "final_message": None,
+        "turn_error": None,
+        "completed": False,
+        "token_usage_last": None,
+        "token_usage_total": None,
+    }
+
+    bridge._handle_message_locked(  # type: ignore[attr-defined]
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "tokenUsage": {
+                    "last": {
+                        "cachedInputTokens": 100,
+                        "inputTokens": 200,
+                        "outputTokens": 50,
+                        "reasoningOutputTokens": 25,
+                        "totalTokens": 275,
+                    },
+                    "total": {
+                        "cachedInputTokens": 100,
+                        "inputTokens": 200,
+                        "outputTokens": 50,
+                        "reasoningOutputTokens": 25,
+                        "totalTokens": 275,
+                    },
+                },
+            },
+        },
+        turn_state,
+    )
+
+    assert turn_state["token_usage_last"]["inputTokens"] == 200
+    assert turn_state["token_usage_total"]["totalTokens"] == 275
+
+
+def test_token_usage_notification_ignores_other_turns() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    turn_state = {
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+        "chunks": [],
+        "final_message": None,
+        "turn_error": None,
+        "completed": False,
+        "token_usage_last": None,
+        "token_usage_total": None,
+    }
+
+    bridge._handle_message_locked(  # type: ignore[attr-defined]
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "different-turn",
+                "tokenUsage": {
+                    "last": {
+                        "cachedInputTokens": 1,
+                        "inputTokens": 1,
+                        "outputTokens": 1,
+                        "reasoningOutputTokens": 1,
+                        "totalTokens": 1,
+                    },
+                    "total": {
+                        "cachedInputTokens": 1,
+                        "inputTokens": 1,
+                        "outputTokens": 1,
+                        "reasoningOutputTokens": 1,
+                        "totalTokens": 1,
+                    },
+                },
+            },
+        },
+        turn_state,
+    )
+
+    assert turn_state["token_usage_last"] is None
+    assert turn_state["token_usage_total"] is None

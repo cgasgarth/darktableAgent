@@ -115,6 +115,7 @@ typedef struct dt_agent_chat_submission_t
   dt_imgid_t image_id;
   gboolean autorun;
   gboolean refinement_enabled;
+  gboolean fast_mode_enabled;
   guint refinement_pass_index;
   guint refinement_max_passes;
   double exposure_before;
@@ -134,6 +135,7 @@ typedef struct dt_agent_chat_session_t
   guint last_refinement_max_passes;
   gboolean last_continue_refining;
   gboolean last_refinement_enabled;
+  gboolean last_fast_mode_enabled;
 } dt_agent_chat_session_t;
 
 typedef struct dt_agent_chat_continuation_t
@@ -143,6 +145,7 @@ typedef struct dt_agent_chat_continuation_t
   gchar *conversation_id;
   gchar *image_session_id;
   gboolean autorun;
+  gboolean fast_mode_enabled;
   guint next_pass_index;
   guint max_passes;
 } dt_agent_chat_continuation_t;
@@ -156,6 +159,10 @@ static void _agent_chat_update_sensitivity(dt_develop_t *dev);
 static void _agent_chat_set_status(dt_develop_t *dev, const char *status);
 static void _agent_chat_set_error(dt_develop_t *dev, const char *error);
 static void _agent_chat_set_loading(dt_develop_t *dev, gboolean is_loading);
+static guint _agent_chat_max_refinement_passes(const dt_develop_t *dev);
+static void _agent_chat_multi_turn_toggled(GtkToggleButton *button, gpointer user_data);
+static void _agent_chat_max_turns_changed(GtkSpinButton *spin, gpointer user_data);
+static void _agent_chat_fast_mode_toggled(GtkToggleButton *button, gpointer user_data);
 static void _agent_chat_cancel_active_request(dt_develop_t *dev,
                                               const char *status_text,
                                               const char *stop_reason);
@@ -1851,6 +1858,7 @@ static dt_agent_chat_session_t *_agent_chat_lookup_or_create_session(dt_develop_
   session->last_refinement_enabled = dev->agent_chat.multi_turn_enabled;
   session->last_refinement_pass_index = 1;
   session->last_refinement_max_passes = dev->agent_chat.max_refinement_passes;
+  session->last_fast_mode_enabled = dev->agent_chat.fast_mode_enabled;
 
   gint64 *owned_key = g_malloc(sizeof(*owned_key));
   *owned_key = image_id;
@@ -1900,6 +1908,8 @@ static void _agent_chat_sync_current_session(dt_develop_t *dev)
   session->error_text = g_strdup(gtk_label_get_text(GTK_LABEL(dev->agent_chat.error_label)));
   session->is_loading = dev->agent_chat.is_loading;
   session->last_refinement_enabled = dev->agent_chat.multi_turn_enabled;
+  session->last_refinement_max_passes = _agent_chat_max_refinement_passes(dev);
+  session->last_fast_mode_enabled = dev->agent_chat.fast_mode_enabled;
 }
 
 static void _agent_chat_load_session(dt_develop_t *dev,
@@ -1928,12 +1938,41 @@ static void _agent_chat_load_session(dt_develop_t *dev,
   else
     gtk_spinner_stop(GTK_SPINNER(dev->agent_chat.spinner));
 
+  dev->agent_chat.multi_turn_enabled = session->last_refinement_enabled;
+  dev->agent_chat.max_refinement_passes
+    = CLAMP(MAX(1u, session->last_refinement_max_passes),
+            1u,
+            DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS);
+  dev->agent_chat.fast_mode_enabled = session->last_fast_mode_enabled;
+
   if(dev->agent_chat.multi_turn_check_button)
   {
-    dev->agent_chat.multi_turn_enabled = session->last_refinement_enabled;
+    g_signal_handlers_block_by_func(dev->agent_chat.multi_turn_check_button,
+                                    G_CALLBACK(_agent_chat_multi_turn_toggled), dev);
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.multi_turn_check_button),
                                  dev->agent_chat.multi_turn_enabled);
+    g_signal_handlers_unblock_by_func(dev->agent_chat.multi_turn_check_button,
+                                      G_CALLBACK(_agent_chat_multi_turn_toggled), dev);
   }
+  if(dev->agent_chat.multi_turn_turn_limit_spin)
+  {
+    g_signal_handlers_block_by_func(dev->agent_chat.multi_turn_turn_limit_spin,
+                                    G_CALLBACK(_agent_chat_max_turns_changed), dev);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin),
+                              (gdouble)dev->agent_chat.max_refinement_passes);
+    g_signal_handlers_unblock_by_func(dev->agent_chat.multi_turn_turn_limit_spin,
+                                      G_CALLBACK(_agent_chat_max_turns_changed), dev);
+  }
+  if(dev->agent_chat.fast_mode_check_button)
+  {
+    g_signal_handlers_block_by_func(dev->agent_chat.fast_mode_check_button,
+                                    G_CALLBACK(_agent_chat_fast_mode_toggled), dev);
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.fast_mode_check_button),
+                                 dev->agent_chat.fast_mode_enabled);
+    g_signal_handlers_unblock_by_func(dev->agent_chat.fast_mode_check_button,
+                                      G_CALLBACK(_agent_chat_fast_mode_toggled), dev);
+  }
+  _agent_chat_update_sensitivity(dev);
 }
 
 static void _agent_chat_switch_to_image_session(dt_develop_t *dev,
@@ -1961,9 +2000,11 @@ static void _agent_chat_switch_to_image_session(dt_develop_t *dev,
     g_clear_pointer(&session->error_text, g_free);
     g_clear_pointer(&session->refinement_goal_text, g_free);
     g_clear_pointer(&session->refinement_stop_reason, g_free);
-    session->last_refinement_pass_index = 0;
-    session->last_refinement_max_passes = 0;
+    session->last_refinement_pass_index = 1;
+    session->last_refinement_max_passes = _agent_chat_max_refinement_passes(dev);
     session->last_continue_refining = FALSE;
+    session->last_refinement_enabled = dev->agent_chat.multi_turn_enabled;
+    session->last_fast_mode_enabled = dev->agent_chat.fast_mode_enabled;
   }
 
   dev->agent_chat.current_image_id = image_id;
@@ -2045,6 +2086,8 @@ static void _agent_chat_write_test_report(dt_develop_t *dev,
                            (gint)MAX(1u, session->last_refinement_pass_index));
     g_key_file_set_integer(report, "result", "refinement_max_turns",
                            (gint)MAX(1u, session->last_refinement_max_passes));
+    g_key_file_set_integer(report, "result", "fast_mode_enabled",
+                           session->last_fast_mode_enabled ? 1 : 0);
     if(session->refinement_stop_reason && session->refinement_stop_reason[0] != '\0')
       g_key_file_set_string(report, "result", "refinement_stop_reason",
                             session->refinement_stop_reason);
@@ -2304,6 +2347,11 @@ static void _agent_chat_update_sensitivity(dt_develop_t *dev)
     gtk_widget_set_sensitive(dev->agent_chat.new_chat_button, sensitive);
   if(dev->agent_chat.multi_turn_check_button)
     gtk_widget_set_sensitive(dev->agent_chat.multi_turn_check_button, sensitive);
+  if(dev->agent_chat.multi_turn_turn_limit_spin)
+    gtk_widget_set_sensitive(dev->agent_chat.multi_turn_turn_limit_spin,
+                             sensitive && dev->agent_chat.multi_turn_enabled);
+  if(dev->agent_chat.fast_mode_check_button)
+    gtk_widget_set_sensitive(dev->agent_chat.fast_mode_check_button, sensitive);
 }
 
 static dt_agent_refinement_mode_t _agent_chat_refinement_mode_for_submit(const dt_develop_t *dev)
@@ -2339,6 +2387,27 @@ static void _agent_chat_multi_turn_toggled(GtkToggleButton *button, gpointer use
                    dev->agent_chat.multi_turn_enabled);
   if(!dev->agent_chat.multi_turn_enabled)
     _agent_chat_cancel_pending_refinement(dev);
+  _agent_chat_update_sensitivity(dev);
+  _agent_chat_sync_current_session(dev);
+}
+
+static void _agent_chat_max_turns_changed(GtkSpinButton *spin, gpointer user_data)
+{
+  dt_develop_t *dev = user_data;
+  const gint value = gtk_spin_button_get_value_as_int(spin);
+  dev->agent_chat.max_refinement_passes
+    = CLAMP((guint)MAX(value, 1), 1u, DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS);
+  dt_conf_set_int("plugins/darkroom/agent_chat/multi_turn_max_passes",
+                  (gint)dev->agent_chat.max_refinement_passes);
+  _agent_chat_sync_current_session(dev);
+}
+
+static void _agent_chat_fast_mode_toggled(GtkToggleButton *button, gpointer user_data)
+{
+  dt_develop_t *dev = user_data;
+  dev->agent_chat.fast_mode_enabled = gtk_toggle_button_get_active(button);
+  dt_conf_set_bool("plugins/darkroom/agent_chat/fast_mode_enabled",
+                   dev->agent_chat.fast_mode_enabled);
   _agent_chat_sync_current_session(dev);
 }
 
@@ -2488,6 +2557,7 @@ static void _agent_chat_fill_ui_context(dt_agent_chat_request_t *request)
 static gboolean _agent_chat_build_request(dt_develop_t *dev,
                                           const char *message_text,
                                           const char *goal_text,
+                                          const gboolean fast_mode_enabled,
                                           const dt_agent_refinement_mode_t refinement_mode,
                                           const guint refinement_pass_index,
                                           const guint refinement_max_passes,
@@ -2510,6 +2580,7 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
   request->refinement_enabled = refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI;
   request->refinement_pass_index = refinement_pass_index;
   request->refinement_max_passes = refinement_max_passes;
+  request->fast_mode = fast_mode_enabled;
   request->refinement_automatic_continuation = automatic_continuation;
   request->refinement_goal_text = g_strdup(goal_text && goal_text[0] ? goal_text : message_text);
   _agent_chat_fill_ui_context(request);
@@ -2688,6 +2759,7 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
   if(session)
   {
     session->is_loading = FALSE;
+    session->last_fast_mode_enabled = submission ? submission->fast_mode_enabled : FALSE;
     if(result && result->has_response)
     {
       session->last_refinement_pass_index = result->response.refinement_pass_index;
@@ -2901,6 +2973,7 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
                                             const char *goal_text,
                                             const gboolean autorun,
                                             const gboolean append_user_message,
+                                            const gboolean fast_mode_enabled,
                                             const dt_agent_refinement_mode_t refinement_mode,
                                             const guint refinement_pass_index,
                                             const guint refinement_max_passes,
@@ -2939,6 +3012,7 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
     session->last_refinement_enabled = refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI;
     session->last_refinement_pass_index = refinement_pass_index;
     session->last_refinement_max_passes = refinement_max_passes;
+    session->last_fast_mode_enabled = fast_mode_enabled;
     session->last_continue_refining = automatic_continuation;
   }
 
@@ -2946,6 +3020,7 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
   GError *error = NULL;
   if(!_agent_chat_build_request(dev, message,
                                 goal_text,
+                                fast_mode_enabled,
                                 refinement_mode,
                                 refinement_pass_index,
                                 refinement_max_passes,
@@ -2973,6 +3048,7 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
   submission->image_id = request.ui_context.image_id;
   submission->autorun = autorun;
   submission->refinement_enabled = refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI;
+  submission->fast_mode_enabled = fast_mode_enabled;
   submission->refinement_pass_index = refinement_pass_index;
   submission->refinement_max_passes = refinement_max_passes;
   submission->exposure_before = _agent_chat_read_current_exposure();
@@ -3037,6 +3113,7 @@ static gboolean _agent_chat_continue_refinement(gpointer user_data)
                               continuation->goal_text,
                               continuation->autorun,
                               FALSE,
+                              continuation->fast_mode_enabled,
                               DT_AGENT_REFINEMENT_MODE_MULTI,
                               continuation->next_pass_index,
                               continuation->max_passes,
@@ -3068,6 +3145,7 @@ static void _agent_chat_schedule_refinement_continue(dt_develop_t *dev,
   continuation->conversation_id = g_strdup(submission->conversation_id);
   continuation->image_session_id = g_strdup(submission->image_session_id);
   continuation->autorun = submission->autorun;
+  continuation->fast_mode_enabled = submission->fast_mode_enabled;
   continuation->next_pass_index = submission->refinement_pass_index + 1;
   continuation->max_passes = submission->refinement_max_passes;
   dev->agent_chat.continuation_source_id = g_timeout_add(DT_AGENT_CHAT_REFINEMENT_DELAY_MS,
@@ -3077,6 +3155,7 @@ static void _agent_chat_schedule_refinement_continue(dt_develop_t *dev,
 
 static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboolean autorun)
 {
+  const gboolean fast_mode_enabled = dev && dev->agent_chat.fast_mode_enabled;
   const dt_agent_refinement_mode_t refinement_mode = _agent_chat_refinement_mode_for_submit(dev);
   const guint refinement_max_passes
     = refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI
@@ -3084,6 +3163,7 @@ static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboo
         : 1u;
 
   _agent_chat_submit_internal(dev, prompt, prompt, autorun, TRUE,
+                              fast_mode_enabled,
                               refinement_mode, 1u, refinement_max_passes, FALSE);
 }
 
@@ -4124,12 +4204,38 @@ void gui_init(dt_view_t *self)
     dev->agent_chat.multi_turn_check_button
       = gtk_check_button_new_with_label(_("multi-turn refinement"));
     gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_check_button,
-                                _("let the agent apply edits, refresh the preview, and continue up to 10 passes"));
+                                _("let the agent apply edits, refresh the preview, and continue for multiple passes"));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.multi_turn_check_button),
                                  dev->agent_chat.multi_turn_enabled);
     g_signal_connect(G_OBJECT(dev->agent_chat.multi_turn_check_button), "toggled",
                      G_CALLBACK(_agent_chat_multi_turn_toggled), dev);
     gtk_box_pack_start(GTK_BOX(options_row), dev->agent_chat.multi_turn_check_button,
+                       FALSE, FALSE, 0);
+
+    GtkWidget *turn_limit_label = gtk_label_new(_("turns"));
+    gtk_widget_set_halign(turn_limit_label, GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(options_row), turn_limit_label, FALSE, FALSE, 0);
+
+    dev->agent_chat.multi_turn_turn_limit_spin
+      = gtk_spin_button_new_with_range(1.0, DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS, 1.0);
+    gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_turn_limit_spin,
+                                _("maximum refinement passes for multi-turn mode"));
+    gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin), TRUE);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin),
+                              (gdouble)_agent_chat_max_refinement_passes(dev));
+    g_signal_connect(G_OBJECT(dev->agent_chat.multi_turn_turn_limit_spin), "value-changed",
+                     G_CALLBACK(_agent_chat_max_turns_changed), dev);
+    gtk_box_pack_start(GTK_BOX(options_row), dev->agent_chat.multi_turn_turn_limit_spin,
+                       FALSE, FALSE, 0);
+
+    dev->agent_chat.fast_mode_check_button = gtk_check_button_new_with_label(_("fast mode"));
+    gtk_widget_set_tooltip_text(dev->agent_chat.fast_mode_check_button,
+                                _("use the faster codex spark model for chat planning"));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.fast_mode_check_button),
+                                 dev->agent_chat.fast_mode_enabled);
+    g_signal_connect(G_OBJECT(dev->agent_chat.fast_mode_check_button), "toggled",
+                     G_CALLBACK(_agent_chat_fast_mode_toggled), dev);
+    gtk_box_pack_start(GTK_BOX(options_row), dev->agent_chat.fast_mode_check_button,
                        FALSE, FALSE, 0);
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -4831,9 +4937,18 @@ void enter(dt_view_t *self)
   dev->agent_chat.exit_after_autorun
     = _agent_chat_env_enabled(DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV)
       || _agent_chat_env_enabled(DT_AGENT_CHAT_EXIT_AFTER_AUTORUN_ENV);
-  dev->agent_chat.max_refinement_passes = DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS;
+  const gint configured_max_refinement_passes
+    = dt_conf_get_int("plugins/darkroom/agent_chat/multi_turn_max_passes");
+  dev->agent_chat.max_refinement_passes
+    = configured_max_refinement_passes > 0
+        ? CLAMP((guint)configured_max_refinement_passes,
+                1u,
+                DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS)
+        : DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS;
   dev->agent_chat.multi_turn_enabled
     = dt_conf_get_bool("plugins/darkroom/agent_chat/multi_turn_enabled");
+  dev->agent_chat.fast_mode_enabled
+    = dt_conf_get_bool("plugins/darkroom/agent_chat/fast_mode_enabled");
   if(_agent_chat_env_enabled(DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV))
     dev->agent_chat.multi_turn_enabled
       = g_strcmp0(g_getenv(DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV), "0") != 0;
@@ -4845,6 +4960,12 @@ void enter(dt_view_t *self)
   if(dev->agent_chat.multi_turn_check_button)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.multi_turn_check_button),
                                  dev->agent_chat.multi_turn_enabled);
+  if(dev->agent_chat.multi_turn_turn_limit_spin)
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin),
+                              (gdouble)_agent_chat_max_refinement_passes(dev));
+  if(dev->agent_chat.fast_mode_check_button)
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.fast_mode_check_button),
+                                 dev->agent_chat.fast_mode_enabled);
 
   _agent_chat_switch_to_image_session(dev, _agent_chat_current_image_id(), FALSE);
   _agent_chat_update_sensitivity(dev);

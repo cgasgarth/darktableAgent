@@ -200,6 +200,7 @@ def _sample_request_payload() -> dict:
             "turnId": "turn-1",
         },
         "message": {"role": "user", "text": "Make it brighter"},
+        "fast": False,
         "refinement": {
             "mode": "single-turn",
             "enabled": False,

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import os
 import select
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -30,10 +33,14 @@ _DEFAULT_COMMAND = [
     "--listen",
     "stdio://",
 ]
-_DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS", "90"))
+_DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS", "200"))
 _DEFAULT_PERSONALITY = os.environ.get("DARKTABLE_AGENT_CODEX_PERSONALITY", "pragmatic")
 _DEFAULT_REASONING_EFFORT = os.environ.get("DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "high")
 _DEFAULT_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_MODEL", "gpt-5.3-codex")
+_FAST_MODE_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_FAST_MODE_MODEL", "gpt-5.3-codex")
+_FAST_MODE_REASONING_EFFORT = os.environ.get(
+    "DARKTABLE_AGENT_CODEX_FAST_MODE_REASONING_EFFORT", "low"
+)
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
 
@@ -45,22 +52,21 @@ Return exactly one JSON object matching the output schema.
 You are given:
 - the latest user message
 - refinement state describing whether this is a single-turn request or an automatic continuation pass
-- a capability manifest describing writable darktable controls
-- a current image snapshot with metadata, history, editable settings, and optionally a 1k rendered JPEG preview and histogram
+- a compact image snapshot with edit-relevant metadata, editable setting targets, and optionally a 1k rendered JPEG preview and histogram
 - when available, the 1k preview is attached as a separate image input and the text payload only includes preview metadata
 
 Rules:
-- Only plan operations that are explicitly supported by the capability manifest and editable settings snapshot.
+- Only plan operations that are explicitly supported by the editable setting targets snapshot.
 - Never invent capability IDs, setting IDs, or action paths.
 - Use zero operations only when the request is unsupported, unsafe, or impossible with the supplied capabilities.
 - Keep assistantText brief and user-facing.
 - Every operation must be immediately executable by darktable.
 - Use the supplied preview and histogram when they are present.
 - Use the attached image input directly when it is present; do not expect raw preview bytes inside the text payload.
-- Prefer the specific editable settings and current values supplied in the image snapshot over generic photography assumptions.
+- Prefer the supplied editable setting targets and bounds over generic photography assumptions.
 - Use moduleId/moduleLabel to understand which controls belong to the same darktable module.
-- Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or current settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
-- When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the current settings.
+- Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or editable settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
+- When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the available controls.
 - Favor restrained, high-confidence edits over extreme changes. Preserve highlight detail, avoid crushed shadows, and avoid oversaturation unless the user explicitly asks for a stylized look.
 - Prefer existing supported controls for global tone, color, detail, and presence before giving up on the request.
 - When moduleId `colorequal`, `colorbalancergb`, or `primaries` is present, treat those controls as preferred advanced color tools for hue, chroma, brilliance, vibrance, contrast, color separation, and primary remapping work.
@@ -129,6 +135,7 @@ class CodexAppServerBridge:
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads: dict[str, str] = {}
+        self._conversation_turn_counts: dict[str, int] = {}
         self._active_requests: dict[str, _ActiveRequestState] = {}
         self._cancelled_request_ids: set[str] = set()
 
@@ -168,13 +175,26 @@ class CodexAppServerBridge:
         deadline = time.monotonic() + self._timeout_seconds
         active_request = self._register_request(request)
         try:
+            model = self._model_for_request(request)
+            effort = self._effort_for_request(request)
             with self._lock:
                 self._raise_if_cancelled_locked(active_request)
                 self._ensure_initialized_locked(deadline)
                 self._raise_if_cancelled_locked(active_request)
-                thread_id = self._get_or_create_thread_locked(request.session.conversationId, deadline)
+                thread_reused = request.session.conversationId in self._conversation_threads
+                thread_id = self._get_or_create_thread_locked(
+                    request.session.conversationId, model, deadline
+                )
                 active_request.thread_id = thread_id
-                return self._run_turn_locked(thread_id, request, deadline, active_request)
+                return self._run_turn_locked(
+                    thread_id,
+                    request,
+                    model,
+                    effort,
+                    deadline,
+                    active_request,
+                    thread_reused,
+                )
         finally:
             self._unregister_request(request.requestId)
 
@@ -274,9 +294,32 @@ class CodexAppServerBridge:
         self._send_notification_locked("initialized")
         self._initialized = True
 
-    def _get_or_create_thread_locked(self, conversation_id: str, deadline: float) -> str:
+    @staticmethod
+    def _model_for_request(request: RequestEnvelope) -> str | None:
+        if request.fast and _FAST_MODE_MODEL:
+            return _FAST_MODE_MODEL
+        return _DEFAULT_MODEL
+
+    @staticmethod
+    def _effort_for_request(request: RequestEnvelope) -> str:
+        if request.fast:
+            return _FAST_MODE_REASONING_EFFORT
+        return _DEFAULT_REASONING_EFFORT
+
+    def _get_or_create_thread_locked(
+        self, conversation_id: str, model: str | None, deadline: float
+    ) -> str:
         existing = self._conversation_threads.get(conversation_id)
         if existing:
+            logger.info(
+                "codex_thread_reused",
+                extra={
+                    "structured": {
+                        "conversationId": conversation_id,
+                        "threadId": existing,
+                    }
+                },
+            )
             return existing
 
         params: dict[str, Any] = {
@@ -286,8 +329,8 @@ class CodexAppServerBridge:
             "personality": _DEFAULT_PERSONALITY,
             "developerInstructions": _THREAD_DEVELOPER_INSTRUCTIONS,
         }
-        if _DEFAULT_MODEL:
-            params["model"] = _DEFAULT_MODEL
+        if model:
+            params["model"] = model
 
         response = self._send_request_locked("thread/start", params, deadline, None)
         try:
@@ -298,125 +341,248 @@ class CodexAppServerBridge:
             ) from exc
 
         self._conversation_threads[conversation_id] = thread_id
+        logger.info(
+            "codex_thread_started",
+            extra={
+                "structured": {
+                    "conversationId": conversation_id,
+                    "threadId": thread_id,
+                }
+            },
+        )
         return thread_id
 
     def _run_turn_locked(
         self,
         thread_id: str,
         request: RequestEnvelope,
+        model: str | None,
+        effort: str,
         deadline: float,
         active_request: _ActiveRequestState,
+        thread_reused: bool,
     ) -> CodexTurnResult:
-        turn_request = {
-            "threadId": thread_id,
-            "input": self._build_turn_input(request),
-            "outputSchema": self._build_output_schema(),
-            "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
-            "personality": _DEFAULT_PERSONALITY,
-            "effort": _DEFAULT_REASONING_EFFORT,
-        }
-        if _DEFAULT_MODEL:
-            turn_request["model"] = _DEFAULT_MODEL
+        started_at = time.monotonic()
+        preview_local_paths: list[str] = []
+        turn_input = self._build_turn_input(request, preview_local_paths)
+        self._conversation_turn_counts[active_request.conversation_id] = (
+            self._conversation_turn_counts.get(active_request.conversation_id, 0) + 1
+        )
+        turn_index = self._conversation_turn_counts[active_request.conversation_id]
+        prompt_text_chars = 0
+        image_input_chars = 0
+        for item in turn_input:
+            if item.get("type") == "text":
+                prompt_text_chars += len(str(item.get("text", "")))
+            elif item.get("type") == "image":
+                image_input_chars += len(str(item.get("url", "")))
+            elif item.get("type") == "localImage":
+                image_input_chars += len(str(item.get("path", "")))
 
-        response = self._send_request_locked("turn/start", turn_request, deadline, active_request)
         try:
-            turn_id = response["result"]["turn"]["id"]
-        except KeyError as exc:
+            turn_request = {
+                "threadId": thread_id,
+                "input": turn_input,
+                "outputSchema": self._build_output_schema(),
+                "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
+                "personality": _DEFAULT_PERSONALITY,
+                "effort": effort,
+            }
+            if model:
+                turn_request["model"] = model
+
+            response = self._send_request_locked("turn/start", turn_request, deadline, active_request)
+            try:
+                turn_id = response["result"]["turn"]["id"]
+            except KeyError as exc:
+                raise CodexAppServerError(
+                    "codex_turn_start_failed", "Codex did not return a turn id"
+                ) from exc
+            active_request.codex_turn_id = turn_id
+
+            state = {
+                "thread_id": thread_id,
+                "turn_id": turn_id,
+                "chunks": [],
+                "final_message": None,
+                "turn_error": None,
+                "completed": False,
+                "token_usage_last": None,
+                "token_usage_total": None,
+            }
+
+            while not state["completed"]:
+                self._raise_if_cancelled_locked(active_request)
+                message = self._read_message_locked(deadline, active_request)
+                self._handle_message_locked(message, state)
+
+            if state["turn_error"]:
+                raise CodexAppServerError("codex_turn_failed", state["turn_error"])
+
+            raw_message = state["final_message"] or "".join(state["chunks"]).strip()
+            if not raw_message:
+                raise CodexAppServerError(
+                    "codex_empty_response", "Codex completed the turn without returning a plan"
+                )
+
+            try:
+                plan = AgentPlan.model_validate_json(raw_message)
+            except Exception as exc:
+                raise CodexAppServerError(
+                    "codex_invalid_response",
+                    f"Codex returned invalid plan JSON: {raw_message}",
+                ) from exc
+
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            logger.info(
+                "codex_turn_completed",
+                extra={
+                    "structured": {
+                        "requestId": active_request.request_id,
+                        "conversationId": active_request.conversation_id,
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "threadReused": thread_reused,
+                        "turnIndexInConversation": turn_index,
+                        "durationMs": duration_ms,
+                        "promptTextChars": prompt_text_chars,
+                        "imageInputChars": image_input_chars,
+                        "tokenUsageLast": state["token_usage_last"],
+                        "tokenUsageTotal": state["token_usage_total"],
+                    }
+                },
+            )
+
+            return CodexTurnResult(
+                plan=plan,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                raw_message=raw_message,
+            )
+        finally:
+            self._cleanup_local_image_paths(preview_local_paths)
+
+    @staticmethod
+    def _preview_suffix_for_mime(mime_type: str | None) -> str:
+        normalized = (mime_type or "").lower()
+        if normalized in {"image/jpeg", "image/jpg"}:
+            return ".jpg"
+        if normalized == "image/png":
+            return ".png"
+        if normalized == "image/webp":
+            return ".webp"
+        if normalized == "image/avif":
+            return ".avif"
+        return ".img"
+
+    def _materialize_preview_file(self, request: RequestEnvelope) -> str:
+        preview = request.imageSnapshot.preview
+        if preview is None:
             raise CodexAppServerError(
-                "codex_turn_start_failed", "Codex did not return a turn id"
-            ) from exc
-        active_request.codex_turn_id = turn_id
-
-        state = {
-            "thread_id": thread_id,
-            "turn_id": turn_id,
-            "chunks": [],
-            "final_message": None,
-            "turn_error": None,
-            "completed": False,
-        }
-
-        while not state["completed"]:
-            self._raise_if_cancelled_locked(active_request)
-            message = self._read_message_locked(deadline, active_request)
-            self._handle_message_locked(message, state)
-
-        if state["turn_error"]:
-            raise CodexAppServerError("codex_turn_failed", state["turn_error"])
-
-        raw_message = state["final_message"] or "".join(state["chunks"]).strip()
-        if not raw_message:
-            raise CodexAppServerError(
-                "codex_empty_response", "Codex completed the turn without returning a plan"
+                "codex_preview_unavailable",
+                "Image preview is required for agent planning",
+                status_code=422,
             )
 
         try:
-            plan = AgentPlan.model_validate_json(raw_message)
-        except Exception as exc:
+            image_bytes = base64.b64decode(preview.base64Data, validate=True)
+        except (binascii.Error, ValueError) as exc:
             raise CodexAppServerError(
-                "codex_invalid_response",
-                f"Codex returned invalid plan JSON: {raw_message}",
+                "codex_preview_decode_failed",
+                "Image preview could not be decoded for agent planning",
+                status_code=422,
             ) from exc
 
-        return CodexTurnResult(
-            plan=plan,
-            thread_id=thread_id,
-            turn_id=turn_id,
-            raw_message=raw_message,
-        )
+        suffix = self._preview_suffix_for_mime(preview.mimeType)
+        try:
+            file_descriptor, file_path = tempfile.mkstemp(
+                prefix="darktable-agent-preview-",
+                suffix=suffix,
+            )
+            with os.fdopen(file_descriptor, "wb") as preview_file:
+                preview_file.write(image_bytes)
+        except OSError as exc:
+            raise CodexAppServerError(
+                "codex_preview_materialize_failed",
+                "Image preview could not be prepared for agent planning",
+                status_code=503,
+            ) from exc
+        return file_path
 
     @staticmethod
-    def _build_preview_data_url(request: RequestEnvelope) -> str | None:
-        preview = request.imageSnapshot.preview
-        if preview is None:
-            return None
-        return f"data:{preview.mimeType};base64,{preview.base64Data}"
+    def _cleanup_local_image_paths(paths: list[str]) -> None:
+        for path in paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning(
+                    "codex_preview_cleanup_failed",
+                    extra={"structured": {"path": path, "error": str(exc)}},
+                )
 
     @staticmethod
     def _build_prompt_payload(request: RequestEnvelope) -> dict[str, Any]:
-        payload = request.model_dump(mode="json")
-        preview = payload.get("imageSnapshot", {}).get("preview")
-        if isinstance(preview, dict) and "base64Data" in preview:
-            preview["base64Data"] = None
-        return payload
-
-    @staticmethod
-    def _build_module_summary(request: RequestEnvelope) -> str:
-        module_counts: dict[str, int] = {}
+        compact_settings: list[dict[str, Any]] = []
         for setting in request.imageSnapshot.editableSettings:
-            module_key = f"{setting.moduleId} ({setting.moduleLabel})"
-            module_counts[module_key] = module_counts.get(module_key, 0) + 1
-        return ", ".join(
-            f"{module_name}: {count}" for module_name, count in sorted(module_counts.items())
-        )
+            compact_setting: dict[str, Any] = {
+                "moduleId": setting.moduleId,
+                "moduleLabel": setting.moduleLabel,
+                "settingId": setting.settingId,
+                "capabilityId": setting.capabilityId,
+                "kind": setting.kind,
+                "actionPath": setting.actionPath,
+                "supportedModes": setting.supportedModes,
+            }
+            if setting.kind == "set-float":
+                compact_setting["minNumber"] = setting.minNumber
+                compact_setting["maxNumber"] = setting.maxNumber
+                compact_setting["stepNumber"] = setting.stepNumber
+            elif setting.kind == "set-choice":
+                compact_setting["choices"] = (
+                    [choice.model_dump(mode="json") for choice in setting.choices]
+                    if setting.choices
+                    else []
+                )
+            compact_settings.append(compact_setting)
 
-    @staticmethod
-    def _build_histogram_summary(request: RequestEnvelope) -> str:
-        histogram = request.imageSnapshot.histogram
-        if histogram is None:
-            return "unavailable"
+        metadata = request.imageSnapshot.metadata
+        compact_payload: dict[str, Any] = {
+            "imageSnapshot": {
+                "imageRevisionId": request.imageSnapshot.imageRevisionId,
+                "metadata": {
+                    "imageId": metadata.imageId,
+                    "imageName": metadata.imageName,
+                    "width": metadata.width,
+                    "height": metadata.height,
+                },
+                "editableSettings": compact_settings,
+                "histogram": (
+                    request.imageSnapshot.histogram.model_dump(mode="json")
+                    if request.imageSnapshot.histogram
+                    else None
+                ),
+                "preview": (
+                    {
+                        "previewId": request.imageSnapshot.preview.previewId,
+                        "mimeType": request.imageSnapshot.preview.mimeType,
+                        "width": request.imageSnapshot.preview.width,
+                        "height": request.imageSnapshot.preview.height,
+                        "base64Data": None,
+                    }
+                    if request.imageSnapshot.preview
+                    else None
+                ),
+            }
+        }
+        return compact_payload
 
-        luma = histogram.channels.get("luma")
-        if luma is None or not luma.bins:
-            return "available without luma channel"
-
-        total = sum(luma.bins)
-        if total <= 0:
-            return "empty"
-
-        bin_count = histogram.binCount
-        shadow_end = max(1, bin_count // 4)
-        highlight_start = max(shadow_end, (3 * bin_count) // 4)
-
-        shadows = sum(luma.bins[:shadow_end]) / total
-        highlights = sum(luma.bins[highlight_start:]) / total
-        midtones = max(0.0, 1.0 - shadows - highlights)
-
-        return (
-            f"shadows={shadows:.2f}, midtones={midtones:.2f}, highlights={highlights:.2f}"
-        )
-
-    def _build_turn_input(self, request: RequestEnvelope) -> list[dict[str, Any]]:
+    def _build_turn_input(
+        self,
+        request: RequestEnvelope,
+        preview_local_paths: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = [
             {
                 "type": "text",
@@ -425,9 +591,10 @@ class CodexAppServerBridge:
             }
         ]
 
-        preview_url = self._build_preview_data_url(request)
-        if preview_url:
-            items.append({"type": "image", "url": preview_url})
+        preview_path = self._materialize_preview_file(request)
+        items.append({"type": "localImage", "path": preview_path})
+        if preview_local_paths is not None:
+            preview_local_paths.append(preview_path)
 
         return items
 
@@ -439,8 +606,6 @@ class CodexAppServerBridge:
             if preview is not None
             else "unavailable"
         )
-        module_summary = self._build_module_summary(request) or "none"
-        histogram_summary = self._build_histogram_summary(request)
         return (
             "Plan the next darktable response for this request.\n\n"
             f"Goal: {request.refinement.goalText}\n"
@@ -448,11 +613,10 @@ class CodexAppServerBridge:
             f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             f"Preview: {preview_summary}\n"
-            f"Histogram summary: {histogram_summary}\n"
-            f"Editable modules: {module_summary}\n\n"
-            "Use the capability manifest and image state exactly as provided.\n"
+            "\n"
+            "Use the editable settings and image state exactly as provided.\n"
             "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
-            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, history, and current settings instead of asking for more specificity.\n"
+            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
             "The preview image is attached separately when available; the JSON payload below only keeps preview metadata so the prompt stays compact.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
@@ -482,6 +646,7 @@ class CodexAppServerBridge:
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads.clear()
+        self._conversation_turn_counts.clear()
 
     def _reset_process_locked(self) -> None:
         if self._process:
@@ -497,6 +662,7 @@ class CodexAppServerBridge:
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads.clear()
+        self._conversation_turn_counts.clear()
 
     def _send_request_locked(
         self,
@@ -608,6 +774,18 @@ class CodexAppServerBridge:
         if method == "item/agentMessage/delta":
             if params.get("threadId") == turn_state["thread_id"] and params.get("turnId") == turn_state["turn_id"]:
                 turn_state["chunks"].append(params.get("delta", ""))
+            return
+
+        if method == "thread/tokenUsage/updated":
+            if params.get("threadId") != turn_state["thread_id"] or params.get("turnId") != turn_state["turn_id"]:
+                return
+            usage = params.get("tokenUsage", {})
+            last_usage = usage.get("last")
+            total_usage = usage.get("total")
+            if isinstance(last_usage, dict):
+                turn_state["token_usage_last"] = last_usage
+            if isinstance(total_usage, dict):
+                turn_state["token_usage_total"] = total_usage
             return
 
         if method == "item/completed":

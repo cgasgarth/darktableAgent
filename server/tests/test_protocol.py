@@ -225,6 +225,7 @@ def _sample_request_payload() -> dict:
             "turnId": "turn-1",
         },
         "message": {"role": "user", "text": "Make it brighter"},
+        "fast": False,
         "refinement": {
             "mode": "single-turn",
             "enabled": False,
@@ -247,6 +248,7 @@ def test_request_envelope_accepts_v3_payload() -> None:
 
     assert envelope.schemaVersion == "3.0"
     assert envelope.refinement.mode == "single-turn"
+    assert envelope.fast is False
     assert envelope.capabilityManifest.targets[0].supportedModes == ["set", "delta"]
     assert envelope.capabilityManifest.targets[1].defaultBool is False
     assert envelope.capabilityManifest.targets[2].choices[1].choiceId == "rgb"
@@ -598,6 +600,7 @@ def test_request_envelope_accepts_multi_turn_refinement() -> None:
 
     assert envelope.refinement.mode == "multi-turn"
     assert envelope.refinement.enabled is True
+    assert envelope.fast is False
     assert envelope.refinement.passIndex == 2
 
 

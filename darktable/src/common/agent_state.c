@@ -21,6 +21,7 @@
 #include "common/agent_catalog.h"
 #include "common/colorspaces.h"
 #include "develop/develop.h"
+#include "develop/pixelpipe_hb.h"
 #include "imageio/imageio_common.h"
 #include "imageio/imageio_module.h"
 
@@ -399,21 +400,112 @@ static void _collect_histogram_from_buffer(dt_agent_image_state_t *state,
   }
 }
 
-static void _collect_preview_from_buffer(dt_agent_image_state_t *state,
-                                         const dt_develop_t *dev,
-                                         const float *buf,
-                                         const gint width,
-                                         const gint height)
+static void _collect_histogram_from_pixbuf(dt_agent_image_state_t *state, const GdkPixbuf *pixbuf)
 {
-  if(!buf || width <= 0 || height <= 0 || !state->metadata.has_image_id)
+  if(!pixbuf)
     return;
 
-  guchar *pixels = g_malloc(sizeof(guchar) * width * height * 3);
-  for(gint i = 0; i < width * height; i++)
+  const gint width = gdk_pixbuf_get_width((GdkPixbuf *)pixbuf);
+  const gint height = gdk_pixbuf_get_height((GdkPixbuf *)pixbuf);
+  const gint rowstride = gdk_pixbuf_get_rowstride((GdkPixbuf *)pixbuf);
+  const gint channels = gdk_pixbuf_get_n_channels((GdkPixbuf *)pixbuf);
+  const guchar *pixels = gdk_pixbuf_read_pixels((GdkPixbuf *)pixbuf);
+
+  if(!pixels || width <= 0 || height <= 0 || channels < 3 || rowstride <= 0)
+    return;
+
+  state->histogram.available = TRUE;
+  state->histogram.bin_count = 256;
+
+  for(gint y = 0; y < height; y++)
   {
-    pixels[3 * i + 0] = CLAMP((gint)lrintf(CLAMPS(buf[4 * i + 0], 0.0f, 1.0f) * 255.0f), 0, 255);
-    pixels[3 * i + 1] = CLAMP((gint)lrintf(CLAMPS(buf[4 * i + 1], 0.0f, 1.0f) * 255.0f), 0, 255);
-    pixels[3 * i + 2] = CLAMP((gint)lrintf(CLAMPS(buf[4 * i + 2], 0.0f, 1.0f) * 255.0f), 0, 255);
+    const guchar *row = pixels + (size_t)y * rowstride;
+    for(gint x = 0; x < width; x++)
+    {
+      const guchar *pixel = row + (size_t)x * channels;
+      const gint red = pixel[0];
+      const gint green = pixel[1];
+      const gint blue = pixel[2];
+      const float luma = CLAMPS((0.2126f * red + 0.7152f * green + 0.0722f * blue) / 255.0f, 0.0f, 1.0f);
+      const gint luma_bin = CLAMP((gint)lrintf(luma * 255.0f), 0, 255);
+
+      state->histogram.red[red]++;
+      state->histogram.green[green]++;
+      state->histogram.blue[blue]++;
+      state->histogram.luma[luma_bin]++;
+    }
+  }
+}
+
+static void _collect_preview_from_pixbuf(dt_agent_image_state_t *state,
+                                         const dt_develop_t *dev,
+                                         GdkPixbuf *pixbuf)
+{
+  if(!pixbuf || !state->metadata.has_image_id)
+    return;
+
+  gchar *jpeg_data = NULL;
+  gsize jpeg_size = 0;
+  GError *save_error = NULL;
+  if(!gdk_pixbuf_save_to_buffer(pixbuf,
+                                &jpeg_data,
+                                &jpeg_size,
+                                "jpeg",
+                                &save_error,
+                                "quality",
+                                "85",
+                                NULL))
+  {
+    g_clear_error(&save_error);
+    return;
+  }
+
+  state->preview.available = TRUE;
+  state->preview.preview_id
+    = g_strdup_printf("preview-%" G_GINT64_FORMAT "-history-%d",
+                      state->metadata.image_id,
+                      dev->history_end);
+  state->preview.mime_type = g_strdup("image/jpeg");
+  state->preview.width = gdk_pixbuf_get_width(pixbuf);
+  state->preview.height = gdk_pixbuf_get_height(pixbuf);
+  state->preview.base64_data = g_base64_encode((const guchar *)jpeg_data, jpeg_size);
+  g_free(jpeg_data);
+}
+
+static gboolean _snapshot_from_preview_pipe(const dt_develop_t *dev, dt_agent_image_state_t *state)
+{
+  dt_dev_pixelpipe_t *pipe = dev ? dev->preview_pipe : NULL;
+  if(!pipe || !state->metadata.has_image_id)
+    return FALSE;
+
+  guchar *pixels = NULL;
+  gint width = 0;
+  gint height = 0;
+
+  dt_pthread_mutex_lock(&pipe->backbuf_mutex);
+  if(pipe->backbuf && pipe->backbuf_width > 0 && pipe->backbuf_height > 0)
+  {
+    width = pipe->backbuf_width;
+    height = pipe->backbuf_height;
+    pixels = g_malloc((size_t)width * height * 3);
+
+    const uint8_t *source = pipe->backbuf;
+    for(gint i = 0; i < width * height; i++)
+    {
+      const uint8_t *src_pixel = source + (size_t)i * 4;
+      guchar *dst_pixel = pixels + (size_t)i * 3;
+      // Cairo RGB24 on little-endian stores bytes as B, G, R, unused.
+      dst_pixel[0] = src_pixel[2];
+      dst_pixel[1] = src_pixel[1];
+      dst_pixel[2] = src_pixel[0];
+    }
+  }
+  dt_pthread_mutex_unlock(&pipe->backbuf_mutex);
+
+  if(!pixels || width <= 0 || height <= 0)
+  {
+    g_free(pixels);
+    return FALSE;
   }
 
   GdkPixbuf *pixbuf = gdk_pixbuf_new_from_data(pixels,
@@ -428,41 +520,29 @@ static void _collect_preview_from_buffer(dt_agent_image_state_t *state,
   if(!pixbuf)
   {
     g_free(pixels);
-    return;
+    return FALSE;
   }
 
-  gchar *jpeg_data = NULL;
-  gsize jpeg_size = 0;
-  GError *save_error = NULL;
-  if(!gdk_pixbuf_save_to_buffer(pixbuf,
-                                &jpeg_data,
-                                &jpeg_size,
-                                "jpeg",
-                                &save_error,
-                                "quality",
-                                "85",
-                                NULL))
+  const gint max_dim = 1000;
+  GdkPixbuf *scaled = pixbuf;
+  if(width > max_dim || height > max_dim)
   {
+    const double factor = MIN((double)max_dim / width, (double)max_dim / height);
+    const gint target_width = CLAMP((gint)lrint(width * factor), 1, max_dim);
+    const gint target_height = CLAMP((gint)lrint(height * factor), 1, max_dim);
+    scaled = gdk_pixbuf_scale_simple(pixbuf, target_width, target_height, GDK_INTERP_BILINEAR);
     g_object_unref(pixbuf);
-    g_clear_error(&save_error);
-    return;
+    if(!scaled)
+      return FALSE;
   }
 
-  g_object_unref(pixbuf);
-
-  state->preview.available = TRUE;
-  state->preview.preview_id
-    = g_strdup_printf("preview-%" G_GINT64_FORMAT "-history-%d",
-                      state->metadata.image_id,
-                      dev->history_end);
-  state->preview.mime_type = g_strdup("image/jpeg");
-  state->preview.width = width;
-  state->preview.height = height;
-  state->preview.base64_data = g_base64_encode((const guchar *)jpeg_data, jpeg_size);
-  g_free(jpeg_data);
+  _collect_preview_from_pixbuf(state, dev, scaled);
+  _collect_histogram_from_pixbuf(state, scaled);
+  g_object_unref(scaled);
+  return state->preview.available;
 }
 
-static void _collect_render_snapshot(const dt_develop_t *dev, dt_agent_image_state_t *state)
+static void _snapshot_from_export_fallback(const dt_develop_t *dev, dt_agent_image_state_t *state)
 {
   if(!state->metadata.has_image_id)
     return;
@@ -504,9 +584,48 @@ static void _collect_render_snapshot(const dt_develop_t *dev, dt_agent_image_sta
     return;
   }
 
-  _collect_preview_from_buffer(state, dev, memory.buf, memory.head.width, memory.head.height);
   _collect_histogram_from_buffer(state, memory.buf, memory.head.width, memory.head.height);
+  if(memory.buf && memory.head.width > 0 && memory.head.height > 0)
+  {
+    const gint width = memory.head.width;
+    const gint height = memory.head.height;
+    guchar *pixels = g_malloc((size_t)width * height * 3);
+    for(gint i = 0; i < width * height; i++)
+    {
+      pixels[3 * i + 0] = CLAMP((gint)lrintf(CLAMPS(memory.buf[4 * i + 0], 0.0f, 1.0f) * 255.0f), 0, 255);
+      pixels[3 * i + 1] = CLAMP((gint)lrintf(CLAMPS(memory.buf[4 * i + 1], 0.0f, 1.0f) * 255.0f), 0, 255);
+      pixels[3 * i + 2] = CLAMP((gint)lrintf(CLAMPS(memory.buf[4 * i + 2], 0.0f, 1.0f) * 255.0f), 0, 255);
+    }
+
+    GdkPixbuf *pixbuf = gdk_pixbuf_new_from_data(pixels,
+                                                 GDK_COLORSPACE_RGB,
+                                                 FALSE,
+                                                 8,
+                                                 width,
+                                                 height,
+                                                 width * 3,
+                                                 _preview_pixels_destroy,
+                                                 NULL);
+    if(pixbuf)
+    {
+      _collect_preview_from_pixbuf(state, dev, pixbuf);
+      g_object_unref(pixbuf);
+    }
+    else
+    {
+      g_free(pixels);
+    }
+  }
+
   free(memory.buf);
+}
+
+static void _collect_render_snapshot(const dt_develop_t *dev, dt_agent_image_state_t *state)
+{
+  if(_snapshot_from_preview_pipe(dev, state))
+    return;
+
+  _snapshot_from_export_fallback(dev, state);
 }
 
 gboolean dt_agent_image_state_collect_from_dev(const dt_develop_t *dev,

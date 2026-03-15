@@ -9,6 +9,7 @@
     "requestId",
     "session",
     "message",
+    "fast",
     "refinement",
     "uiContext",
     "capabilityManifest",
@@ -66,6 +67,9 @@
           "minLength": 1
         }
       }
+    },
+    "fast": {
+      "type": "boolean"
     },
     "refinement": {
       "type": "object",

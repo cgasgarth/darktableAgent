@@ -13,6 +13,7 @@ def _sample_request_payload() -> dict:
             "turnId": "turn-1",
         },
         "message": {"role": "user", "text": "Increase exposure by exactly 0.7 EV."},
+        "fast": False,
         "refinement": {
             "mode": "single-turn",
             "enabled": False,
