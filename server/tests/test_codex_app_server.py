@@ -4,7 +4,9 @@ from server.codex_app_server import (
     CodexAppServerBridge,
     CodexAppServerError,
     _DEFAULT_MODEL,
-    _DEFAULT_SPARK_MODEL,
+    _DEFAULT_REASONING_EFFORT,
+    _FAST_MODE_MODEL,
+    _FAST_MODE_REASONING_EFFORT,
     _THREAD_DEVELOPER_INSTRUCTIONS,
 )
 from shared.protocol import RequestEnvelope
@@ -255,11 +257,24 @@ def test_model_selection_uses_default_model_when_fast_mode_disabled() -> None:
     assert CodexAppServerBridge._model_for_request(request) == _DEFAULT_MODEL
 
 
-def test_model_selection_uses_spark_model_when_fast_mode_enabled() -> None:
+def test_model_selection_uses_fast_mode_model_when_fast_mode_enabled() -> None:
     request = _sample_request()
     request.refinement.fastMode = True
 
-    assert CodexAppServerBridge._model_for_request(request) == _DEFAULT_SPARK_MODEL
+    assert CodexAppServerBridge._model_for_request(request) == _FAST_MODE_MODEL
+
+
+def test_effort_selection_uses_default_effort_when_fast_mode_disabled() -> None:
+    request = _sample_request()
+
+    assert CodexAppServerBridge._effort_for_request(request) == _DEFAULT_REASONING_EFFORT
+
+
+def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None:
+    request = _sample_request()
+    request.refinement.fastMode = True
+
+    assert CodexAppServerBridge._effort_for_request(request) == _FAST_MODE_REASONING_EFFORT
 
 
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:

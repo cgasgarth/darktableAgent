@@ -34,8 +34,9 @@ _DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_S
 _DEFAULT_PERSONALITY = os.environ.get("DARKTABLE_AGENT_CODEX_PERSONALITY", "pragmatic")
 _DEFAULT_REASONING_EFFORT = os.environ.get("DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "high")
 _DEFAULT_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_MODEL", "gpt-5.3-codex")
-_DEFAULT_SPARK_MODEL = os.environ.get(
-    "DARKTABLE_AGENT_CODEX_SPARK_MODEL", "gpt-5.3-codex-spark"
+_FAST_MODE_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_FAST_MODE_MODEL", "gpt-5.3-codex")
+_FAST_MODE_REASONING_EFFORT = os.environ.get(
+    "DARKTABLE_AGENT_CODEX_FAST_MODE_REASONING_EFFORT", "low"
 )
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
@@ -172,6 +173,7 @@ class CodexAppServerBridge:
         active_request = self._register_request(request)
         try:
             model = self._model_for_request(request)
+            effort = self._effort_for_request(request)
             with self._lock:
                 self._raise_if_cancelled_locked(active_request)
                 self._ensure_initialized_locked(deadline)
@@ -180,7 +182,9 @@ class CodexAppServerBridge:
                     request.session.conversationId, model, deadline
                 )
                 active_request.thread_id = thread_id
-                return self._run_turn_locked(thread_id, request, model, deadline, active_request)
+                return self._run_turn_locked(
+                    thread_id, request, model, effort, deadline, active_request
+                )
         finally:
             self._unregister_request(request.requestId)
 
@@ -282,9 +286,15 @@ class CodexAppServerBridge:
 
     @staticmethod
     def _model_for_request(request: RequestEnvelope) -> str | None:
-        if request.refinement.fastMode and _DEFAULT_SPARK_MODEL:
-            return _DEFAULT_SPARK_MODEL
+        if request.refinement.fastMode and _FAST_MODE_MODEL:
+            return _FAST_MODE_MODEL
         return _DEFAULT_MODEL
+
+    @staticmethod
+    def _effort_for_request(request: RequestEnvelope) -> str:
+        if request.refinement.fastMode:
+            return _FAST_MODE_REASONING_EFFORT
+        return _DEFAULT_REASONING_EFFORT
 
     def _get_or_create_thread_locked(
         self, conversation_id: str, model: str | None, deadline: float
@@ -319,6 +329,7 @@ class CodexAppServerBridge:
         thread_id: str,
         request: RequestEnvelope,
         model: str | None,
+        effort: str,
         deadline: float,
         active_request: _ActiveRequestState,
     ) -> CodexTurnResult:
@@ -328,7 +339,7 @@ class CodexAppServerBridge:
             "outputSchema": self._build_output_schema(),
             "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
             "personality": _DEFAULT_PERSONALITY,
-            "effort": _DEFAULT_REASONING_EFFORT,
+            "effort": effort,
         }
         if model:
             turn_request["model"] = model
