@@ -47,6 +47,7 @@ You are given:
 - refinement state describing whether this is a single-turn request or an automatic continuation pass
 - a capability manifest describing writable darktable controls
 - a current image snapshot with metadata, history, editable settings, and optionally a 1k rendered JPEG preview and histogram
+- when available, the 1k preview is attached as a separate image input and the text payload only includes preview metadata
 
 Rules:
 - Only plan operations that are explicitly supported by the capability manifest and editable settings snapshot.
@@ -55,6 +56,7 @@ Rules:
 - Keep assistantText brief and user-facing.
 - Every operation must be immediately executable by darktable.
 - Use the supplied preview and histogram when they are present.
+- Use the attached image input directly when it is present; do not expect raw preview bytes inside the text payload.
 - Prefer the specific editable settings and current values supplied in the image snapshot over generic photography assumptions.
 - Use moduleId/moduleLabel to understand which controls belong to the same darktable module.
 - Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or current settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
@@ -307,13 +309,7 @@ class CodexAppServerBridge:
     ) -> CodexTurnResult:
         turn_request = {
             "threadId": thread_id,
-            "input": [
-                {
-                    "type": "text",
-                    "text": self._build_turn_prompt(request),
-                    "text_elements": [],
-                }
-            ],
+            "input": self._build_turn_input(request),
             "outputSchema": self._build_output_schema(),
             "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
             "personality": _DEFAULT_PERSONALITY,
@@ -369,14 +365,96 @@ class CodexAppServerBridge:
             raw_message=raw_message,
         )
 
-    def _build_turn_prompt(self, request: RequestEnvelope) -> str:
+    @staticmethod
+    def _build_preview_data_url(request: RequestEnvelope) -> str | None:
+        preview = request.imageSnapshot.preview
+        if preview is None:
+            return None
+        return f"data:{preview.mimeType};base64,{preview.base64Data}"
+
+    @staticmethod
+    def _build_prompt_payload(request: RequestEnvelope) -> dict[str, Any]:
         payload = request.model_dump(mode="json")
+        preview = payload.get("imageSnapshot", {}).get("preview")
+        if isinstance(preview, dict) and "base64Data" in preview:
+            preview["base64Data"] = None
+        return payload
+
+    @staticmethod
+    def _build_module_summary(request: RequestEnvelope) -> str:
+        module_counts: dict[str, int] = {}
+        for setting in request.imageSnapshot.editableSettings:
+            module_key = f"{setting.moduleId} ({setting.moduleLabel})"
+            module_counts[module_key] = module_counts.get(module_key, 0) + 1
+        return ", ".join(
+            f"{module_name}: {count}" for module_name, count in sorted(module_counts.items())
+        )
+
+    @staticmethod
+    def _build_histogram_summary(request: RequestEnvelope) -> str:
+        histogram = request.imageSnapshot.histogram
+        if histogram is None:
+            return "unavailable"
+
+        luma = histogram.channels.get("luma")
+        if luma is None or not luma.bins:
+            return "available without luma channel"
+
+        total = sum(luma.bins)
+        if total <= 0:
+            return "empty"
+
+        bin_count = histogram.binCount
+        shadow_end = max(1, bin_count // 4)
+        highlight_start = max(shadow_end, (3 * bin_count) // 4)
+
+        shadows = sum(luma.bins[:shadow_end]) / total
+        highlights = sum(luma.bins[highlight_start:]) / total
+        midtones = max(0.0, 1.0 - shadows - highlights)
+
+        return (
+            f"shadows={shadows:.2f}, midtones={midtones:.2f}, highlights={highlights:.2f}"
+        )
+
+    def _build_turn_input(self, request: RequestEnvelope) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": self._build_turn_prompt(request),
+                "text_elements": [],
+            }
+        ]
+
+        preview_url = self._build_preview_data_url(request)
+        if preview_url:
+            items.append({"type": "image", "url": preview_url})
+
+        return items
+
+    def _build_turn_prompt(self, request: RequestEnvelope) -> str:
+        payload = self._build_prompt_payload(request)
+        preview = request.imageSnapshot.preview
+        preview_summary = (
+            f"attached separately as {preview.mimeType} {preview.width}x{preview.height}"
+            if preview is not None
+            else "unavailable"
+        )
+        module_summary = self._build_module_summary(request) or "none"
+        histogram_summary = self._build_histogram_summary(request)
         return (
             "Plan the next darktable response for this request.\n\n"
+            f"Goal: {request.refinement.goalText}\n"
+            f"Latest user message: {request.message.text}\n"
+            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
+            f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
+            f"Preview: {preview_summary}\n"
+            f"Histogram summary: {histogram_summary}\n"
+            f"Editable modules: {module_summary}\n\n"
             "Use the capability manifest and image state exactly as provided.\n"
             "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, history, and current settings instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
+            "The preview image is attached separately when available; the JSON payload below only keeps preview metadata so the prompt stays compact.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
             "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
             "Return only the JSON object required by the output schema.\n\n"

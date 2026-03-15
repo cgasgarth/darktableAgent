@@ -253,6 +253,7 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "moduleId/moduleLabel" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "colorbalancergb" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "primaries" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "attached as a separate image input" in _THREAD_DEVELOPER_INSTRUCTIONS
 
 
 def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() -> None:
@@ -267,7 +268,33 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "rgb primaries, color equalizer, or color balance rgb" in prompt
     assert '"moduleId":"colorequal"' in prompt
     assert '"moduleId":"primaries"' in prompt
+    assert "Preview: attached separately as image/jpeg 1000x667" in prompt
+    assert "Histogram summary: shadows=0.00, midtones=0.70, highlights=0.30" in prompt
+    assert "Editable modules: colorequal (color equalizer): 1, exposure (exposure): 1, primaries (rgb primaries): 1" in prompt
+    assert '"base64Data":null' in prompt
+    assert "ZmFrZS1wcmV2aWV3" not in prompt
     assert '"text":"Do a full edit so this becomes a polished gallery-ready landscape photo."' in prompt
+
+
+def test_turn_input_sends_preview_as_separate_image_item() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+
+    items = bridge._build_turn_input(_sample_request())  # type: ignore[attr-defined]
+
+    assert items[0]["type"] == "text"
+    assert items[1]["type"] == "image"
+    assert items[1]["url"] == "data:image/jpeg;base64,ZmFrZS1wcmV2aWV3"
+
+
+def test_turn_input_omits_image_item_without_preview() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.imageSnapshot.preview = None
+
+    items = bridge._build_turn_input(request)  # type: ignore[attr-defined]
+
+    assert len(items) == 1
+    assert items[0]["type"] == "text"
 
 
 def test_cancel_request_marks_matching_active_turn_cancelled() -> None:
