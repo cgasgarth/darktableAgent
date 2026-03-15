@@ -74,7 +74,7 @@ The current protocol details live in [docs/protocol-v1.md](docs/protocol-v1.md).
 - Run the live Codex server-to-darktable exposure smoke check with `./scripts/agent_exposure_smoke.sh`
 - The smoke harness always starts the Python server in deterministic mock-response mode, so smoke validation does not depend on a live Codex agent run
 - Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, `npm run darktable:build-and-start`, `npm run server:start`, and `npm run agent:smoke`
-- The Codex bridge defaults to `gpt-5.4` with `high` reasoning effort; override with `DARKTABLE_AGENT_CODEX_MODEL` and `DARKTABLE_AGENT_CODEX_REASONING_EFFORT` if needed
+- The Codex bridge defaults to `gpt-5.3-codex` with `high` reasoning effort; override with `DARKTABLE_AGENT_CODEX_MODEL` and `DARKTABLE_AGENT_CODEX_REASONING_EFFORT` if needed
 - The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
 - The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
 - The server expects a working local `codex` CLI login because it uses `codex app-server` as the planning backend
