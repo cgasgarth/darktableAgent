@@ -3070,8 +3070,14 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
   if(result->has_response && g_strcmp0(result->response.status, "ok") == 0)
   {
     g_autofree gchar *current_revision_id = _agent_chat_collect_current_image_revision_id(dev);
+    const gboolean allow_live_revision_mismatch
+      = submission
+     && submission->refinement_enabled
+     && live_applied_before_finish > 0
+     && result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI;
     if(current_revision_id
-       && g_strcmp0(current_revision_id, result->response.base_image_revision_id) != 0)
+       && g_strcmp0(current_revision_id, result->response.base_image_revision_id) != 0
+       && !allow_live_revision_mismatch)
     {
       const char *message = _("image changed while the agent was planning; response was ignored");
       _agent_chat_session_set_error(session, message);

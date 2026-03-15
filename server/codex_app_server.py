@@ -77,6 +77,7 @@ Only emit operations targeting provided settingId/actionPath pairs. Never invent
 Keep edits coherent, conservative, and executable.
 If user intent is broad, infer a reasonable plan from the visible image instead of asking for more specificity.
 Prefer advanced color controls (`colorequal`, `colorbalancergb`, `primaries`) when available for nuanced color work.
+For white balance, prefer explicit temperature/tint-style controls when available; avoid aggressive red/blue channel gain swings unless those are the only controls exposed.
 
 Refinement rules:
 - Always optimize toward refinement.goalText.
@@ -1034,6 +1035,7 @@ class CodexAppServerBridge:
             "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
+            "For white balance, prefer temperature/tint controls over direct channel multipliers when both exist.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
             "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
             "Return only the JSON object required by the output schema."
