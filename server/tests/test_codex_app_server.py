@@ -178,6 +178,44 @@ def _sample_request() -> RequestEnvelope:
     )
 
 
+def _sample_request_with_disallowed_wb_control() -> RequestEnvelope:
+    payload = _sample_request().model_dump(mode="json")
+    payload["capabilityManifest"]["targets"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "capabilityId": "temperature.red",
+            "label": "Red multiplier",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/temperature/red",
+            "supportedModes": ["set", "delta"],
+            "minNumber": 0.0,
+            "maxNumber": 4.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        }
+    )
+    payload["imageSnapshot"]["editableSettings"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "settingId": "setting.temperature.red",
+            "capabilityId": "temperature.red",
+            "label": "Red multiplier",
+            "actionPath": "iop/temperature/red",
+            "kind": "set-float",
+            "currentNumber": 1.0,
+            "supportedModes": ["set", "delta"],
+            "minNumber": 0.0,
+            "maxNumber": 4.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        }
+    )
+    return RequestEnvelope.model_validate(payload)
+
+
 def test_default_command_disables_configured_mcp_servers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,6 +250,46 @@ def test_extract_error_message_prefers_nested_json_message() -> None:
     message = '{"error":{"message":"The real error"}}'
 
     assert CodexAppServerBridge._extract_error_message(message) == "The real error"
+
+
+def test_sanitize_request_for_agent_safety_filters_disallowed_controls() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request_with_disallowed_wb_control()
+
+    sanitized = bridge._sanitize_request_for_agent_safety(request)  # type: ignore[attr-defined]
+
+    assert len(sanitized.capabilityManifest.targets) == len(request.capabilityManifest.targets) - 1
+    assert len(sanitized.imageSnapshot.editableSettings) == len(request.imageSnapshot.editableSettings) - 1
+    assert all(
+        capability.actionPath != "iop/temperature/red"
+        for capability in sanitized.capabilityManifest.targets
+    )
+    assert all(
+        setting.actionPath != "iop/temperature/red"
+        for setting in sanitized.imageSnapshot.editableSettings
+    )
+
+
+def test_sanitize_request_for_agent_safety_rejects_when_all_controls_blocked() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request_with_disallowed_wb_control()
+    payload = request.model_dump(mode="json")
+    payload["capabilityManifest"]["targets"] = [
+        capability
+        for capability in payload["capabilityManifest"]["targets"]
+        if capability["actionPath"] == "iop/temperature/red"
+    ]
+    payload["imageSnapshot"]["editableSettings"] = [
+        setting
+        for setting in payload["imageSnapshot"]["editableSettings"]
+        if setting["actionPath"] == "iop/temperature/red"
+    ]
+    unsafe_only_request = RequestEnvelope.model_validate(payload)
+
+    with pytest.raises(CodexAppServerError) as exc_info:
+        bridge._sanitize_request_for_agent_safety(unsafe_only_request)  # type: ignore[attr-defined]
+
+    assert exc_info.value.code == "no_safe_controls_available"
 
 
 def test_task_complete_marks_turn_complete() -> None:

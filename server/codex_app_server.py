@@ -213,6 +213,7 @@ class CodexAppServerBridge:
         return schema
 
     def plan(self, request: RequestEnvelope) -> CodexTurnResult:
+        request = self._sanitize_request_for_agent_safety(request)
         deadline = time.monotonic() + self._timeout_seconds
         active_request = self._register_request(request)
         try:
@@ -507,6 +508,75 @@ class CodexAppServerBridge:
         if request.fast:
             return _FAST_MODE_REASONING_EFFORT
         return _DEFAULT_REASONING_EFFORT
+
+    @classmethod
+    def _sanitize_request_for_agent_safety(
+        cls, request: RequestEnvelope
+    ) -> RequestEnvelope:
+        blocked_capability_ids: set[str] = set()
+        capability_targets: list[dict[str, Any]] = []
+        for capability in request.capabilityManifest.targets:
+            if cls._is_disallowed_white_balance_action_path(capability.actionPath):
+                blocked_capability_ids.add(capability.capabilityId)
+                continue
+            capability_targets.append(capability.model_dump(mode="json"))
+
+        editable_settings: list[dict[str, Any]] = []
+        blocked_setting_ids: list[str] = []
+        for setting in request.imageSnapshot.editableSettings:
+            if (
+                cls._is_disallowed_white_balance_action_path(setting.actionPath)
+                or setting.capabilityId in blocked_capability_ids
+            ):
+                blocked_capability_ids.add(setting.capabilityId)
+                blocked_setting_ids.append(setting.settingId)
+                continue
+            editable_settings.append(setting.model_dump(mode="json"))
+
+        if blocked_capability_ids:
+            capability_targets = [
+                capability.model_dump(mode="json")
+                for capability in request.capabilityManifest.targets
+                if capability.capabilityId not in blocked_capability_ids
+                and not cls._is_disallowed_white_balance_action_path(capability.actionPath)
+            ]
+
+        if (
+            len(capability_targets) == len(request.capabilityManifest.targets)
+            and len(editable_settings) == len(request.imageSnapshot.editableSettings)
+        ):
+            return request
+
+        if not capability_targets:
+            raise CodexAppServerError(
+                "no_safe_controls_available",
+                (
+                    "No safe editable controls are available for this image. "
+                    "Direct white-balance channel multipliers are blocked."
+                ),
+                status_code=422,
+            )
+
+        payload = request.model_dump(mode="json")
+        payload["capabilityManifest"]["targets"] = capability_targets
+        payload["imageSnapshot"]["editableSettings"] = editable_settings
+        sanitized = RequestEnvelope.model_validate(payload)
+
+        logger.info(
+            "safety_policy_filtered_controls",
+            extra={
+                "structured": {
+                    "requestId": request.requestId,
+                    "conversationId": request.session.conversationId,
+                    "blockedCapabilityCount": len(request.capabilityManifest.targets)
+                    - len(capability_targets),
+                    "blockedSettingCount": len(request.imageSnapshot.editableSettings)
+                    - len(editable_settings),
+                    "blockedSettingIds": blocked_setting_ids,
+                }
+            },
+        )
+        return sanitized
 
     @staticmethod
     def _dynamic_tools() -> list[dict[str, Any]]:
