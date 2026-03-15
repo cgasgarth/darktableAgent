@@ -130,6 +130,14 @@ def _sample_request_payload() -> dict:
             "turnId": "turn-1",
         },
         "message": {"role": "user", "text": "Make it brighter"},
+        "refinement": {
+            "mode": "single-turn",
+            "enabled": False,
+            "maxPasses": 1,
+            "passIndex": 1,
+            "automaticContinuation": False,
+            "goalText": "Make it brighter",
+        },
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "_DSC8809.ARW"},
         "capabilityManifest": {
             "manifestVersion": "manifest-1",
@@ -152,6 +160,7 @@ class StubBridge:
         self.result = result
         self.error = error
         self.requests = []
+        self.cancel_requests = []
 
     def plan(self, request):  # type: ignore[no-untyped-def]
         self.requests.append(request)
@@ -159,6 +168,26 @@ class StubBridge:
             raise self.error
         assert self.result is not None
         return self.result
+
+    def cancel_request(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        request_id,
+        app_session_id,
+        image_session_id,
+        conversation_id,
+        turn_id,
+    ):
+        self.cancel_requests.append(
+            {
+                "request_id": request_id,
+                "app_session_id": app_session_id,
+                "image_session_id": image_session_id,
+                "conversation_id": conversation_id,
+                "turn_id": turn_id,
+            }
+        )
+        return True
 
 
 @pytest.fixture
@@ -178,6 +207,7 @@ async def test_chat_returns_codex_plan_response(
             plan=AgentPlan.model_validate(
                 {
                     "assistantText": "Increasing exposure by +0.7 EV.",
+                    "continueRefining": False,
                     "operations": [
                         {
                             "operationId": "op-exposure-plus-0.7",
@@ -208,6 +238,14 @@ async def test_chat_returns_codex_plan_response(
     body = response.json()
     assert body["status"] == "ok"
     assert body["assistantMessage"]["text"] == "Increasing exposure by +0.7 EV."
+    assert body["refinement"] == {
+        "mode": "single-turn",
+        "enabled": False,
+        "passIndex": 1,
+        "maxPasses": 1,
+        "continueRefining": False,
+        "stopReason": "single-turn",
+    }
     assert body["plan"]["operations"] == [
         {
             "operationId": "op-exposure-plus-0.7",
@@ -245,6 +283,7 @@ async def test_chat_preserves_multi_operation_order(
             plan=AgentPlan.model_validate(
                 {
                     "assistantText": "Applying two steps.",
+                    "continueRefining": False,
                     "operations": [
                         {
                             "operationId": "op-exposure-plus-0.2",
@@ -304,6 +343,7 @@ async def test_chat_supports_operation_free_assistant_messages(
             plan=AgentPlan.model_validate(
                 {
                     "assistantText": "I need a more specific edit instruction.",
+                    "continueRefining": False,
                     "operations": [],
                 }
             )
@@ -317,6 +357,150 @@ async def test_chat_supports_operation_free_assistant_messages(
     body = response.json()
     assert body["plan"]["operations"] == []
     assert body["assistantMessage"]["text"] == "I need a more specific edit instruction."
+    assert body["refinement"]["continueRefining"] is False
+    assert body["refinement"]["stopReason"] == "single-turn"
+
+
+@pytest.mark.anyio
+async def test_chat_returns_multi_turn_refinement_status(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "Lifting exposure first, then I want another look.",
+                    "continueRefining": True,
+                    "operations": [
+                        {
+                            "operationId": "op-exposure-plus-0.4",
+                            "sequence": 1,
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/exposure/exposure",
+                                "settingId": "setting.exposure.primary",
+                            },
+                            "value": {"mode": "delta", "number": 0.4},
+                            "reason": None,
+                            "constraints": {
+                                "onOutOfRange": "clamp",
+                                "onRevisionMismatch": "fail",
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+    )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    payload = _sample_request_payload()
+    payload["message"]["text"] = "Do a full edit"
+    payload["refinement"] = {
+        "mode": "multi-turn",
+        "enabled": True,
+        "maxPasses": 10,
+        "passIndex": 1,
+        "automaticContinuation": False,
+        "goalText": "Do a full edit",
+    }
+
+    response = await api_client.post("/v1/chat", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["refinement"] == {
+        "mode": "multi-turn",
+        "enabled": True,
+        "passIndex": 1,
+        "maxPasses": 10,
+        "continueRefining": True,
+        "stopReason": "continue",
+    }
+
+
+@pytest.mark.anyio
+async def test_chat_can_use_mock_planner_backend(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DARKTABLE_AGENT_USE_MOCK_RESPONSES", "1")
+
+    response = await api_client.post("/v1/chat", json=_sample_request_payload())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assistantMessage"]["text"] == "Mock single-turn edit: applying +0.70 EV."
+    assert body["plan"]["operations"][0]["value"]["number"] == 0.7
+    assert body["refinement"]["continueRefining"] is False
+
+
+@pytest.mark.anyio
+async def test_cancel_chat_forwards_request_ids_to_bridge(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge()
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    response = await api_client.post(
+        "/v1/chat/cancel",
+        json={
+            "requestId": "req-1",
+            "session": {
+                "appSessionId": "app-1",
+                "imageSessionId": "img-12",
+                "conversationId": "conv-1",
+                "turnId": "turn-1",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "requestId": "req-1",
+        "canceled": True,
+        "message": "Cancellation requested for the active chat turn",
+    }
+    assert bridge.cancel_requests == [
+        {
+            "request_id": "req-1",
+            "app_session_id": "app-1",
+            "image_session_id": "img-12",
+            "conversation_id": "conv-1",
+            "turn_id": "turn-1",
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_cancel_chat_accepts_unknown_request_ids(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge()
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+    bridge.cancel_request = lambda **_: False  # type: ignore[method-assign]
+
+    response = await api_client.post(
+        "/v1/chat/cancel",
+        json={
+            "requestId": "req-missing",
+            "session": {
+                "appSessionId": "app-1",
+                "imageSessionId": "img-12",
+                "conversationId": "conv-1",
+                "turnId": "turn-1",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "requestId": "req-missing",
+        "canceled": True,
+        "message": "Cancellation recorded for this chat turn",
+    }
 
 
 @pytest.mark.anyio
@@ -339,6 +523,7 @@ async def test_chat_surfaces_codex_backend_errors(
         "code": "codex_timeout",
         "message": "Codex app server timed out",
     }
+    assert body["refinement"]["continueRefining"] is False
 
 
 @pytest.mark.anyio
@@ -353,6 +538,21 @@ async def test_chat_rejects_malformed_payload(api_client: AsyncClient) -> None:
     assert body["status"] == "error"
     assert body["operationResults"] == []
     assert "message/role" in body["error"]["message"]
+
+
+@pytest.mark.anyio
+async def test_chat_rejects_invalid_single_turn_refinement_shape(
+    api_client: AsyncClient,
+) -> None:
+    payload = _sample_request_payload()
+    payload["refinement"]["maxPasses"] = 3
+
+    response = await api_client.post("/v1/chat", json=payload)
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["status"] == "error"
+    assert "single-turn refinement must use maxPasses=1" in body["error"]["message"]
 
 
 @pytest.mark.anyio

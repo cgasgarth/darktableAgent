@@ -72,12 +72,35 @@ The current protocol details live in [docs/protocol-v1.md](docs/protocol-v1.md).
 - Run the local custom darktable with `./scripts/run_darktable_local.sh`
 - The launcher now detaches by default and writes logs to `.darktable-local/darktable.log`; pass `--foreground` if you want it to keep the terminal attached
 - Run the live Codex server-to-darktable exposure smoke check with `./scripts/agent_exposure_smoke.sh`
+- The smoke harness always starts the Python server in deterministic mock-response mode, so smoke validation does not depend on a live Codex agent run
 - Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, `npm run darktable:build-and-start`, `npm run server:start`, and `npm run agent:smoke`
 - The Codex bridge defaults to `gpt-5.4` with `high` reasoning effort; override with `DARKTABLE_AGENT_CODEX_MODEL` and `DARKTABLE_AGENT_CODEX_REASONING_EFFORT` if needed
 - The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
 - The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
 - The server expects a working local `codex` CLI login because it uses `codex app-server` as the planning backend
-- The smoke script now validates preview, histogram, capability coverage, and darktable session identifiers in the generated report
+- The smoke script now validates preview, histogram, capability coverage, darktable session identifiers, and refinement pass counts in the generated report/server logs
+
+## Multi-turn smoke settings
+
+- Single-turn remains the default behavior.
+- When the chat UI toggle enables multi-turn refinement, the agent can apply a pass, request a refreshed preview/state snapshot, and continue until it decides to stop or hits the configured limit.
+- Set `MULTI_TURN_ENABLED=1` to ask the chat flow to keep refining after each applied pass.
+- `MULTI_TURN_MAX_TURNS` defaults to `10`.
+- When multi-turn mode is enabled, the smoke script automatically raises its default time budgets to `DARKTABLE_TIMEOUT_SECONDS=360` and `SERVER_TIMEOUT_SECONDS=180` unless you override them.
+- The smoke harness prefers deterministic server-side mock responses so refinement pass counts stay machine-checkable instead of depending on live planner variability.
+- The smoke harness validates refinement deterministically by counting `accepted_request` and `fulfilled_request` events in the server log for a single conversation/image session and by checking the logged `refinement` settings for every pass.
+- Use `EXPECTED_MIN_REFINEMENT_PASSES` and `EXPECTED_MAX_REFINEMENT_PASSES` to bound how many passes should occur.
+- Use `EXPECTED_REFINEMENT_MODE` to assert the intended mode, and `EXPECTED_REFINEMENT_STOP_REASON` if the darktable-side report records a terminal reason.
+
+Example:
+
+```bash
+MULTI_TURN_ENABLED=1 \
+MULTI_TURN_MAX_TURNS=10 \
+EXPECTED_MIN_REFINEMENT_PASSES=2 \
+EXPECTED_MAX_REFINEMENT_PASSES=10 \
+./scripts/agent_exposure_smoke.sh
+```
 
 ## License
 

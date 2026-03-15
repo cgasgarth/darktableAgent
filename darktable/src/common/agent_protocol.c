@@ -103,6 +103,95 @@ static gboolean _require_number_member(JsonObject *object,
   return TRUE;
 }
 
+static gboolean _require_uint_member(JsonObject *object,
+                                     const char *member,
+                                     guint *out,
+                                     GError **error)
+{
+  if(!json_object_has_member(object, member))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "missing required member '%s'", member);
+    return FALSE;
+  }
+
+  JsonNode *node = json_object_get_member(object, member);
+  if(!JSON_NODE_HOLDS_VALUE(node)
+     || !g_type_is_a(json_node_get_value_type(node), G_TYPE_INT64))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "member '%s' must be an integer", member);
+    return FALSE;
+  }
+
+  const gint64 value = json_node_get_int(node);
+  if(value < 0)
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "member '%s' must be >= 0", member);
+    return FALSE;
+  }
+
+  *out = (guint)value;
+  return TRUE;
+}
+
+static gboolean _require_boolean_member(JsonObject *object,
+                                        const char *member,
+                                        gboolean *out,
+                                        GError **error)
+{
+  if(!json_object_has_member(object, member))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "missing required member '%s'", member);
+    return FALSE;
+  }
+
+  JsonNode *node = json_object_get_member(object, member);
+  if(!JSON_NODE_HOLDS_VALUE(node)
+     || !g_type_is_a(json_node_get_value_type(node), G_TYPE_BOOLEAN))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "member '%s' must be a boolean", member);
+    return FALSE;
+  }
+
+  *out = json_node_get_boolean(node);
+  return TRUE;
+}
+
+static gboolean _parse_optional_string_member(JsonObject *object,
+                                              const char *member,
+                                              char **out,
+                                              GError **error)
+{
+  if(!json_object_has_member(object, member))
+  {
+    *out = NULL;
+    return TRUE;
+  }
+
+  JsonNode *node = json_object_get_member(object, member);
+  if(JSON_NODE_HOLDS_NULL(node))
+  {
+    *out = NULL;
+    return TRUE;
+  }
+
+  if(!JSON_NODE_HOLDS_VALUE(node)
+     || !g_type_is_a(json_node_get_value_type(node), G_TYPE_STRING))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "member '%s' must be a string or null", member);
+    return FALSE;
+  }
+
+  const char *value = json_node_get_string(node);
+  *out = value ? g_strdup(value) : NULL;
+  return TRUE;
+}
+
 static gboolean _parse_message(JsonObject *object,
                                const char *member,
                                char **role,
@@ -127,6 +216,75 @@ static gboolean _parse_message(JsonObject *object,
   JsonObject *message = json_node_get_object(node);
   return _require_string_member(message, "role", role, error)
       && _require_string_member(message, "text", text, error);
+}
+
+static gboolean _parse_refinement(JsonObject *object,
+                                  const char *member,
+                                  dt_agent_refinement_mode_t *mode,
+                                  gboolean *enabled,
+                                  guint *pass_index,
+                                  guint *max_passes,
+                                  gboolean *continue_refining,
+                                  gchar **stop_reason,
+                                  const gboolean require_continue_member,
+                                  GError **error)
+{
+  if(!json_object_has_member(object, member))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "missing required member '%s'", member);
+    return FALSE;
+  }
+
+  JsonNode *node = json_object_get_member(object, member);
+  if(!JSON_NODE_HOLDS_OBJECT(node))
+  {
+    g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                "member '%s' must be an object", member);
+    return FALSE;
+  }
+
+  JsonObject *refinement = json_node_get_object(node);
+  gchar *mode_name = NULL;
+  gboolean parsed_enabled = FALSE;
+  gboolean parsed_continue = FALSE;
+  gboolean ok = _require_string_member(refinement, "mode", &mode_name, error)
+             && _require_boolean_member(refinement, "enabled", &parsed_enabled, error)
+             && _require_uint_member(refinement, "passIndex", pass_index, error)
+             && _require_uint_member(refinement, "maxPasses", max_passes, error);
+
+  if(ok && require_continue_member)
+    ok = _require_boolean_member(refinement, "continueRefining", &parsed_continue, error);
+
+  if(ok)
+    ok = _parse_optional_string_member(refinement, "stopReason", stop_reason, error);
+
+  if(ok)
+  {
+    *mode = dt_agent_refinement_mode_from_string(mode_name);
+    if(*mode == DT_AGENT_REFINEMENT_MODE_UNKNOWN)
+    {
+      g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                  "unsupported refinement mode '%s'",
+                  mode_name ? mode_name : "");
+      ok = FALSE;
+    }
+    else if(*pass_index == 0 || *max_passes == 0 || *pass_index > *max_passes)
+    {
+      g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
+                  "refinement passIndex/maxPasses must satisfy 1 <= passIndex <= maxPasses");
+      ok = FALSE;
+    }
+    else if(require_continue_member)
+    {
+      *continue_refining = parsed_continue;
+    }
+
+    *enabled = parsed_enabled;
+  }
+
+  g_free(mode_name);
+  return ok;
 }
 
 static void _serialize_choice_options(JsonBuilder *builder, const GPtrArray *choices)
@@ -695,6 +853,11 @@ void dt_agent_chat_request_init(dt_agent_chat_request_t *request)
 
   memset(request, 0, sizeof(*request));
   request->schema_version = g_strdup(DT_AGENT_CHAT_SCHEMA_VERSION);
+  request->refinement_mode = DT_AGENT_REFINEMENT_MODE_SINGLE;
+  request->refinement_enabled = FALSE;
+  request->refinement_pass_index = 1;
+  request->refinement_max_passes = 1;
+  request->refinement_automatic_continuation = FALSE;
   request->capabilities = g_ptr_array_new_with_free_func(dt_agent_capability_free);
 }
 
@@ -711,6 +874,7 @@ void dt_agent_chat_request_clear(dt_agent_chat_request_t *request)
   g_free(request->turn_id);
   g_free(request->image_revision_id);
   g_free(request->message_text);
+  g_free(request->refinement_goal_text);
   dt_agent_ui_context_clear(&request->ui_context);
   if(request->capabilities)
     g_ptr_array_unref(request->capabilities);
@@ -731,6 +895,12 @@ void dt_agent_chat_request_copy(dt_agent_chat_request_t *dest,
   dest->turn_id = g_strdup(src->turn_id);
   dest->image_revision_id = g_strdup(src->image_revision_id);
   dest->message_text = g_strdup(src->message_text);
+  dest->refinement_mode = src->refinement_mode;
+  dest->refinement_enabled = src->refinement_enabled;
+  dest->refinement_pass_index = src->refinement_pass_index;
+  dest->refinement_max_passes = src->refinement_max_passes;
+  dest->refinement_automatic_continuation = src->refinement_automatic_continuation;
+  dest->refinement_goal_text = g_strdup(src->refinement_goal_text);
   dest->ui_context.view = g_strdup(src->ui_context.view);
   dest->ui_context.has_image_id = src->ui_context.has_image_id;
   dest->ui_context.image_id = src->ui_context.image_id;
@@ -787,6 +957,7 @@ void dt_agent_chat_response_clear(dt_agent_chat_response_t *response)
   g_free(response->message_text);
   if(response->operations)
     g_ptr_array_unref(response->operations);
+  g_free(response->refinement_stop_reason);
   g_free(response->error_code);
   g_free(response->error_message);
   memset(response, 0, sizeof(*response));
@@ -844,13 +1015,47 @@ dt_agent_value_mode_t dt_agent_value_mode_from_string(const char *mode_name)
   return DT_AGENT_VALUE_MODE_UNKNOWN;
 }
 
+const char *dt_agent_refinement_mode_to_string(dt_agent_refinement_mode_t mode)
+{
+  switch(mode)
+  {
+    case DT_AGENT_REFINEMENT_MODE_SINGLE:
+      return "single-turn";
+    case DT_AGENT_REFINEMENT_MODE_MULTI:
+      return "multi-turn";
+    case DT_AGENT_REFINEMENT_MODE_UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+dt_agent_refinement_mode_t dt_agent_refinement_mode_from_string(const char *mode_name)
+{
+  if(g_strcmp0(mode_name, "single-turn") == 0)
+    return DT_AGENT_REFINEMENT_MODE_SINGLE;
+  if(g_strcmp0(mode_name, "multi-turn") == 0)
+    return DT_AGENT_REFINEMENT_MODE_MULTI;
+
+  return DT_AGENT_REFINEMENT_MODE_UNKNOWN;
+}
+
 gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
                                        GError **error)
 {
   if(!request || !request->request_id || !request->app_session_id
      || !request->image_session_id || !request->conversation_id || !request->turn_id
      || !request->message_text || !request->ui_context.view
-     || !request->capabilities || request->capabilities->len == 0)
+     || !request->capabilities || request->capabilities->len == 0
+     || request->refinement_mode == DT_AGENT_REFINEMENT_MODE_UNKNOWN
+     || !request->refinement_goal_text || !request->refinement_goal_text[0]
+     || request->refinement_enabled != (request->refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI)
+     || request->refinement_pass_index == 0
+     || request->refinement_max_passes == 0
+     || request->refinement_pass_index > request->refinement_max_passes
+     || (!request->refinement_enabled
+         && (request->refinement_pass_index != 1
+             || request->refinement_max_passes != 1
+             || request->refinement_automatic_continuation)))
   {
     g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
                 "request is incomplete");
@@ -902,6 +1107,23 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
     json_builder_add_string_value(builder, request->ui_context.image_name);
   else
     json_builder_add_null_value(builder);
+  json_builder_end_object(builder);
+
+  json_builder_set_member_name(builder, "refinement");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "mode");
+  json_builder_add_string_value(builder,
+                                dt_agent_refinement_mode_to_string(request->refinement_mode));
+  json_builder_set_member_name(builder, "enabled");
+  json_builder_add_boolean_value(builder, request->refinement_enabled);
+  json_builder_set_member_name(builder, "passIndex");
+  json_builder_add_int_value(builder, MAX(1, (gint)request->refinement_pass_index));
+  json_builder_set_member_name(builder, "maxPasses");
+  json_builder_add_int_value(builder, MAX(1, (gint)request->refinement_max_passes));
+  json_builder_set_member_name(builder, "automaticContinuation");
+  json_builder_add_boolean_value(builder, request->refinement_automatic_continuation);
+  json_builder_set_member_name(builder, "goalText");
+  json_builder_add_string_value(builder, request->refinement_goal_text);
   json_builder_end_object(builder);
 
   json_builder_set_member_name(builder, "capabilityManifest");
@@ -1007,6 +1229,19 @@ gboolean dt_agent_chat_response_parse_data(const gchar *data,
       g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
                   "ok responses must not include error details");
       ok = FALSE;
+    }
+
+    if(ok)
+    {
+      ok = _parse_refinement(object, "refinement",
+                             &response->refinement_mode,
+                             &response->refinement_enabled,
+                             &response->refinement_pass_index,
+                             &response->refinement_max_passes,
+                             &response->refinement_continue,
+                             &response->refinement_stop_reason,
+                             g_strcmp0(response->status, "ok") == 0,
+                             error);
     }
 
     if(!ok)

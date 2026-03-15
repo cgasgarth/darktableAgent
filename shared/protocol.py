@@ -5,9 +5,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = "3.0"
+DEFAULT_REFINEMENT_MAX_PASSES = 10
 
 OperationKind = Literal["set-float", "set-choice", "set-bool"]
 OperationMode = Literal["delta", "set"]
+RefinementMode = Literal["single-turn", "multi-turn"]
 
 
 class StrictBaseModel(BaseModel):
@@ -28,6 +30,31 @@ class UIContext(StrictBaseModel):
     view: str = Field(min_length=1)
     imageId: int | None
     imageName: str | None
+
+
+class RefinementRequest(StrictBaseModel):
+    mode: RefinementMode
+    enabled: bool
+    maxPasses: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
+    passIndex: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
+    automaticContinuation: bool
+    goalText: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_refinement_state(self) -> "RefinementRequest":
+        expected_mode: RefinementMode = "multi-turn" if self.enabled else "single-turn"
+        if self.mode != expected_mode:
+            raise ValueError("refinement mode does not match enabled flag")
+        if self.passIndex > self.maxPasses:
+            raise ValueError("refinement passIndex must be <= maxPasses")
+        if not self.enabled:
+            if self.maxPasses != 1:
+                raise ValueError("single-turn refinement must use maxPasses=1")
+            if self.passIndex != 1:
+                raise ValueError("single-turn refinement must use passIndex=1")
+            if self.automaticContinuation:
+                raise ValueError("single-turn refinement must not be an automatic continuation")
+        return self
 
 
 class RequestSession(StrictBaseModel):
@@ -224,6 +251,7 @@ class RequestEnvelope(StrictBaseModel):
     requestId: str = Field(min_length=1)
     session: RequestSession
     message: UserMessage
+    refinement: RefinementRequest
     uiContext: UIContext
     capabilityManifest: CapabilityManifest
     imageSnapshot: ImageSnapshot
@@ -329,6 +357,7 @@ class PlannedOperationDraft(StrictBaseModel):
 
 class AgentPlan(StrictBaseModel):
     assistantText: str = Field(min_length=1)
+    continueRefining: bool
     operations: list[PlannedOperationDraft]
 
     @model_validator(mode="after")
@@ -359,12 +388,22 @@ class PlanEnvelope(StrictBaseModel):
     operations: list[PlannedOperationDraft]
 
 
+class RefinementStatus(StrictBaseModel):
+    mode: RefinementMode
+    enabled: bool
+    passIndex: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
+    maxPasses: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
+    continueRefining: bool
+    stopReason: Literal["single-turn", "continue", "planner-complete", "no-operations", "max-passes"]
+
+
 class ResponseEnvelope(StrictBaseModel):
     schemaVersion: Literal["3.0"] = SCHEMA_VERSION
     requestId: str
     session: ResponseSession
     status: Literal["ok", "error"]
     assistantMessage: AssistantMessage
+    refinement: RefinementStatus
     plan: PlanEnvelope | None
     operationResults: list[OperationResult]
     error: ErrorInfo | None
@@ -395,11 +434,13 @@ class ProtocolError(Exception):
 
 
 def build_response_from_plan(request: RequestEnvelope, plan: AgentPlan) -> ResponseEnvelope:
+    refinement = _build_refinement_status(request, plan)
     return ResponseEnvelope(
         requestId=request.requestId,
         session=ResponseSession.model_validate(request.session.model_dump()),
         status="ok",
         assistantMessage=AssistantMessage(role="assistant", text=plan.assistantText),
+        refinement=refinement,
         plan=PlanEnvelope(
             planId=f"plan-{request.session.turnId}",
             baseImageRevisionId=request.imageSnapshot.imageRevisionId,
@@ -410,6 +451,37 @@ def build_response_from_plan(request: RequestEnvelope, plan: AgentPlan) -> Respo
             for operation in plan.operations
         ],
         error=None,
+    )
+
+
+def _build_refinement_status(request: RequestEnvelope, plan: AgentPlan) -> RefinementStatus:
+    can_continue = (
+        request.refinement.enabled
+        and plan.continueRefining
+        and bool(plan.operations)
+        and request.refinement.passIndex < request.refinement.maxPasses
+    )
+
+    if not request.refinement.enabled:
+        stop_reason: Literal[
+            "single-turn", "continue", "planner-complete", "no-operations", "max-passes"
+        ] = "single-turn"
+    elif not plan.operations:
+        stop_reason = "no-operations"
+    elif request.refinement.passIndex >= request.refinement.maxPasses:
+        stop_reason = "max-passes"
+    elif can_continue:
+        stop_reason = "continue"
+    else:
+        stop_reason = "planner-complete"
+
+    return RefinementStatus(
+        mode=request.refinement.mode,
+        enabled=request.refinement.enabled,
+        passIndex=request.refinement.passIndex,
+        maxPasses=request.refinement.maxPasses,
+        continueRefining=can_continue,
+        stopReason=stop_reason,
     )
 
 

@@ -9,6 +9,7 @@
     "requestId",
     "session",
     "message",
+    "refinement",
     "uiContext",
     "capabilityManifest",
     "imageSnapshot"
@@ -61,6 +62,46 @@
           "const": "user"
         },
         "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "refinement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "enabled",
+        "maxPasses",
+        "passIndex",
+        "automaticContinuation",
+        "goalText"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "single-turn",
+            "multi-turn"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "maxPasses": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "passIndex": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "automaticContinuation": {
+          "type": "boolean"
+        },
+        "goalText": {
           "type": "string",
           "minLength": 1
         }

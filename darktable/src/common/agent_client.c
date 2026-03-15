@@ -24,11 +24,26 @@
 
 #include <curl/curl.h>
 #include <glib/gi18n.h>
+#include <json-glib/json-glib.h>
 #include <string.h>
+
+struct dt_agent_client_request_t
+{
+  volatile gint refcount;
+  volatile gint cancel_requested;
+  volatile gint cancel_notified;
+  gchar *request_id;
+  gchar *app_session_id;
+  gchar *image_session_id;
+  gchar *conversation_id;
+  gchar *turn_id;
+  gchar *endpoint;
+};
 
 typedef struct dt_agent_client_job_t
 {
   dt_agent_chat_request_t request;
+  dt_agent_client_request_t *handle;
   dt_agent_client_callback_t callback;
   gpointer user_data;
   GDestroyNotify destroy;
@@ -42,6 +57,16 @@ typedef struct dt_agent_client_delivery_t
   dt_agent_client_result_t result;
 } dt_agent_client_delivery_t;
 
+typedef struct dt_agent_client_cancel_delivery_t
+{
+  gchar *request_id;
+  gchar *app_session_id;
+  gchar *image_session_id;
+  gchar *conversation_id;
+  gchar *turn_id;
+  gchar *endpoint;
+} dt_agent_client_cancel_delivery_t;
+
 typedef enum dt_agent_client_error_t
 {
   DT_AGENT_CLIENT_ERROR_INVALID = 1,
@@ -51,6 +76,27 @@ typedef enum dt_agent_client_error_t
 static GQuark _agent_client_error_quark(void)
 {
   return g_quark_from_static_string("dt-agent-client-error");
+}
+
+static dt_agent_client_request_t *_request_ref(dt_agent_client_request_t *request)
+{
+  if(request)
+    g_atomic_int_inc(&request->refcount);
+  return request;
+}
+
+void dt_agent_client_request_unref(dt_agent_client_request_t *request)
+{
+  if(!request || !g_atomic_int_dec_and_test(&request->refcount))
+    return;
+
+  g_free(request->request_id);
+  g_free(request->app_session_id);
+  g_free(request->image_session_id);
+  g_free(request->conversation_id);
+  g_free(request->turn_id);
+  g_free(request->endpoint);
+  g_free(request);
 }
 
 static size_t _write_response(void *ptr, size_t size, size_t nmemb, void *userdata)
@@ -65,6 +111,164 @@ static size_t _write_response(void *ptr, size_t size, size_t nmemb, void *userda
   return bytes;
 }
 
+static gboolean _request_cancelled(const dt_agent_client_request_t *request)
+{
+  return request && g_atomic_int_get(&request->cancel_requested) != 0;
+}
+
+static int _progress_callback(void *clientp,
+                              curl_off_t dltotal,
+                              curl_off_t dlnow,
+                              curl_off_t ultotal,
+                              curl_off_t ulnow)
+{
+  (void)dltotal;
+  (void)dlnow;
+  (void)ultotal;
+  (void)ulnow;
+  return _request_cancelled(clientp) ? 1 : 0;
+}
+
+static gchar *_cancel_endpoint_from_chat_endpoint(const gchar *endpoint)
+{
+  if(!endpoint || !endpoint[0])
+    return g_strdup("http://127.0.0.1:8001/v1/chat/cancel");
+
+  return g_str_has_suffix(endpoint, "/")
+           ? g_strconcat(endpoint, "cancel", NULL)
+           : g_strconcat(endpoint, "/cancel", NULL);
+}
+
+static gchar *_serialize_cancel_payload(const dt_agent_client_cancel_delivery_t *delivery,
+                                        GError **error)
+{
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+
+  json_builder_set_member_name(builder, "requestId");
+  json_builder_add_string_value(builder, delivery->request_id ? delivery->request_id : "");
+
+  json_builder_set_member_name(builder, "session");
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "appSessionId");
+  json_builder_add_string_value(builder, delivery->app_session_id ? delivery->app_session_id : "");
+  json_builder_set_member_name(builder, "imageSessionId");
+  json_builder_add_string_value(builder, delivery->image_session_id ? delivery->image_session_id : "");
+  json_builder_set_member_name(builder, "conversationId");
+  json_builder_add_string_value(builder, delivery->conversation_id ? delivery->conversation_id : "");
+  json_builder_set_member_name(builder, "turnId");
+  json_builder_add_string_value(builder, delivery->turn_id ? delivery->turn_id : "");
+  json_builder_end_object(builder);
+
+  json_builder_end_object(builder);
+
+  JsonGenerator *generator = json_generator_new();
+  JsonNode *root = json_builder_get_root(builder);
+  json_generator_set_root(generator, root);
+  gchar *payload = json_generator_to_data(generator, NULL);
+
+  if(!payload)
+    g_set_error(error, g_quark_from_static_string("dt-agent-client-cancel"), 1,
+                "%s", _("failed to serialize cancel request"));
+
+  json_node_free(root);
+  g_object_unref(generator);
+  g_object_unref(builder);
+  return payload;
+}
+
+static void _cancel_delivery_free(dt_agent_client_cancel_delivery_t *delivery)
+{
+  if(!delivery)
+    return;
+
+  g_free(delivery->request_id);
+  g_free(delivery->app_session_id);
+  g_free(delivery->image_session_id);
+  g_free(delivery->conversation_id);
+  g_free(delivery->turn_id);
+  g_free(delivery->endpoint);
+  g_free(delivery);
+}
+
+static gpointer _cancel_request_thread(gpointer user_data)
+{
+  dt_agent_client_cancel_delivery_t *delivery = user_data;
+  g_autofree gchar *cancel_endpoint = _cancel_endpoint_from_chat_endpoint(delivery->endpoint);
+  g_autoptr(GError) error = NULL;
+  g_autofree gchar *payload = _serialize_cancel_payload(delivery, &error);
+
+  if(!payload)
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent_client] failed to serialize cancel payload: %s",
+             error && error->message ? error->message : "");
+    _cancel_delivery_free(delivery);
+    return NULL;
+  }
+
+  CURL *curl = curl_easy_init();
+  if(!curl)
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent_client] failed to initialize cancel request client");
+    _cancel_delivery_free(delivery);
+    return NULL;
+  }
+
+  struct curl_slist *headers = NULL;
+  headers = curl_slist_append(headers, "Accept: application/json");
+  headers = curl_slist_append(headers, "Content-Type: application/json");
+
+  dt_curl_init(curl, FALSE);
+  curl_easy_setopt(curl, CURLOPT_URL, cancel_endpoint);
+  curl_easy_setopt(curl, CURLOPT_POST, 1L);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(payload));
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+
+  const CURLcode curl_result = curl_easy_perform(curl);
+  long http_status = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+  if(curl_result != CURLE_OK)
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent_client] cancel request failed: curl=%d endpoint=%s",
+             curl_result,
+             cancel_endpoint ? cancel_endpoint : "");
+  }
+  else
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent_client] cancel request complete: http=%ld endpoint=%s",
+             http_status,
+             cancel_endpoint ? cancel_endpoint : "");
+  }
+
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+  _cancel_delivery_free(delivery);
+  return NULL;
+}
+
+void dt_agent_client_request_cancel(dt_agent_client_request_t *request)
+{
+  if(!request)
+    return;
+
+  g_atomic_int_set(&request->cancel_requested, 1);
+
+  if(g_atomic_int_compare_and_exchange(&request->cancel_notified, 0, 1))
+  {
+    dt_agent_client_cancel_delivery_t *delivery = g_new0(dt_agent_client_cancel_delivery_t, 1);
+    delivery->request_id = g_strdup(request->request_id);
+    delivery->app_session_id = g_strdup(request->app_session_id);
+    delivery->image_session_id = g_strdup(request->image_session_id);
+    delivery->conversation_id = g_strdup(request->conversation_id);
+    delivery->turn_id = g_strdup(request->turn_id);
+    delivery->endpoint = g_strdup(request->endpoint);
+    g_thread_unref(g_thread_new("agent-chat-cancel", _cancel_request_thread, delivery));
+  }
+}
+
 static void _job_destroy(gpointer data)
 {
   dt_agent_client_job_t *job_data = data;
@@ -73,6 +277,7 @@ static void _job_destroy(gpointer data)
     return;
 
   dt_agent_chat_request_clear(&job_data->request);
+  dt_agent_client_request_unref(job_data->handle);
   g_free(job_data);
 }
 
@@ -130,8 +335,15 @@ static int32_t _chat_job_run(dt_job_t *job)
   delivery->callback = job_data->callback;
   delivery->user_data = job_data->user_data;
   delivery->destroy = job_data->destroy;
+  delivery->result.endpoint = g_strdup(job_data->handle ? job_data->handle->endpoint : NULL);
 
-  delivery->result.endpoint = dt_agent_client_dup_endpoint();
+  if(_request_cancelled(job_data->handle))
+  {
+    delivery->result.cancelled = TRUE;
+    delivery->result.transport_error = g_strdup(_("chat request canceled"));
+    g_main_context_invoke(NULL, _deliver_result, delivery);
+    return 0;
+  }
 
   GError *error = NULL;
   gchar *payload = dt_agent_chat_request_serialize(&job_data->request, &error);
@@ -174,17 +386,30 @@ static int32_t _chat_job_run(dt_job_t *job)
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_seconds);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, _write_response);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, _progress_callback);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, job_data->handle);
 
   const CURLcode curl_result = curl_easy_perform(curl);
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &delivery->result.http_status);
 
   if(curl_result != CURLE_OK)
   {
-    delivery->result.transport_error = g_strdup_printf(_("chat request failed: %s"),
-                                                       curl_easy_strerror(curl_result));
-    dt_print(DT_DEBUG_CONTROL, "[agent_client] request failed: curl=%d endpoint=%s",
-             curl_result,
-             delivery->result.endpoint ? delivery->result.endpoint : "");
+    if(curl_result == CURLE_ABORTED_BY_CALLBACK && _request_cancelled(job_data->handle))
+    {
+      delivery->result.cancelled = TRUE;
+      delivery->result.transport_error = g_strdup(_("chat request canceled"));
+      dt_print(DT_DEBUG_CONTROL, "[agent_client] request canceled endpoint=%s",
+               delivery->result.endpoint ? delivery->result.endpoint : "");
+    }
+    else
+    {
+      delivery->result.transport_error = g_strdup_printf(_("chat request failed: %s"),
+                                                         curl_easy_strerror(curl_result));
+      dt_print(DT_DEBUG_CONTROL, "[agent_client] request failed: curl=%d endpoint=%s",
+               curl_result,
+               delivery->result.endpoint ? delivery->result.endpoint : "");
+    }
   }
   else
   {
@@ -215,11 +440,11 @@ static int32_t _chat_job_run(dt_job_t *job)
   return 0;
 }
 
-dt_job_t *dt_agent_client_chat_async(const dt_agent_chat_request_t *request,
-                                     dt_agent_client_callback_t callback,
-                                     gpointer user_data,
-                                     GDestroyNotify destroy,
-                                     GError **error)
+dt_agent_client_request_t *dt_agent_client_chat_async(const dt_agent_chat_request_t *request,
+                                                      dt_agent_client_callback_t callback,
+                                                      gpointer user_data,
+                                                      GDestroyNotify destroy,
+                                                      GError **error)
 {
   if(!request)
   {
@@ -230,8 +455,18 @@ dt_job_t *dt_agent_client_chat_async(const dt_agent_chat_request_t *request,
     return NULL;
   }
 
+  dt_agent_client_request_t *handle = g_new0(dt_agent_client_request_t, 1);
+  handle->refcount = 1;
+  handle->request_id = g_strdup(request->request_id);
+  handle->app_session_id = g_strdup(request->app_session_id);
+  handle->image_session_id = g_strdup(request->image_session_id);
+  handle->conversation_id = g_strdup(request->conversation_id);
+  handle->turn_id = g_strdup(request->turn_id);
+  handle->endpoint = dt_agent_client_dup_endpoint();
+
   dt_agent_client_job_t *job_data = g_new0(dt_agent_client_job_t, 1);
   dt_agent_chat_request_copy(&job_data->request, request);
+  job_data->handle = _request_ref(handle);
   job_data->callback = callback;
   job_data->user_data = user_data;
   job_data->destroy = destroy;
@@ -242,6 +477,7 @@ dt_job_t *dt_agent_client_chat_async(const dt_agent_chat_request_t *request,
     g_set_error(error, _agent_client_error_quark(), DT_AGENT_CLIENT_ERROR_QUEUE_UNAVAILABLE,
                 "%s", _("darktable background jobs are not ready yet"));
     _job_destroy(job_data);
+    dt_agent_client_request_unref(handle);
     dt_print(DT_DEBUG_CONTROL,
              "[agent_client] failed to create request job: control_running=%s",
              dt_control_running() ? "yes" : "no");
@@ -252,5 +488,5 @@ dt_job_t *dt_agent_client_chat_async(const dt_agent_chat_request_t *request,
   dt_control_add_job(DT_JOB_QUEUE_USER_BG, job);
   dt_print(DT_DEBUG_CONTROL, "[agent_client] queued request job");
 
-  return job;
+  return handle;
 }

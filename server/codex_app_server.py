@@ -8,7 +8,7 @@ import shlex
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,7 @@ Return exactly one JSON object matching the output schema.
 
 You are given:
 - the latest user message
+- refinement state describing whether this is a single-turn request or an automatic continuation pass
 - a capability manifest describing writable darktable controls
 - a current image snapshot with metadata, history, editable settings, and optionally a 1k rendered JPEG preview and histogram
 
@@ -60,6 +61,11 @@ Rules:
 - Favor restrained, high-confidence edits over extreme changes. Preserve highlight detail, avoid crushed shadows, and avoid oversaturation unless the user explicitly asks for a stylized look.
 - Prefer existing supported controls for global tone, color, detail, and presence before giving up on the request.
 - If visual context is present, do not answer with "be more specific" unless no safe supported edit can be inferred.
+- Use refinement.goalText as the root user goal for every pass, even when the latest user message is an automatic continuation prompt.
+- For single-turn requests, always return continueRefining=false.
+- For multi-turn requests, set continueRefining=true only when another pass is still likely to improve the image after darktable applies this pass.
+- Set continueRefining=false when the image already satisfies the goal, when additional safe edits are not warranted, or when you return zero operations.
+- As refinement progresses, prefer smaller finishing adjustments and stop once further changes would be mostly speculative.
 - Use mode "delta" only for set-float operations when the capability supports delta.
 - Use mode "set" for all set-choice and set-bool operations.
 - For set-choice operations, return value.choiceValue and prefer including value.choiceId when it is known from the editable setting choices.
@@ -87,6 +93,18 @@ class CodexTurnResult:
     raw_message: str
 
 
+@dataclass(slots=True)
+class _ActiveRequestState:
+    request_id: str
+    app_session_id: str
+    image_session_id: str
+    conversation_id: str
+    client_turn_id: str
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    thread_id: str | None = None
+    codex_turn_id: str | None = None
+
+
 class CodexAppServerBridge:
     def __init__(
         self,
@@ -102,10 +120,13 @@ class CodexAppServerBridge:
         self._cwd = str((cwd or _REPO_ROOT).resolve())
         self._timeout_seconds = timeout_seconds
         self._lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads: dict[str, str] = {}
+        self._active_requests: dict[str, _ActiveRequestState] = {}
+        self._cancelled_request_ids: set[str] = set()
 
     @staticmethod
     def _build_output_schema() -> dict[str, Any]:
@@ -141,10 +162,88 @@ class CodexAppServerBridge:
 
     def plan(self, request: RequestEnvelope) -> CodexTurnResult:
         deadline = time.monotonic() + self._timeout_seconds
-        with self._lock:
-            self._ensure_initialized_locked(deadline)
-            thread_id = self._get_or_create_thread_locked(request.session.conversationId, deadline)
-            return self._run_turn_locked(thread_id, request, deadline)
+        active_request = self._register_request(request)
+        try:
+            with self._lock:
+                self._raise_if_cancelled_locked(active_request)
+                self._ensure_initialized_locked(deadline)
+                self._raise_if_cancelled_locked(active_request)
+                thread_id = self._get_or_create_thread_locked(request.session.conversationId, deadline)
+                active_request.thread_id = thread_id
+                return self._run_turn_locked(thread_id, request, deadline, active_request)
+        finally:
+            self._unregister_request(request.requestId)
+
+    def cancel_request(
+        self,
+        *,
+        request_id: str,
+        app_session_id: str,
+        image_session_id: str,
+        conversation_id: str,
+        turn_id: str,
+    ) -> bool:
+        del app_session_id
+        del image_session_id
+        del turn_id
+
+        matched_active = False
+        with self._state_lock:
+            self._cancelled_request_ids.add(request_id)
+            active_request = self._active_requests.get(request_id)
+            if active_request and active_request.conversation_id == conversation_id:
+                active_request.cancel_event.set()
+                matched_active = True
+
+        return matched_active
+
+    def _register_request(self, request: RequestEnvelope) -> _ActiveRequestState:
+        active_request = _ActiveRequestState(
+            request_id=request.requestId,
+            app_session_id=request.session.appSessionId,
+            image_session_id=request.session.imageSessionId,
+            conversation_id=request.session.conversationId,
+            client_turn_id=request.session.turnId,
+        )
+        with self._state_lock:
+            self._active_requests[request.requestId] = active_request
+            if request.requestId in self._cancelled_request_ids:
+                active_request.cancel_event.set()
+        return active_request
+
+    def _unregister_request(self, request_id: str) -> None:
+        with self._state_lock:
+            self._active_requests.pop(request_id, None)
+            self._cancelled_request_ids.discard(request_id)
+
+    def _is_cancelled(self, active_request: _ActiveRequestState) -> bool:
+        with self._state_lock:
+            return (
+                active_request.cancel_event.is_set()
+                or active_request.request_id in self._cancelled_request_ids
+            )
+
+    def _raise_if_cancelled_locked(self, active_request: _ActiveRequestState | None) -> None:
+        if active_request is None or not self._is_cancelled(active_request):
+            return
+
+        logger.info(
+            "codex_request_cancelled",
+            extra={
+                "structured": {
+                    "requestId": active_request.request_id,
+                    "conversationId": active_request.conversation_id,
+                    "threadId": active_request.thread_id,
+                    "codexTurnId": active_request.codex_turn_id,
+                }
+            },
+        )
+        self._reset_process_locked()
+        raise CodexAppServerError(
+            "request_cancelled",
+            "Chat request was canceled",
+            status_code=499,
+        )
 
     def _ensure_initialized_locked(self, deadline: float) -> None:
         if self._process and self._process.poll() is not None:
@@ -164,6 +263,7 @@ class CodexAppServerBridge:
                 },
             },
             deadline,
+            None,
         )
         if "result" not in response:
             raise CodexAppServerError("codex_initialize_failed", "Codex initialize failed")
@@ -185,7 +285,7 @@ class CodexAppServerBridge:
         if _DEFAULT_MODEL:
             params["model"] = _DEFAULT_MODEL
 
-        response = self._send_request_locked("thread/start", params, deadline)
+        response = self._send_request_locked("thread/start", params, deadline, None)
         try:
             thread_id = response["result"]["thread"]["id"]
         except KeyError as exc:
@@ -201,6 +301,7 @@ class CodexAppServerBridge:
         thread_id: str,
         request: RequestEnvelope,
         deadline: float,
+        active_request: _ActiveRequestState,
     ) -> CodexTurnResult:
         turn_request = {
             "threadId": thread_id,
@@ -219,13 +320,14 @@ class CodexAppServerBridge:
         if _DEFAULT_MODEL:
             turn_request["model"] = _DEFAULT_MODEL
 
-        response = self._send_request_locked("turn/start", turn_request, deadline)
+        response = self._send_request_locked("turn/start", turn_request, deadline, active_request)
         try:
             turn_id = response["result"]["turn"]["id"]
         except KeyError as exc:
             raise CodexAppServerError(
                 "codex_turn_start_failed", "Codex did not return a turn id"
             ) from exc
+        active_request.codex_turn_id = turn_id
 
         state = {
             "thread_id": thread_id,
@@ -237,7 +339,8 @@ class CodexAppServerBridge:
         }
 
         while not state["completed"]:
-            message = self._read_message_locked(deadline)
+            self._raise_if_cancelled_locked(active_request)
+            message = self._read_message_locked(deadline, active_request)
             self._handle_message_locked(message, state)
 
         if state["turn_error"]:
@@ -271,6 +374,7 @@ class CodexAppServerBridge:
             "Use the capability manifest and image state exactly as provided.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, history, and current settings instead of asking for more specificity.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
+            "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
             "Return only the JSON object required by the output schema.\n\n"
             f"{json.dumps(payload, separators=(',', ':'))}"
         )
@@ -312,7 +416,13 @@ class CodexAppServerBridge:
         self._next_request_id = 1
         self._conversation_threads.clear()
 
-    def _send_request_locked(self, method: str, params: Any, deadline: float) -> dict[str, Any]:
+    def _send_request_locked(
+        self,
+        method: str,
+        params: Any,
+        deadline: float,
+        active_request: _ActiveRequestState | None,
+    ) -> dict[str, Any]:
         request_id = self._next_request_id
         self._next_request_id += 1
         self._send_json_locked(
@@ -320,7 +430,8 @@ class CodexAppServerBridge:
         )
 
         while True:
-            message = self._read_message_locked(deadline)
+            self._raise_if_cancelled_locked(active_request)
+            message = self._read_message_locked(deadline, active_request)
             if message.get("id") == request_id and "method" not in message:
                 if "error" in message:
                     error = message["error"]
@@ -349,11 +460,16 @@ class CodexAppServerBridge:
                 "codex_transport_error", f"Failed to talk to Codex app server: {exc}"
             ) from exc
 
-    def _read_message_locked(self, deadline: float) -> dict[str, Any]:
+    def _read_message_locked(
+        self,
+        deadline: float,
+        active_request: _ActiveRequestState | None = None,
+    ) -> dict[str, Any]:
         if not self._process or not self._process.stdout or not self._process.stderr:
             raise CodexAppServerError("codex_process_unavailable", "Codex app server is not running")
 
         while True:
+            self._raise_if_cancelled_locked(active_request)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise CodexAppServerError("codex_timeout", "Codex app server timed out", status_code=504)

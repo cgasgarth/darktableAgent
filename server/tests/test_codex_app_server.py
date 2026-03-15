@@ -1,6 +1,10 @@
 import pytest
 
-from server.codex_app_server import CodexAppServerBridge, _THREAD_DEVELOPER_INSTRUCTIONS
+from server.codex_app_server import (
+    CodexAppServerBridge,
+    CodexAppServerError,
+    _THREAD_DEVELOPER_INSTRUCTIONS,
+)
 from shared.protocol import RequestEnvelope
 
 
@@ -18,6 +22,14 @@ def _sample_request() -> RequestEnvelope:
             "message": {
                 "role": "user",
                 "text": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
+            },
+            "refinement": {
+                "mode": "multi-turn",
+                "enabled": True,
+                "maxPasses": 10,
+                "passIndex": 1,
+                "automaticContinuation": False,
+                "goalText": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
             },
             "uiContext": {
                 "view": "darkroom",
@@ -147,14 +159,14 @@ def test_task_complete_marks_turn_complete() -> None:
             "params": {
                 "id": "turn-1",
                 "msg": {
-                    "last_agent_message": '{"assistantText":"Done","operations":[]}',
+                    "last_agent_message": '{"assistantText":"Done","continueRefining":false,"operations":[]}',
                 },
             },
         },
         turn_state,
     )
 
-    assert turn_state["final_message"] == '{"assistantText":"Done","operations":[]}'
+    assert turn_state["final_message"] == '{"assistantText":"Done","continueRefining":false,"operations":[]}'
     assert turn_state["completed"] is True
 
 
@@ -175,6 +187,7 @@ def test_output_schema_marks_nullable_object_fields_as_required() -> None:
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Treat broad creative requests" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "If visual context is present, do not answer with \"be more specific\"" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Use refinement.goalText as the root user goal" in _THREAD_DEVELOPER_INSTRUCTIONS
 
 
 def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() -> None:
@@ -184,4 +197,49 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
 
     assert "infer a conservative supported edit plan" in prompt
     assert "preview, histogram, history, and current settings" in prompt
+    assert "Respect refinement state" in prompt
     assert '"text":"Do a full edit so this becomes a polished gallery-ready landscape photo."' in prompt
+
+
+def test_cancel_request_marks_matching_active_turn_cancelled() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    active_request = bridge._register_request(request)  # type: ignore[attr-defined]
+
+    try:
+        canceled = bridge.cancel_request(
+            request_id=request.requestId,
+            app_session_id=request.session.appSessionId,
+            image_session_id=request.session.imageSessionId,
+            conversation_id=request.session.conversationId,
+            turn_id=request.session.turnId,
+        )
+
+        assert canceled is True
+        assert active_request.cancel_event.is_set() is True
+        with pytest.raises(CodexAppServerError) as exc:
+            bridge._raise_if_cancelled_locked(active_request)  # type: ignore[attr-defined]
+        assert exc.value.code == "request_cancelled"
+    finally:
+        bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
+
+
+def test_cancel_request_records_unknown_request_ids_for_future_preflight() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+
+    canceled = bridge.cancel_request(
+        request_id="req-future",
+        app_session_id="app-1",
+        image_session_id="img-12",
+        conversation_id="conv-1",
+        turn_id="turn-1",
+    )
+
+    assert canceled is False
+    request = _sample_request()
+    request.requestId = "req-future"
+    active_request = bridge._register_request(request)  # type: ignore[attr-defined]
+    try:
+        assert active_request.cancel_event.is_set() is True
+    finally:
+        bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]

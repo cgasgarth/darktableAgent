@@ -155,6 +155,14 @@ def _sample_request_payload() -> dict:
             "turnId": "turn-1",
         },
         "message": {"role": "user", "text": "Make it brighter"},
+        "refinement": {
+            "mode": "single-turn",
+            "enabled": False,
+            "maxPasses": 1,
+            "passIndex": 1,
+            "automaticContinuation": False,
+            "goalText": "Make it brighter",
+        },
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "foo.CR3"},
         "capabilityManifest": {
             "manifestVersion": "manifest-1",
@@ -168,6 +176,7 @@ def test_request_envelope_accepts_v3_payload() -> None:
     envelope = RequestEnvelope.model_validate(_sample_request_payload())
 
     assert envelope.schemaVersion == "3.0"
+    assert envelope.refinement.mode == "single-turn"
     assert envelope.capabilityManifest.targets[0].supportedModes == ["set", "delta"]
     assert envelope.capabilityManifest.targets[1].defaultBool is False
     assert envelope.capabilityManifest.targets[2].choices[1].choiceId == "rgb"
@@ -192,11 +201,24 @@ def test_request_envelope_rejects_unknown_fields() -> None:
         raise AssertionError("Expected validation failure")
 
 
+def test_request_envelope_rejects_invalid_single_turn_refinement_shape() -> None:
+    payload = _sample_request_payload()
+    payload["refinement"]["maxPasses"] = 3
+
+    try:
+        RequestEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        assert "single-turn refinement must use maxPasses=1" in str(exc)
+    else:
+        raise AssertionError("Expected validation failure")
+
+
 def test_build_response_from_plan_preserves_ordered_operations() -> None:
     request = RequestEnvelope.model_validate(_sample_request_payload())
     plan = AgentPlan.model_validate(
         {
             "assistantText": "Applying two exposure adjustments.",
+            "continueRefining": False,
             "operations": [
                 {
                     "operationId": "op-exposure-plus-0.2",
@@ -243,6 +265,54 @@ def test_build_response_from_plan_preserves_ordered_operations() -> None:
     ]
     assert [result.status for result in response.operationResults] == ["planned", "planned"]
     assert response.session.conversationId == "conv-1"
+    assert response.refinement.stopReason == "single-turn"
+    assert response.refinement.continueRefining is False
+
+
+def test_build_response_from_plan_marks_multi_turn_continuation() -> None:
+    payload = _sample_request_payload()
+    payload["message"]["text"] = "Do a full edit"
+    payload["refinement"] = {
+        "mode": "multi-turn",
+        "enabled": True,
+        "maxPasses": 10,
+        "passIndex": 2,
+        "automaticContinuation": True,
+        "goalText": "Do a full edit",
+    }
+    request = RequestEnvelope.model_validate(payload)
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "Refining midtones and color separation.",
+            "continueRefining": True,
+            "operations": [
+                {
+                    "operationId": "op-exposure-plus-0.2",
+                    "sequence": 1,
+                    "kind": "set-float",
+                    "target": {
+                        "type": "darktable-action",
+                        "actionPath": "iop/exposure/exposure",
+                        "settingId": "setting.exposure.primary",
+                    },
+                    "value": {"mode": "delta", "number": 0.2},
+                    "reason": None,
+                    "constraints": {
+                        "onOutOfRange": "clamp",
+                        "onRevisionMismatch": "fail",
+                    },
+                }
+            ],
+        }
+    )
+
+    response = build_response_from_plan(request, plan)
+
+    assert response.refinement.mode == "multi-turn"
+    assert response.refinement.passIndex == 2
+    assert response.refinement.maxPasses == 10
+    assert response.refinement.continueRefining is True
+    assert response.refinement.stopReason == "continue"
 
 
 def test_agent_plan_rejects_duplicate_operation_ids() -> None:
@@ -250,6 +320,7 @@ def test_agent_plan_rejects_duplicate_operation_ids() -> None:
         AgentPlan.model_validate(
             {
                 "assistantText": "Nope",
+                "continueRefining": False,
                 "operations": [
                     {
                         "operationId": "duplicate",
@@ -297,6 +368,7 @@ def test_agent_plan_rejects_duplicate_sequences() -> None:
         AgentPlan.model_validate(
             {
                 "assistantText": "Nope",
+                "continueRefining": False,
                 "operations": [
                     {
                         "operationId": "one",
@@ -377,9 +449,10 @@ def test_request_envelope_rejects_setting_capability_mismatch() -> None:
 
 def test_agent_plan_accepts_bool_and_choice_operations() -> None:
     plan = AgentPlan.model_validate(
-        {
-            "assistantText": "Updating bool and choice settings.",
-            "operations": [
+            {
+                "assistantText": "Updating bool and choice settings.",
+                "continueRefining": False,
+                "operations": [
                 {
                     "operationId": "op-bool",
                     "sequence": 1,
@@ -422,3 +495,106 @@ def test_agent_plan_accepts_bool_and_choice_operations() -> None:
 
     assert plan.operations[0].value.boolValue is True
     assert plan.operations[1].value.choiceValue == 0
+
+
+def test_request_envelope_accepts_multi_turn_refinement() -> None:
+    payload = _sample_request_payload()
+    payload["refinement"] = {
+        "mode": "multi-turn",
+        "enabled": True,
+        "maxPasses": 10,
+        "passIndex": 2,
+        "automaticContinuation": True,
+        "goalText": "Make this a polished landscape",
+    }
+
+    envelope = RequestEnvelope.model_validate(payload)
+
+    assert envelope.refinement.mode == "multi-turn"
+    assert envelope.refinement.enabled is True
+    assert envelope.refinement.passIndex == 2
+
+
+def test_request_envelope_rejects_single_turn_refinement_with_invalid_budget() -> None:
+    payload = _sample_request_payload()
+    payload["refinement"]["maxPasses"] = 3
+
+    try:
+        RequestEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        assert "single-turn refinement must use maxPasses=1" in str(exc)
+    else:
+        raise AssertionError("Expected validation failure")
+
+
+def test_build_response_from_plan_sets_multi_turn_continue_state() -> None:
+    payload = _sample_request_payload()
+    payload["refinement"] = {
+        "mode": "multi-turn",
+        "enabled": True,
+        "maxPasses": 4,
+        "passIndex": 2,
+        "automaticContinuation": True,
+        "goalText": "Do a polished edit",
+    }
+    request = RequestEnvelope.model_validate(payload)
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "One more finishing pass should help.",
+            "continueRefining": True,
+            "operations": [
+                {
+                    "operationId": "op-exposure-plus-0.1",
+                    "sequence": 1,
+                    "kind": "set-float",
+                    "target": {
+                        "type": "darktable-action",
+                        "actionPath": "iop/exposure/exposure",
+                        "settingId": "setting.exposure.primary",
+                    },
+                    "value": {"mode": "delta", "number": 0.1},
+                    "reason": None,
+                    "constraints": {
+                        "onOutOfRange": "clamp",
+                        "onRevisionMismatch": "fail",
+                    },
+                }
+            ],
+        }
+    )
+
+    response = build_response_from_plan(request, plan)
+
+    assert response.refinement.model_dump() == {
+        "mode": "multi-turn",
+        "enabled": True,
+        "passIndex": 2,
+        "maxPasses": 4,
+        "continueRefining": True,
+        "stopReason": "continue",
+    }
+
+
+def test_build_response_from_plan_stops_multi_turn_without_operations() -> None:
+    payload = _sample_request_payload()
+    payload["refinement"] = {
+        "mode": "multi-turn",
+        "enabled": True,
+        "maxPasses": 4,
+        "passIndex": 3,
+        "automaticContinuation": True,
+        "goalText": "Do a polished edit",
+    }
+    request = RequestEnvelope.model_validate(payload)
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "No further safe edits are warranted.",
+            "continueRefining": True,
+            "operations": [],
+        }
+    )
+
+    response = build_response_from_plan(request, plan)
+
+    assert response.refinement.continueRefining is False
+    assert response.refinement.stopReason == "no-operations"
