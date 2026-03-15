@@ -283,7 +283,8 @@ def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None
 
 
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
-    assert "Use tools to gather image context" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Context and tool usage" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "live mode turn input already includes the current preview image" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "get_preview_image" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "get_image_state" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "apply_operations" in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -355,9 +356,10 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
 
     prompt = bridge._build_turn_prompt(_sample_request())  # type: ignore[attr-defined]
 
-    assert "Call get_preview_image and get_image_state before returning a final plan." in prompt
+    assert "Use read-only tools only when needed for missing context." in prompt
     assert "Tool budget: maximum 10 tool calls in this run." in prompt
     assert "Live run mode is enabled" in prompt
+    assert "initial turn input already includes the current preview image." in prompt
     assert "Initial turn input includes the current preview image." in prompt
     assert "Apply at least one edit batch with apply_operations within the first" in prompt
     assert "infer a conservative supported edit plan" in prompt
