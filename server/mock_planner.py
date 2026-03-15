@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from server.bridge_types import RequestProgressPayload
 from server.codex_app_server import CodexTurnResult
 from shared.protocol import AgentPlan, RequestEnvelope
 
@@ -10,7 +11,10 @@ _EXACT_EV_RE = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*ev\b", re.IGNORECASE)
 
 def _pick_exposure_setting(request: RequestEnvelope) -> tuple[str, str] | None:
     for setting in request.imageSnapshot.editableSettings:
-        if setting.actionPath == "iop/exposure/exposure" and setting.kind == "set-float":
+        if (
+            setting.actionPath == "iop/exposure/exposure"
+            and setting.kind == "set-float"
+        ):
             return setting.actionPath, setting.settingId
     return None
 
@@ -22,7 +26,11 @@ def _infer_goal_delta(request: RequestEnvelope) -> float:
         return float(match.group(1))
 
     lowered = text.lower()
-    if "darken" in lowered or "lower exposure" in lowered or "reduce exposure" in lowered:
+    if (
+        "darken" in lowered
+        or "lower exposure" in lowered
+        or "reduce exposure" in lowered
+    ):
         return -0.7
 
     return 0.7
@@ -118,7 +126,7 @@ class MockPlannerBridge:
         image_session_id: str,
         conversation_id: str,
         turn_id: str,
-    ) -> dict[str, object]:
+    ) -> RequestProgressPayload:
         del request_id
         del app_session_id
         del image_session_id

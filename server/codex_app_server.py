@@ -14,7 +14,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 try:
     from PIL import Image, ImageEnhance
@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover - fallback for environments without Pillow
     ImageEnhance = None
 
 from shared.protocol import AgentPlan, RequestEnvelope
+from server.bridge_types import RequestProgressPayload
 
 logger = logging.getLogger("darktable_agent.codex")
 
@@ -156,6 +157,19 @@ class _TurnContext:
     consecutive_read_only_tool_calls: int = 0
     applied_operations: list[dict[str, Any]] = field(default_factory=list)
     next_operation_sequence: int = 1
+
+
+class _TurnRunState(TypedDict):
+    thread_id: str
+    turn_id: str
+    chunks: list[str]
+    final_message: str | None
+    turn_error: str | None
+    completed: bool
+    token_usage_last: dict[str, Any] | None
+    token_usage_total: dict[str, Any] | None
+    last_activity_at: float
+    last_activity_method: str | None
 
 
 class CodexAppServerBridge:
@@ -353,7 +367,7 @@ class CodexAppServerBridge:
         image_session_id: str,
         conversation_id: str,
         turn_id: str,
-    ) -> dict[str, Any]:
+    ) -> RequestProgressPayload:
         with self._state_lock:
             active_request = self._active_requests.get(request_id)
             if active_request is None:
@@ -660,12 +674,14 @@ class CodexAppServerBridge:
             response = self._send_request_locked(
                 "turn/start", turn_request, deadline, active_request
             )
-            try:
-                turn_id = response["result"]["turn"]["id"]
-            except KeyError as exc:
+            result = response.get("result")
+            turn = result.get("turn") if isinstance(result, dict) else None
+            turn_id_value = turn.get("id") if isinstance(turn, dict) else None
+            if not isinstance(turn_id_value, str) or not turn_id_value:
                 raise CodexAppServerError(
                     "codex_turn_start_failed", "Codex did not return a turn id"
-                ) from exc
+                )
+            turn_id = turn_id_value
             active_request.codex_turn_id = turn_id
             self._register_turn_context(thread_id, turn_id, request, preview_data_url)
             self._set_active_request_status_locked(
@@ -689,7 +705,7 @@ class CodexAppServerBridge:
                 },
             )
 
-            state = {
+            state: _TurnRunState = {
                 "thread_id": thread_id,
                 "turn_id": turn_id,
                 "chunks": [],
@@ -1145,12 +1161,19 @@ class CodexAppServerBridge:
         while True:
             self._raise_if_cancelled_locked(active_request)
             message = self._read_message_locked(deadline, active_request)
+            if message is None:
+                continue
             if message.get("id") == request_id and "method" not in message:
                 if "error" in message:
                     error = message["error"]
+                    error_message = (
+                        error.get("message") if isinstance(error, dict) else None
+                    )
                     raise CodexAppServerError(
                         "codex_jsonrpc_error",
-                        error.get("message", f"Codex {method} failed"),
+                        error_message
+                        if isinstance(error_message, str)
+                        else f"Codex {method} failed",
                     )
                 return message
             self._handle_message_locked(message, None)
@@ -1226,15 +1249,21 @@ class CodexAppServerBridge:
                     )
                     continue
                 try:
-                    return json.loads(line)
+                    payload = json.loads(line)
                 except json.JSONDecodeError as exc:
                     raise CodexAppServerError(
                         "codex_invalid_json",
                         f"Codex emitted invalid JSON: {line.rstrip()}",
                     ) from exc
+                if not isinstance(payload, dict):
+                    raise CodexAppServerError(
+                        "codex_invalid_json",
+                        f"Codex emitted non-object JSON: {line.rstrip()}",
+                    )
+                return cast(dict[str, Any], payload)
 
     def _handle_message_locked(
-        self, message: dict[str, Any], turn_state: dict[str, Any] | None
+        self, message: dict[str, Any], turn_state: _TurnRunState | None
     ) -> None:
         if "method" in message and "id" in message:
             self._handle_server_request_locked(message)
@@ -1243,7 +1272,8 @@ class CodexAppServerBridge:
             return
 
         method = message["method"]
-        params = message.get("params", {})
+        raw_params = message.get("params", {})
+        params = raw_params if isinstance(raw_params, dict) else {}
 
         if method == "error":
             if (
@@ -1251,7 +1281,8 @@ class CodexAppServerBridge:
                 and params.get("threadId") == turn_state["thread_id"]
                 and params.get("turnId") == turn_state["turn_id"]
             ):
-                error = params.get("error", {})
+                raw_error = params.get("error", {})
+                error = raw_error if isinstance(raw_error, dict) else {}
                 turn_state["turn_error"] = self._extract_error_message(
                     error.get("message") or "Codex app server reported an error"
                 )
@@ -1289,9 +1320,11 @@ class CodexAppServerBridge:
                 or params.get("turnId") != turn_state["turn_id"]
             ):
                 return
-            item = params.get("item", {})
+            raw_item = params.get("item", {})
+            item = raw_item if isinstance(raw_item, dict) else {}
             if item.get("type") == "agentMessage":
-                turn_state["final_message"] = item.get("text")
+                text = item.get("text")
+                turn_state["final_message"] = text if isinstance(text, str) else None
                 if item.get("phase") == "final_answer":
                     turn_state["completed"] = True
             return
@@ -1299,22 +1332,25 @@ class CodexAppServerBridge:
         if method == "codex/event/task_complete":
             if params.get("id") != turn_state["turn_id"]:
                 return
-            msg = params.get("msg", {})
-            if msg.get("last_agent_message"):
-                turn_state["final_message"] = msg["last_agent_message"]
+            raw_msg = params.get("msg", {})
+            msg = raw_msg if isinstance(raw_msg, dict) else {}
+            last_agent_message = msg.get("last_agent_message")
+            if isinstance(last_agent_message, str) and last_agent_message:
+                turn_state["final_message"] = last_agent_message
                 turn_state["completed"] = True
             return
 
         if method == "turn/completed":
             if params.get("threadId") != turn_state["thread_id"]:
                 return
-            turn = params.get("turn", {})
+            raw_turn = params.get("turn", {})
+            turn = raw_turn if isinstance(raw_turn, dict) else {}
             if turn.get("id") != turn_state["turn_id"]:
                 return
-            error = turn.get("error")
-            if error:
+            raw_error = turn.get("error")
+            if isinstance(raw_error, dict):
                 turn_state["turn_error"] = self._extract_error_message(
-                    error.get("message") or "Codex turn failed"
+                    raw_error.get("message") or "Codex turn failed"
                 )
             turn_state["completed"] = True
             return

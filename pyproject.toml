@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "pyright>=1.1.408,<2.0",
   "pytest>=8.3,<9.0",
 ]
 
@@ -27,3 +28,11 @@ testpaths = ["server/tests"]
 
 [tool.setuptools]
 packages = ["server", "shared"]
+
+[tool.pyright]
+include = ["server", "shared"]
+exclude = ["server/tests"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
