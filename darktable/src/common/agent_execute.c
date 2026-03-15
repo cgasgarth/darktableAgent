@@ -137,21 +137,377 @@ static gboolean _execution_result_set_failed(dt_agent_execution_report_t *report
   return FALSE;
 }
 
+typedef struct dt_agent_ordered_operation_t
+{
+  const dt_agent_chat_operation_t *operation;
+  guint original_index;
+} dt_agent_ordered_operation_t;
+
+static gboolean _is_white_balance_action_path(const char *action_path)
+{
+  return action_path && g_str_has_prefix(action_path, "iop/temperature/");
+}
+
+static gint _white_balance_operation_rank(const dt_agent_chat_operation_t *operation)
+{
+  if(!operation || !_is_white_balance_action_path(operation->action_path))
+    return G_MAXINT;
+
+  const char *leaf = strrchr(operation->action_path, '/');
+  leaf = leaf ? leaf + 1 : operation->action_path;
+
+  switch(operation->kind)
+  {
+    case DT_AGENT_OPERATION_SET_BOOL:
+      return 0;
+    case DT_AGENT_OPERATION_SET_CHOICE:
+      return 1;
+    case DT_AGENT_OPERATION_SET_FLOAT:
+      if(g_strcmp0(leaf, "finetune") == 0)
+        return 2;
+      if(g_strcmp0(leaf, "temperature") == 0)
+        return 3;
+      if(g_strcmp0(leaf, "tint") == 0)
+        return 4;
+      if(g_strcmp0(leaf, "red") == 0)
+        return 5;
+      if(g_strcmp0(leaf, "green") == 0)
+        return 6;
+      if(g_strcmp0(leaf, "blue") == 0)
+        return 7;
+      if(g_strcmp0(leaf, "emerald") == 0)
+        return 8;
+      if(g_strcmp0(leaf, "yellow") == 0 || g_strcmp0(leaf, "various") == 0)
+        return 9;
+      return 10;
+    case DT_AGENT_OPERATION_UNKNOWN:
+    default:
+      return 11;
+  }
+}
+
+static gint _ordered_white_balance_operation_compare(gconstpointer a, gconstpointer b)
+{
+  const dt_agent_ordered_operation_t *left = a;
+  const dt_agent_ordered_operation_t *right = b;
+  const gint left_rank = _white_balance_operation_rank(left->operation);
+  const gint right_rank = _white_balance_operation_rank(right->operation);
+
+  if(left_rank != right_rank)
+    return left_rank < right_rank ? -1 : 1;
+  if(left->original_index != right->original_index)
+    return left->original_index < right->original_index ? -1 : 1;
+  return 0;
+}
+
+static GPtrArray *_ordered_operations_for_execution(const GPtrArray *operations)
+{
+  GPtrArray *ordered = g_ptr_array_new();
+  if(!operations)
+    return ordered;
+
+  g_ptr_array_set_size(ordered, operations->len);
+  for(guint i = 0; i < operations->len; i++)
+    ordered->pdata[i] = g_ptr_array_index((GPtrArray *)operations, i);
+
+  g_autoptr(GArray) wb_positions = g_array_new(FALSE, FALSE, sizeof(guint));
+  g_autoptr(GArray) wb_operations = g_array_new(FALSE, FALSE, sizeof(dt_agent_ordered_operation_t));
+  for(guint i = 0; i < operations->len; i++)
+  {
+    const dt_agent_chat_operation_t *operation = g_ptr_array_index((GPtrArray *)operations, i);
+    if(!_is_white_balance_action_path(operation ? operation->action_path : NULL))
+      continue;
+
+    g_array_append_val(wb_positions, i);
+    dt_agent_ordered_operation_t item = { .operation = operation, .original_index = i };
+    g_array_append_val(wb_operations, item);
+  }
+
+  if(wb_operations->len < 2)
+    return ordered;
+
+  g_array_sort(wb_operations, _ordered_white_balance_operation_compare);
+  for(guint i = 0; i < wb_positions->len; i++)
+  {
+    const guint position = g_array_index(wb_positions, guint, i);
+    const dt_agent_ordered_operation_t item = g_array_index(wb_operations, dt_agent_ordered_operation_t, i);
+    ordered->pdata[position] = (gpointer)item.operation;
+  }
+
+  return ordered;
+}
+
+static gchar *_joined_white_balance_action_paths(const GPtrArray *operations)
+{
+  if(!operations)
+    return NULL;
+
+  g_autoptr(GString) joined = g_string_new(NULL);
+  for(guint i = 0; i < operations->len; i++)
+  {
+    const dt_agent_chat_operation_t *operation = g_ptr_array_index((GPtrArray *)operations, i);
+    if(!_is_white_balance_action_path(operation ? operation->action_path : NULL))
+      continue;
+
+    if(joined->len)
+      g_string_append(joined, ",");
+    g_string_append(joined, operation->action_path);
+  }
+
+  if(!joined->len)
+    return NULL;
+  return g_string_free(g_steal_pointer(&joined), FALSE);
+}
+
+static const dt_agent_choice_option_t *_choice_option_for_value(
+  const dt_agent_action_descriptor_t *descriptor,
+  gint requested_choice_value)
+{
+  if(!descriptor || !descriptor->choices)
+    return NULL;
+
+  for(guint i = 0; i < descriptor->choices->len; i++)
+  {
+    const dt_agent_choice_option_t *option = g_ptr_array_index(descriptor->choices, i);
+    if(option && option->choice_value == requested_choice_value)
+      return option;
+  }
+
+  return NULL;
+}
+
+static gboolean _validate_white_balance_operation(const dt_agent_chat_operation_t *operation,
+                                                  const dt_agent_action_descriptor_t *descriptor,
+                                                  GError **error)
+{
+  if(!operation || !descriptor || !_is_white_balance_action_path(descriptor->action_path))
+    return TRUE;
+
+  if(!darktable.develop || !darktable.develop->chroma.adaptation)
+    return TRUE;
+
+  switch(operation->kind)
+  {
+    case DT_AGENT_OPERATION_SET_FLOAT:
+      g_set_error(
+        error,
+        _agent_execute_error_quark(),
+        DT_AGENT_EXECUTE_ERROR_INVALID,
+        "%s",
+        _("white-balance numeric adjustments conflict with active chromatic adaptation; set white balance to camera reference or as shot to reference, or disable chromatic adaptation, then retry"));
+      return FALSE;
+    case DT_AGENT_OPERATION_SET_BOOL:
+      if(operation->has_bool_value && !operation->bool_value)
+      {
+        g_set_error(
+          error,
+          _agent_execute_error_quark(),
+          DT_AGENT_EXECUTE_ERROR_INVALID,
+          "%s",
+          _("disabling white balance conflicts with active chromatic adaptation; keep white balance enabled or disable chromatic adaptation, then retry"));
+        return FALSE;
+      }
+      return TRUE;
+    case DT_AGENT_OPERATION_SET_CHOICE:
+      if(!operation->has_choice_value)
+        return TRUE;
+      if(operation->choice_value == 3 || operation->choice_value == 4)
+        return TRUE;
+
+      {
+        const dt_agent_choice_option_t *option = _choice_option_for_value(descriptor, operation->choice_value);
+        g_set_error(
+          error,
+          _agent_execute_error_quark(),
+          DT_AGENT_EXECUTE_ERROR_INVALID,
+          _("white-balance choice '%s' conflicts with active chromatic adaptation; use camera reference or as shot to reference, or disable chromatic adaptation, then retry"),
+          option && option->label ? option->label : _("unknown"));
+      }
+      return FALSE;
+    case DT_AGENT_OPERATION_UNKNOWN:
+    default:
+      return TRUE;
+  }
+}
+
+static gboolean _validate_float_operation(const dt_agent_chat_operation_t *operation,
+                                          GError **error)
+{
+  dt_agent_action_descriptor_t *descriptor
+    = dt_agent_catalog_find_descriptor(darktable.develop,
+                                       operation->action_path,
+                                       operation->setting_id,
+                                       error);
+  if(!descriptor)
+    return FALSE;
+
+  if(!_validate_white_balance_operation(operation, descriptor, error))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  double value_before = _read_descriptor_float_value(descriptor, error);
+  if(dt_isnan(value_before))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  if(operation->value_mode == DT_AGENT_VALUE_MODE_DELTA)
+  {
+    if(dt_agent_catalog_supports_mode(descriptor, DT_AGENT_VALUE_MODE_DELTA))
+    {
+      dt_agent_action_descriptor_free(descriptor);
+      return TRUE;
+    }
+
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                _("unsupported value mode for action path: %s"),
+                descriptor->action_path ? descriptor->action_path : _("unknown"));
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+  if(operation->value_mode == DT_AGENT_VALUE_MODE_SET)
+  {
+    if(dt_agent_catalog_supports_mode(descriptor, DT_AGENT_VALUE_MODE_SET))
+    {
+      dt_agent_action_descriptor_free(descriptor);
+      return TRUE;
+    }
+
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                _("unsupported value mode for action path: %s"),
+                descriptor->action_path ? descriptor->action_path : _("unknown"));
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+              "%s", _("unsupported numeric value mode"));
+  dt_agent_action_descriptor_free(descriptor);
+  return FALSE;
+}
+
+static gboolean _validate_choice_operation(const dt_agent_chat_operation_t *operation,
+                                           GError **error)
+{
+  dt_agent_action_descriptor_t *descriptor
+    = dt_agent_catalog_find_descriptor(darktable.develop,
+                                       operation->action_path,
+                                       operation->setting_id,
+                                       error);
+  if(!descriptor)
+    return FALSE;
+
+  if(!_validate_white_balance_operation(operation, descriptor, error))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  if(operation->value_mode != DT_AGENT_VALUE_MODE_SET || !operation->has_choice_value)
+  {
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                "%s", _("unsupported choice value mode"));
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  const dt_agent_choice_option_t *option = _choice_option_for_value(descriptor, operation->choice_value);
+  if(!option)
+  {
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                _("unsupported choice value for action path: %s"),
+                descriptor->action_path ? descriptor->action_path : _("unknown"));
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  if(operation->choice_id && operation->choice_id[0]
+     && g_strcmp0(operation->choice_id, option->choice_id) != 0)
+  {
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                _("choice id mismatch for action path: %s"),
+                descriptor->action_path ? descriptor->action_path : _("unknown"));
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  dt_agent_action_descriptor_free(descriptor);
+  return TRUE;
+}
+
+static gboolean _validate_bool_operation(const dt_agent_chat_operation_t *operation,
+                                         GError **error)
+{
+  dt_agent_action_descriptor_t *descriptor
+    = dt_agent_catalog_find_descriptor(darktable.develop,
+                                       operation->action_path,
+                                       operation->setting_id,
+                                       error);
+  if(!descriptor)
+    return FALSE;
+
+  if(!_validate_white_balance_operation(operation, descriptor, error))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  if(operation->value_mode != DT_AGENT_VALUE_MODE_SET || !operation->has_bool_value)
+  {
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                "%s", _("unsupported bool value mode"));
+    dt_agent_action_descriptor_free(descriptor);
+    return FALSE;
+  }
+
+  dt_agent_action_descriptor_free(descriptor);
+  return TRUE;
+}
+
+static gboolean _validate_operation(const dt_agent_chat_operation_t *operation,
+                                    GError **error)
+{
+  if(g_strcmp0(operation->status, "planned") != 0)
+  {
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                _("unsupported operation status: %s"),
+                operation->status ? operation->status : _("unknown"));
+    return FALSE;
+  }
+
+  if(g_strcmp0(operation->target_type, "darktable-action") != 0)
+  {
+    g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                _("unsupported target type: %s"),
+                operation->target_type ? operation->target_type : _("unknown"));
+    return FALSE;
+  }
+
+  switch(operation->kind)
+  {
+    case DT_AGENT_OPERATION_SET_FLOAT:
+      return _validate_float_operation(operation, error);
+    case DT_AGENT_OPERATION_SET_CHOICE:
+      return _validate_choice_operation(operation, error);
+    case DT_AGENT_OPERATION_SET_BOOL:
+      return _validate_bool_operation(operation, error);
+    case DT_AGENT_OPERATION_UNKNOWN:
+    default:
+      g_set_error(error, _agent_execute_error_quark(), DT_AGENT_EXECUTE_ERROR_INVALID,
+                  _("unsupported operation kind: %s"),
+                  operation->kind_name ? operation->kind_name : _("unknown"));
+      return FALSE;
+  }
+}
+
 static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *operation,
                                              dt_agent_execution_report_t *report,
                                              dt_agent_execution_result_t *result,
                                              GError **error)
 {
-  if(!dt_agent_catalog_is_action_path_allowed(operation->action_path))
-  {
-    return _execution_result_set_blocked(
-      report,
-      result,
-      error,
-      "%s",
-      _("white-balance module controls are disabled for safety; use other color controls"));
-  }
-
   dt_agent_action_descriptor_t *descriptor
     = dt_agent_catalog_find_descriptor(darktable.develop,
                                        operation->action_path,
@@ -380,11 +736,54 @@ gboolean dt_agent_execute_response(const dt_agent_chat_response_t *response,
     return FALSE;
   }
 
+  g_autoptr(GPtrArray) ordered_operations = _ordered_operations_for_execution(response->operations);
+  g_autofree gchar *attempted_wb_paths = _joined_white_balance_action_paths(ordered_operations);
+  if(attempted_wb_paths)
+    dt_print(DT_DEBUG_CONTROL, "[agent_execute] white-balance attempted paths=%s", attempted_wb_paths);
+
+  g_autoptr(GError) validation_error = NULL;
+  guint validation_failed_index = G_MAXUINT;
+  for(guint i = 0; i < ordered_operations->len; i++)
+  {
+    const dt_agent_chat_operation_t *operation = g_ptr_array_index(ordered_operations, i);
+    if(_validate_operation(operation, &validation_error))
+      continue;
+
+    validation_failed_index = i;
+    break;
+  }
+
+  if(validation_error)
+  {
+    for(guint i = 0; i < ordered_operations->len; i++)
+    {
+      const dt_agent_chat_operation_t *operation = g_ptr_array_index(ordered_operations, i);
+      dt_agent_execution_result_t *result = _execution_result_new(operation);
+      result->status = DT_AGENT_EXECUTION_STATUS_BLOCKED;
+      if(i == validation_failed_index)
+        result->message = g_strdup(validation_error->message);
+      else if(i < validation_failed_index)
+        result->message = g_strdup(_("blocked by batch validation failure"));
+      else
+        result->message = g_strdup(_("blocked by a previous operation failure"));
+      g_ptr_array_add(report->results, result);
+      report->blocked_count++;
+    }
+
+    if(attempted_wb_paths)
+      dt_print(DT_DEBUG_CONTROL,
+               "[agent_execute] white-balance validation failed paths=%s error=%s",
+               attempted_wb_paths,
+               validation_error->message ? validation_error->message : "");
+    g_propagate_error(error, g_steal_pointer(&validation_error));
+    return FALSE;
+  }
+
   gboolean all_ok = TRUE;
   g_autoptr(GError) first_error = NULL;
-  for(guint i = 0; i < response->operations->len; i++)
+  for(guint i = 0; i < ordered_operations->len; i++)
   {
-    const dt_agent_chat_operation_t *operation = g_ptr_array_index(response->operations, i);
+    const dt_agent_chat_operation_t *operation = g_ptr_array_index(ordered_operations, i);
     if(all_ok)
     {
       g_autoptr(GError) operation_error = NULL;
@@ -406,6 +805,9 @@ gboolean dt_agent_execute_response(const dt_agent_chat_response_t *response,
 
   if(!all_ok && first_error)
     g_propagate_error(error, g_steal_pointer(&first_error));
+
+  if(all_ok && attempted_wb_paths)
+    dt_print(DT_DEBUG_CONTROL, "[agent_execute] white-balance applied paths=%s", attempted_wb_paths);
 
   return all_ok;
 }

@@ -80,7 +80,7 @@ def _sample_capabilities() -> list[dict]:
             "maxNumber": 3.141592653589793,
             "defaultNumber": 0.0,
             "stepNumber": 0.001,
-        }
+        },
     ]
 
 
@@ -183,7 +183,7 @@ def _sample_image_snapshot() -> dict:
                 "maxNumber": 3.141592653589793,
                 "defaultNumber": 0.0,
                 "stepNumber": 0.001,
-            }
+            },
         ],
         "history": [
             {
@@ -242,6 +242,44 @@ def _sample_request_payload() -> dict:
     }
 
 
+def _sample_request_payload_with_white_balance() -> dict:
+    payload = _sample_request_payload()
+    payload["capabilityManifest"]["targets"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "capabilityId": "temperature.temperature",
+            "label": "Temperature",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/temperature/temperature",
+            "supportedModes": ["set", "delta"],
+            "minNumber": 2000.0,
+            "maxNumber": 50000.0,
+            "defaultNumber": 5003.0,
+            "stepNumber": 10.0,
+        }
+    )
+    payload["imageSnapshot"]["editableSettings"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "settingId": "setting.temperature.temperature",
+            "capabilityId": "temperature.temperature",
+            "label": "Temperature",
+            "actionPath": "iop/temperature/temperature",
+            "kind": "set-float",
+            "currentNumber": 5003.0,
+            "supportedModes": ["set", "delta"],
+            "minNumber": 2000.0,
+            "maxNumber": 50000.0,
+            "defaultNumber": 5003.0,
+            "stepNumber": 10.0,
+        }
+    )
+    return payload
+
+
 def test_request_envelope_accepts_v3_payload() -> None:
     envelope = RequestEnvelope.model_validate(_sample_request_payload())
 
@@ -259,9 +297,24 @@ def test_request_envelope_accepts_v3_payload() -> None:
     assert envelope.imageSnapshot.editableSettings[1].currentBool is True
     assert envelope.imageSnapshot.editableSettings[2].currentChoiceId == "rgb"
     assert envelope.imageSnapshot.editableSettings[3].moduleLabel == "color equalizer"
-    assert envelope.imageSnapshot.editableSettings[4].actionPath == "iop/primaries/red_hue"
+    assert (
+        envelope.imageSnapshot.editableSettings[4].actionPath == "iop/primaries/red_hue"
+    )
     assert envelope.imageSnapshot.preview.width == 1000
     assert envelope.imageSnapshot.histogram.binCount == 4
+
+
+def test_request_envelope_accepts_white_balance_controls_when_manifest_matches() -> (
+    None
+):
+    envelope = RequestEnvelope.model_validate(
+        _sample_request_payload_with_white_balance()
+    )
+
+    wb_setting = envelope.imageSnapshot.editableSettings[-1]
+    assert wb_setting.settingId == "setting.temperature.temperature"
+    assert wb_setting.actionPath == "iop/temperature/temperature"
+    assert wb_setting.currentNumber == 5003.0
 
 
 def test_request_envelope_rejects_unknown_fields() -> None:
@@ -296,6 +349,22 @@ def test_request_envelope_rejects_module_metadata_mismatch() -> None:
         RequestEnvelope.model_validate(payload)
     except ValidationError as exc:
         assert "editableSetting moduleId does not match capability manifest" in str(exc)
+    else:
+        raise AssertionError("Expected validation failure")
+
+
+def test_request_envelope_rejects_white_balance_metadata_mismatch() -> None:
+    payload = _sample_request_payload_with_white_balance()
+    payload["imageSnapshot"]["editableSettings"][-1]["actionPath"] = (
+        "iop/temperature/tint"
+    )
+
+    try:
+        RequestEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        assert "editableSetting actionPath does not match capability manifest" in str(
+            exc
+        )
     else:
         raise AssertionError("Expected validation failure")
 
@@ -350,7 +419,10 @@ def test_build_response_from_plan_preserves_ordered_operations() -> None:
         "op-exposure-plus-0.2",
         "op-exposure-plus-0.5",
     ]
-    assert [result.status for result in response.operationResults] == ["planned", "planned"]
+    assert [result.status for result in response.operationResults] == [
+        "planned",
+        "planned",
+    ]
     assert response.session.conversationId == "conv-1"
     assert response.refinement.stopReason == "single-turn"
     assert response.refinement.continueRefining is False
@@ -412,11 +484,11 @@ def test_agent_plan_rejects_duplicate_operation_ids() -> None:
                         "operationId": "duplicate",
                         "sequence": 1,
                         "kind": "set-float",
-                            "target": {
-                                "type": "darktable-action",
-                                "actionPath": "iop/exposure/exposure",
-                                "settingId": "setting.exposure.primary",
-                            },
+                        "target": {
+                            "type": "darktable-action",
+                            "actionPath": "iop/exposure/exposure",
+                            "settingId": "setting.exposure.primary",
+                        },
                         "value": {"mode": "delta", "number": 0.2},
                         "reason": None,
                         "constraints": {
@@ -428,11 +500,11 @@ def test_agent_plan_rejects_duplicate_operation_ids() -> None:
                         "operationId": "duplicate",
                         "sequence": 2,
                         "kind": "set-float",
-                            "target": {
-                                "type": "darktable-action",
-                                "actionPath": "iop/exposure/exposure",
-                                "settingId": "setting.exposure.primary",
-                            },
+                        "target": {
+                            "type": "darktable-action",
+                            "actionPath": "iop/exposure/exposure",
+                            "settingId": "setting.exposure.primary",
+                        },
                         "value": {"mode": "delta", "number": 0.5},
                         "reason": None,
                         "constraints": {
@@ -460,11 +532,11 @@ def test_agent_plan_rejects_duplicate_sequences() -> None:
                         "operationId": "one",
                         "sequence": 1,
                         "kind": "set-float",
-                            "target": {
-                                "type": "darktable-action",
-                                "actionPath": "iop/exposure/exposure",
-                                "settingId": "setting.exposure.primary",
-                            },
+                        "target": {
+                            "type": "darktable-action",
+                            "actionPath": "iop/exposure/exposure",
+                            "settingId": "setting.exposure.primary",
+                        },
                         "value": {"mode": "delta", "number": 0.2},
                         "reason": None,
                         "constraints": {
@@ -476,11 +548,11 @@ def test_agent_plan_rejects_duplicate_sequences() -> None:
                         "operationId": "two",
                         "sequence": 1,
                         "kind": "set-float",
-                            "target": {
-                                "type": "darktable-action",
-                                "actionPath": "iop/exposure/exposure",
-                                "settingId": "setting.exposure.primary",
-                            },
+                        "target": {
+                            "type": "darktable-action",
+                            "actionPath": "iop/exposure/exposure",
+                            "settingId": "setting.exposure.primary",
+                        },
                         "value": {"mode": "delta", "number": 0.5},
                         "reason": None,
                         "constraints": {
@@ -523,7 +595,9 @@ def test_request_envelope_rejects_missing_capability_manifest() -> None:
 
 def test_request_envelope_rejects_setting_capability_mismatch() -> None:
     payload = _sample_request_payload()
-    payload["imageSnapshot"]["editableSettings"][0]["capabilityId"] = "unknown.capability"
+    payload["imageSnapshot"]["editableSettings"][0]["capabilityId"] = (
+        "unknown.capability"
+    )
 
     try:
         RequestEnvelope.model_validate(payload)
@@ -535,10 +609,10 @@ def test_request_envelope_rejects_setting_capability_mismatch() -> None:
 
 def test_agent_plan_accepts_bool_and_choice_operations() -> None:
     plan = AgentPlan.model_validate(
-            {
-                "assistantText": "Updating bool and choice settings.",
-                "continueRefining": False,
-                "operations": [
+        {
+            "assistantText": "Updating bool and choice settings.",
+            "continueRefining": False,
+            "operations": [
                 {
                     "operationId": "op-bool",
                     "sequence": 1,

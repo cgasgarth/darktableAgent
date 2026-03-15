@@ -38,20 +38,9 @@ static GQuark _agent_catalog_error_quark(void)
   return g_quark_from_static_string("dt-agent-catalog-error");
 }
 
-static const char *const _blocked_action_path_prefixes[] = {
-  "iop/temperature/",
-};
-
 gboolean dt_agent_catalog_is_action_path_allowed(const char *action_path)
 {
-  if(!action_path || !action_path[0])
-    return FALSE;
-
-  for(guint i = 0; i < G_N_ELEMENTS(_blocked_action_path_prefixes); i++)
-    if(g_str_has_prefix(action_path, _blocked_action_path_prefixes[i]))
-      return FALSE;
-
-  return TRUE;
+  return action_path && action_path[0];
 }
 
 static gchar *_action_full_id(dt_action_t *action)

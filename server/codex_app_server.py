@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import io
 import json
 import logging
@@ -39,11 +40,17 @@ _DEFAULT_COMMAND = [
     "--listen",
     "stdio://",
 ]
-_DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS", "600"))
+_DEFAULT_TIMEOUT_SECONDS = float(
+    os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS", "600")
+)
 _DEFAULT_PERSONALITY = os.environ.get("DARKTABLE_AGENT_CODEX_PERSONALITY", "pragmatic")
-_DEFAULT_REASONING_EFFORT = os.environ.get("DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "high")
+_DEFAULT_REASONING_EFFORT = os.environ.get(
+    "DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "high"
+)
 _DEFAULT_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_MODEL", "gpt-5.3-codex")
-_FAST_MODE_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_FAST_MODE_MODEL", "gpt-5.3-codex")
+_FAST_MODE_MODEL = os.environ.get(
+    "DARKTABLE_AGENT_CODEX_FAST_MODE_MODEL", "gpt-5.3-codex"
+)
 _FAST_MODE_REASONING_EFFORT = os.environ.get(
     "DARKTABLE_AGENT_CODEX_FAST_MODE_REASONING_EFFORT", "low"
 )
@@ -62,9 +69,7 @@ _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY = int(
 _TOOL_GET_IMAGE_STATE = "get_image_state"
 _TOOL_GET_PREVIEW_IMAGE = "get_preview_image"
 _TOOL_APPLY_OPERATIONS = "apply_operations"
-_DISALLOWED_WHITE_BALANCE_ACTION_PATH_PREFIXES = (
-    "iop/temperature/",
-)
+_WHITE_BALANCE_ACTION_PATH_PREFIXES = ("iop/temperature/",)
 
 _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing planner for darktable.
 
@@ -80,7 +85,8 @@ Only emit operations targeting provided settingId/actionPath pairs. Never invent
 Keep edits coherent, conservative, and executable.
 If user intent is broad, infer a reasonable plan from the visible image instead of asking for more specificity.
 Prefer advanced color controls (`colorequal`, `colorbalancergb`, `primaries`) when available for nuanced color work.
-Do not use white-balance module controls (`iop/temperature/*`); those controls are disabled for safety.
+White-balance controls (`iop/temperature/*`) are available. Respect supportedModes, bounds, and exact settingId/actionPath pairs.
+When batching multiple white-balance edits, prefer stable ordering: preset/choice first, then finetune, then temperature/tint, then channel multipliers.
 
 Refinement rules:
 - Always optimize toward refinement.goalText.
@@ -162,7 +168,9 @@ class CodexAppServerBridge:
     ) -> None:
         command_env = os.environ.get("DARKTABLE_AGENT_CODEX_APP_SERVER_CMD")
         self._command = (
-            shlex.split(command_env) if command_env else list(command or _DEFAULT_COMMAND)
+            shlex.split(command_env)
+            if command_env
+            else list(command or _DEFAULT_COMMAND)
         )
         self._cwd = str((cwd or _REPO_ROOT).resolve())
         self._timeout_seconds = timeout_seconds
@@ -225,7 +233,9 @@ class CodexAppServerBridge:
                 self._raise_if_cancelled_locked(active_request)
                 self._ensure_initialized_locked(deadline)
                 self._raise_if_cancelled_locked(active_request)
-                thread_reused = request.session.conversationId in self._conversation_threads
+                thread_reused = (
+                    request.session.conversationId in self._conversation_threads
+                )
                 self._set_active_request_status_locked(
                     request.requestId,
                     status="starting-thread",
@@ -379,7 +389,9 @@ class CodexAppServerBridge:
 
             context = None
             if active_request.thread_id and active_request.codex_turn_id:
-                context = self._turn_contexts.get((active_request.thread_id, active_request.codex_turn_id))
+                context = self._turn_contexts.get(
+                    (active_request.thread_id, active_request.codex_turn_id)
+                )
 
             operations = list(context.applied_operations) if context else []
             tool_calls_used = context.tool_calls_used if context else 0
@@ -404,7 +416,9 @@ class CodexAppServerBridge:
                 or active_request.request_id in self._cancelled_request_ids
             )
 
-    def _raise_if_cancelled_locked(self, active_request: _ActiveRequestState | None) -> None:
+    def _raise_if_cancelled_locked(
+        self, active_request: _ActiveRequestState | None
+    ) -> None:
         if active_request is None or not self._is_cancelled(active_request):
             return
 
@@ -461,7 +475,10 @@ class CodexAppServerBridge:
     ) -> None:
         with self._state_lock:
             for active_request in self._active_requests.values():
-                if active_request.thread_id == thread_id and active_request.codex_turn_id == turn_id:
+                if (
+                    active_request.thread_id == thread_id
+                    and active_request.codex_turn_id == turn_id
+                ):
                     active_request.status = status
                     active_request.message = message
                     if last_tool_name is not None:
@@ -490,7 +507,9 @@ class CodexAppServerBridge:
             None,
         )
         if "result" not in response:
-            raise CodexAppServerError("codex_initialize_failed", "Codex initialize failed")
+            raise CodexAppServerError(
+                "codex_initialize_failed", "Codex initialize failed"
+            )
         self._send_notification_locked("initialized")
         self._initialized = True
 
@@ -506,74 +525,9 @@ class CodexAppServerBridge:
             return _FAST_MODE_REASONING_EFFORT
         return _DEFAULT_REASONING_EFFORT
 
-    @classmethod
-    def _sanitize_request_for_agent_safety(
-        cls, request: RequestEnvelope
-    ) -> RequestEnvelope:
-        blocked_capability_ids: set[str] = set()
-        capability_targets: list[dict[str, Any]] = []
-        for capability in request.capabilityManifest.targets:
-            if cls._is_disallowed_white_balance_action_path(capability.actionPath):
-                blocked_capability_ids.add(capability.capabilityId)
-                continue
-            capability_targets.append(capability.model_dump(mode="json"))
-
-        editable_settings: list[dict[str, Any]] = []
-        blocked_setting_ids: list[str] = []
-        for setting in request.imageSnapshot.editableSettings:
-            if (
-                cls._is_disallowed_white_balance_action_path(setting.actionPath)
-                or setting.capabilityId in blocked_capability_ids
-            ):
-                blocked_capability_ids.add(setting.capabilityId)
-                blocked_setting_ids.append(setting.settingId)
-                continue
-            editable_settings.append(setting.model_dump(mode="json"))
-
-        if blocked_capability_ids:
-            capability_targets = [
-                capability.model_dump(mode="json")
-                for capability in request.capabilityManifest.targets
-                if capability.capabilityId not in blocked_capability_ids
-                and not cls._is_disallowed_white_balance_action_path(capability.actionPath)
-            ]
-
-        if (
-            len(capability_targets) == len(request.capabilityManifest.targets)
-            and len(editable_settings) == len(request.imageSnapshot.editableSettings)
-        ):
-            return request
-
-        if not capability_targets:
-            raise CodexAppServerError(
-                "no_safe_controls_available",
-                (
-                    "No safe editable controls are available for this image. "
-                    "White-balance module controls are blocked."
-                ),
-                status_code=422,
-            )
-
-        payload = request.model_dump(mode="json")
-        payload["capabilityManifest"]["targets"] = capability_targets
-        payload["imageSnapshot"]["editableSettings"] = editable_settings
-        sanitized = RequestEnvelope.model_validate(payload)
-
-        logger.info(
-            "safety_policy_filtered_controls",
-            extra={
-                "structured": {
-                    "requestId": request.requestId,
-                    "conversationId": request.session.conversationId,
-                    "blockedCapabilityCount": len(request.capabilityManifest.targets)
-                    - len(capability_targets),
-                    "blockedSettingCount": len(request.imageSnapshot.editableSettings)
-                    - len(editable_settings),
-                    "blockedSettingIds": blocked_setting_ids,
-                }
-            },
-        )
-        return sanitized
+    @staticmethod
+    def _sanitize_request_for_agent_safety(request: RequestEnvelope) -> RequestEnvelope:
+        return request
 
     @staticmethod
     def _dynamic_tools() -> list[dict[str, Any]]:
@@ -703,7 +657,9 @@ class CodexAppServerBridge:
             if model:
                 turn_request["model"] = model
 
-            response = self._send_request_locked("turn/start", turn_request, deadline, active_request)
+            response = self._send_request_locked(
+                "turn/start", turn_request, deadline, active_request
+            )
             try:
                 turn_id = response["result"]["turn"]["id"]
             except KeyError as exc:
@@ -761,7 +717,9 @@ class CodexAppServerBridge:
                             ),
                             status_code=504,
                         )
-                    max_wait_seconds = min(max_wait_seconds, _DEFAULT_MAX_IDLE_SECONDS - idle_seconds)
+                    max_wait_seconds = min(
+                        max_wait_seconds, _DEFAULT_MAX_IDLE_SECONDS - idle_seconds
+                    )
 
                 message = self._read_message_locked(
                     deadline,
@@ -771,7 +729,9 @@ class CodexAppServerBridge:
                 if message is None:
                     continue
                 state["last_activity_at"] = time.monotonic()
-                state["last_activity_method"] = message.get("method") or "jsonrpc-response"
+                state["last_activity_method"] = (
+                    message.get("method") or "jsonrpc-response"
+                )
                 self._handle_message_locked(message, state)
 
             if state["turn_error"]:
@@ -780,7 +740,8 @@ class CodexAppServerBridge:
             raw_message = state["final_message"] or "".join(state["chunks"]).strip()
             if not raw_message:
                 raise CodexAppServerError(
-                    "codex_empty_response", "Codex completed the turn without returning a plan"
+                    "codex_empty_response",
+                    "Codex completed the turn without returning a plan",
                 )
 
             try:
@@ -895,9 +856,13 @@ class CodexAppServerBridge:
                         if not isinstance(current_number, (int, float)):
                             current_number = setting.get("defaultNumber")
                         if isinstance(current_number, (int, float)):
-                            base_float_setting_numbers[setting_id] = float(current_number)
+                            base_float_setting_numbers[setting_id] = float(
+                                current_number
+                            )
         base_image_revision_id = request.imageSnapshot.imageRevisionId
-        max_tool_calls = request.refinement.maxPasses if request.refinement.enabled else 1
+        max_tool_calls = (
+            request.refinement.maxPasses if request.refinement.enabled else 1
+        )
         with self._state_lock:
             self._turn_contexts[(thread_id, turn_id)] = _TurnContext(
                 base_request=request,
@@ -929,7 +894,9 @@ class CodexAppServerBridge:
         if context is None:
             return plan
 
-        merged_operations = [operation.model_dump(mode="json") for operation in plan.operations]
+        merged_operations = [
+            operation.model_dump(mode="json") for operation in plan.operations
+        ]
         if context.applied_operations:
             merged_operations = list(context.applied_operations) + merged_operations
 
@@ -937,7 +904,9 @@ class CodexAppServerBridge:
             return AgentPlan.model_validate(
                 {
                     "assistantText": plan.assistantText,
-                    "continueRefining": False if context.live_run_enabled else plan.continueRefining,
+                    "continueRefining": False
+                    if context.live_run_enabled
+                    else plan.continueRefining,
                     "operations": [],
                 }
             )
@@ -946,7 +915,9 @@ class CodexAppServerBridge:
         seen_operation_ids: set[str] = set()
         for index, operation in enumerate(merged_operations, start=1):
             operation_copy = dict(operation)
-            candidate_operation_id = str(operation_copy.get("operationId") or f"run-op-{index}")
+            candidate_operation_id = str(
+                operation_copy.get("operationId") or f"run-op-{index}"
+            )
             operation_id = candidate_operation_id
             duplicate_index = 2
             while operation_id in seen_operation_ids:
@@ -960,7 +931,9 @@ class CodexAppServerBridge:
         return AgentPlan.model_validate(
             {
                 "assistantText": plan.assistantText,
-                "continueRefining": False if context.live_run_enabled else plan.continueRefining,
+                "continueRefining": False
+                if context.live_run_enabled
+                else plan.continueRefining,
                 "operations": normalized_operations,
             }
         )
@@ -1108,7 +1081,8 @@ class CodexAppServerBridge:
             "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
-            "White-balance module controls (`iop/temperature/*`) are disabled for safety; use other available color controls.\n"
+            "White-balance controls (`iop/temperature/*`) are available when present. Respect their bounds, supported modes, and exact target IDs.\n"
+            "When batching multiple white-balance edits, apply preset-like controls before finetune/temperature/tint/channel multipliers.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
             "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
             "Return only the JSON object required by the output schema."
@@ -1189,7 +1163,9 @@ class CodexAppServerBridge:
 
     def _send_json_locked(self, payload: dict[str, Any]) -> None:
         if not self._process or not self._process.stdin:
-            raise CodexAppServerError("codex_process_unavailable", "Codex app server is not running")
+            raise CodexAppServerError(
+                "codex_process_unavailable", "Codex app server is not running"
+            )
         try:
             self._process.stdin.write(json.dumps(payload, separators=(",", ":")) + "\n")
             self._process.stdin.flush()
@@ -1207,13 +1183,17 @@ class CodexAppServerBridge:
         max_wait_seconds: float | None = None,
     ) -> dict[str, Any] | None:
         if not self._process or not self._process.stdout or not self._process.stderr:
-            raise CodexAppServerError("codex_process_unavailable", "Codex app server is not running")
+            raise CodexAppServerError(
+                "codex_process_unavailable", "Codex app server is not running"
+            )
 
         while True:
             self._raise_if_cancelled_locked(active_request)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise CodexAppServerError("codex_timeout", "Codex app server timed out", status_code=504)
+                raise CodexAppServerError(
+                    "codex_timeout", "Codex app server timed out", status_code=504
+                )
 
             ready, _, _ = select.select(
                 [self._process.stdout, self._process.stderr],
@@ -1228,7 +1208,9 @@ class CodexAppServerBridge:
                 if self._process.poll() is not None:
                     self._reset_process_locked()
                     raise CodexAppServerError(
-                        "codex_process_exited", "Codex app server exited unexpectedly", status_code=503
+                        "codex_process_exited",
+                        "Codex app server exited unexpectedly",
+                        status_code=503,
                     )
                 if max_wait_seconds is not None:
                     return None
@@ -1239,16 +1221,21 @@ class CodexAppServerBridge:
                 if not line:
                     continue
                 if stream is self._process.stderr:
-                    logger.warning("codex_stderr", extra={"structured": {"line": line.rstrip()}})
+                    logger.warning(
+                        "codex_stderr", extra={"structured": {"line": line.rstrip()}}
+                    )
                     continue
                 try:
                     return json.loads(line)
                 except json.JSONDecodeError as exc:
                     raise CodexAppServerError(
-                        "codex_invalid_json", f"Codex emitted invalid JSON: {line.rstrip()}"
+                        "codex_invalid_json",
+                        f"Codex emitted invalid JSON: {line.rstrip()}",
                     ) from exc
 
-    def _handle_message_locked(self, message: dict[str, Any], turn_state: dict[str, Any] | None) -> None:
+    def _handle_message_locked(
+        self, message: dict[str, Any], turn_state: dict[str, Any] | None
+    ) -> None:
         if "method" in message and "id" in message:
             self._handle_server_request_locked(message)
             return
@@ -1259,7 +1246,11 @@ class CodexAppServerBridge:
         params = message.get("params", {})
 
         if method == "error":
-            if turn_state and params.get("threadId") == turn_state["thread_id"] and params.get("turnId") == turn_state["turn_id"]:
+            if (
+                turn_state
+                and params.get("threadId") == turn_state["thread_id"]
+                and params.get("turnId") == turn_state["turn_id"]
+            ):
                 error = params.get("error", {})
                 turn_state["turn_error"] = self._extract_error_message(
                     error.get("message") or "Codex app server reported an error"
@@ -1270,12 +1261,18 @@ class CodexAppServerBridge:
             return
 
         if method == "item/agentMessage/delta":
-            if params.get("threadId") == turn_state["thread_id"] and params.get("turnId") == turn_state["turn_id"]:
+            if (
+                params.get("threadId") == turn_state["thread_id"]
+                and params.get("turnId") == turn_state["turn_id"]
+            ):
                 turn_state["chunks"].append(params.get("delta", ""))
             return
 
         if method == "thread/tokenUsage/updated":
-            if params.get("threadId") != turn_state["thread_id"] or params.get("turnId") != turn_state["turn_id"]:
+            if (
+                params.get("threadId") != turn_state["thread_id"]
+                or params.get("turnId") != turn_state["turn_id"]
+            ):
                 return
             usage = params.get("tokenUsage", {})
             last_usage = usage.get("last")
@@ -1287,7 +1284,10 @@ class CodexAppServerBridge:
             return
 
         if method == "item/completed":
-            if params.get("threadId") != turn_state["thread_id"] or params.get("turnId") != turn_state["turn_id"]:
+            if (
+                params.get("threadId") != turn_state["thread_id"]
+                or params.get("turnId") != turn_state["turn_id"]
+            ):
                 return
             item = params.get("item", {})
             if item.get("type") == "agentMessage":
@@ -1343,7 +1343,9 @@ class CodexAppServerBridge:
 
         if method == "item/tool/call":
             response_payload = self._handle_dynamic_tool_call_locked(message)
-            self._send_json_locked({"jsonrpc": "2.0", "id": request_id, "result": response_payload})
+            self._send_json_locked(
+                {"jsonrpc": "2.0", "id": request_id, "result": response_payload}
+            )
             return
 
         logger.warning(
@@ -1361,7 +1363,9 @@ class CodexAppServerBridge:
             }
         )
 
-    def _handle_dynamic_tool_call_locked(self, message: dict[str, Any]) -> dict[str, Any]:
+    def _handle_dynamic_tool_call_locked(
+        self, message: dict[str, Any]
+    ) -> dict[str, Any]:
         params = message.get("params", {})
         thread_id = params.get("threadId")
         turn_id = params.get("turnId")
@@ -1417,7 +1421,9 @@ class CodexAppServerBridge:
                     ],
                 }
 
-            guardrail_error = self._register_tool_call_progress_locked(context, tool_name)
+            guardrail_error = self._register_tool_call_progress_locked(
+                context, tool_name
+            )
             if guardrail_error is not None:
                 response = self._tool_error_response(guardrail_error)
             elif tool_name == _TOOL_GET_PREVIEW_IMAGE:
@@ -1580,21 +1586,73 @@ class CodexAppServerBridge:
 
         raw_operations = arguments.get("operations")
         if not isinstance(raw_operations, list) or not raw_operations:
-            return self._tool_error_response("apply_operations requires a non-empty operations array.")
+            return self._tool_error_response(
+                "apply_operations requires a non-empty operations array."
+            )
+
+        normalized_batch: list[dict[str, Any]] = []
+        for index, raw_operation in enumerate(raw_operations):
+            if not isinstance(raw_operation, dict):
+                self._log_white_balance_tool_call(
+                    context,
+                    raw_operations,
+                    [],
+                    success=False,
+                    error="Every apply_operations entry must be an object.",
+                )
+                return self._tool_error_response(
+                    "Every apply_operations entry must be an object."
+                )
+            normalized_operation, error = self._normalize_tool_operation(
+                context,
+                raw_operation,
+                sequence_number=context.next_operation_sequence + index,
+            )
+            if error:
+                self._log_white_balance_tool_call(
+                    context,
+                    raw_operations,
+                    normalized_batch,
+                    success=False,
+                    error=error,
+                )
+                return self._tool_error_response(error)
+            normalized_batch.append(normalized_operation)
+
+        ordered_batch = self._order_operations_for_apply(normalized_batch)
+        simulated_settings = copy.deepcopy(context.setting_by_id)
+        for operation in ordered_batch:
+            apply_error, _ = self._apply_operation_to_settings(
+                simulated_settings, operation
+            )
+            if apply_error:
+                self._log_white_balance_tool_call(
+                    context,
+                    ordered_batch,
+                    [],
+                    success=False,
+                    error=apply_error,
+                )
+                return self._tool_error_response(apply_error)
 
         applied_batch: list[dict[str, Any]] = []
-        for raw_operation in raw_operations:
-            if not isinstance(raw_operation, dict):
-                return self._tool_error_response("Every apply_operations entry must be an object.")
-            normalized_operation, error = self._normalize_tool_operation(context, raw_operation)
-            if error:
-                return self._tool_error_response(error)
-            apply_error = self._apply_operation_to_state(context, normalized_operation)
+        for operation in ordered_batch:
+            apply_error, _ = self._apply_operation_to_settings(
+                context.setting_by_id, operation
+            )
             if apply_error:
+                self._log_white_balance_tool_call(
+                    context,
+                    ordered_batch,
+                    applied_batch,
+                    success=False,
+                    error=apply_error,
+                )
                 return self._tool_error_response(apply_error)
-            applied_batch.append(normalized_operation)
-            context.applied_operations.append(normalized_operation)
-            context.next_operation_sequence += 1
+            applied_batch.append(operation)
+            context.applied_operations.append(operation)
+
+        context.next_operation_sequence += len(applied_batch)
 
         image_snapshot = context.state_payload.get("imageSnapshot")
         if isinstance(image_snapshot, dict):
@@ -1602,6 +1660,12 @@ class CodexAppServerBridge:
                 f"{context.base_image_revision_id}:tool-{len(context.applied_operations)}"
             )
         self._refresh_preview_after_operations(context)
+        self._log_white_balance_tool_call(
+            context,
+            ordered_batch,
+            applied_batch,
+            success=True,
+        )
 
         return {
             "success": True,
@@ -1621,7 +1685,9 @@ class CodexAppServerBridge:
     def _clamp(value: float, minimum: float, maximum: float) -> float:
         return max(minimum, min(maximum, value))
 
-    def _collect_preview_adjustments(self, context: _TurnContext) -> tuple[float, float, float]:
+    def _collect_preview_adjustments(
+        self, context: _TurnContext
+    ) -> tuple[float, float, float]:
         brightness_ev = 0.0
         contrast_delta = 0.0
         saturation_delta = 0.0
@@ -1633,7 +1699,9 @@ class CodexAppServerBridge:
             current_number = setting.get("currentNumber")
             if not isinstance(current_number, (int, float)):
                 continue
-            base_number = context.base_float_setting_numbers.get(setting_id, float(current_number))
+            base_number = context.base_float_setting_numbers.get(
+                setting_id, float(current_number)
+            )
             delta = float(current_number) - float(base_number)
             if abs(delta) < 1e-6:
                 continue
@@ -1650,19 +1718,32 @@ class CodexAppServerBridge:
                 brightness_ev += 0.35 * delta
             if "toneequal/" in normalized_path and any(
                 token in normalized_path
-                for token in ("whites", "highlights", "mid", "shadows", "blacks", "brightness")
+                for token in (
+                    "whites",
+                    "highlights",
+                    "mid",
+                    "shadows",
+                    "blacks",
+                    "brightness",
+                )
             ):
                 brightness_ev += 0.25 * delta
-            if any(token in normalized_path for token in ("contrast", "brilliance", "clarity")):
+            if any(
+                token in normalized_path
+                for token in ("contrast", "brilliance", "clarity")
+            ):
                 contrast_delta += 0.6 * delta
             if any(
-                token in normalized_path for token in ("saturation", "sat_", "chroma", "vibrance")
+                token in normalized_path
+                for token in ("saturation", "sat_", "chroma", "vibrance")
             ):
                 saturation_delta += 0.7 * delta
 
         return brightness_ev, contrast_delta, saturation_delta
 
-    def _render_applied_preview(self, context: _TurnContext) -> tuple[str, bytes] | None:
+    def _render_applied_preview(
+        self, context: _TurnContext
+    ) -> tuple[str, bytes] | None:
         if Image is None or ImageEnhance is None:
             return None
 
@@ -1672,7 +1753,9 @@ class CodexAppServerBridge:
         except Exception:
             return None
 
-        brightness_ev, contrast_delta, saturation_delta = self._collect_preview_adjustments(context)
+        brightness_ev, contrast_delta, saturation_delta = (
+            self._collect_preview_adjustments(context)
+        )
         brightness_factor = self._clamp(2.0**brightness_ev, 0.1, 6.0)
         contrast_factor = self._clamp(1.0 + contrast_delta, 0.2, 3.0)
         saturation_factor = self._clamp(1.0 + saturation_delta, 0.0, 3.0)
@@ -1715,6 +1798,8 @@ class CodexAppServerBridge:
         self,
         context: _TurnContext,
         raw_operation: dict[str, Any],
+        *,
+        sequence_number: int,
     ) -> tuple[dict[str, Any], str | None]:
         required_keys = ("kind", "target", "value")
         for key in required_keys:
@@ -1723,11 +1808,11 @@ class CodexAppServerBridge:
 
         operation_id = raw_operation.get("operationId")
         if not isinstance(operation_id, str) or not operation_id:
-            operation_id = f"tool-op-{context.next_operation_sequence}"
+            operation_id = f"tool-op-{sequence_number}"
 
         operation_candidate = {
             "operationId": operation_id,
-            "sequence": context.next_operation_sequence,
+            "sequence": sequence_number,
             "kind": raw_operation["kind"],
             "target": raw_operation["target"],
             "value": raw_operation["value"],
@@ -1774,63 +1859,166 @@ class CodexAppServerBridge:
         return mapping
 
     @staticmethod
-    def _is_disallowed_white_balance_action_path(action_path: str) -> bool:
+    def _is_white_balance_action_path(action_path: str) -> bool:
         return any(
             action_path.startswith(prefix)
-            for prefix in _DISALLOWED_WHITE_BALANCE_ACTION_PATH_PREFIXES
+            for prefix in _WHITE_BALANCE_ACTION_PATH_PREFIXES
         )
 
-    def _apply_operation_to_state(self, context: _TurnContext, operation: dict[str, Any]) -> str | None:
+    @classmethod
+    def _white_balance_operation_rank(
+        cls, operation: dict[str, Any]
+    ) -> tuple[int, str]:
+        target = operation.get("target")
+        action_path = target.get("actionPath") if isinstance(target, dict) else None
+        if not isinstance(action_path, str):
+            return (99, "")
+        leaf = action_path.rsplit("/", 1)[-1].lower()
+        kind = operation.get("kind")
+
+        if kind == "set-bool":
+            return (0, leaf)
+        if kind == "set-choice":
+            return (1, leaf)
+        if leaf == "finetune":
+            return (2, leaf)
+        if leaf == "temperature":
+            return (3, leaf)
+        if leaf == "tint":
+            return (4, leaf)
+
+        channel_order = {
+            "red": 5,
+            "green": 6,
+            "blue": 7,
+            "emerald": 8,
+            "yellow": 9,
+            "various": 9,
+        }
+        return (channel_order.get(leaf, 99), leaf)
+
+    def _order_operations_for_apply(
+        self, operations: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        ordered = list(operations)
+        wb_indexes = [
+            index
+            for index, operation in enumerate(operations)
+            if self._is_white_balance_action_path(
+                str(operation.get("target", {}).get("actionPath") or "")
+            )
+        ]
+        if len(wb_indexes) < 2:
+            return ordered
+
+        wb_operations = [operations[index] for index in wb_indexes]
+        wb_operations.sort(key=self._white_balance_operation_rank)
+        for index, operation in zip(wb_indexes, wb_operations, strict=False):
+            ordered[index] = operation
+        return ordered
+
+    def _log_white_balance_tool_call(
+        self,
+        context: _TurnContext,
+        attempted_operations: list[Any],
+        applied_operations: list[Any],
+        *,
+        success: bool,
+        error: str | None = None,
+    ) -> None:
+        def _extract_paths(operations: list[Any]) -> list[str]:
+            paths: list[str] = []
+            for operation in operations:
+                if not isinstance(operation, dict):
+                    continue
+                target = operation.get("target")
+                if not isinstance(target, dict):
+                    continue
+                action_path = target.get("actionPath")
+                if isinstance(action_path, str) and self._is_white_balance_action_path(
+                    action_path
+                ):
+                    paths.append(action_path)
+            return paths
+
+        attempted_paths = _extract_paths(attempted_operations)
+        applied_paths = _extract_paths(applied_operations)
+        if not attempted_paths and not applied_paths:
+            return
+
+        logger.info(
+            "apply_operations_white_balance",
+            extra={
+                "structured": {
+                    "requestId": context.base_request.requestId,
+                    "conversationId": context.base_request.session.conversationId,
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "success": success,
+                    "attemptedWhiteBalanceActionPaths": attempted_paths,
+                    "appliedWhiteBalanceActionPaths": applied_paths,
+                    "error": error,
+                }
+            },
+        )
+
+    def _apply_operation_to_settings(
+        self,
+        setting_by_id: dict[str, dict[str, Any]],
+        operation: dict[str, Any],
+    ) -> tuple[str | None, dict[str, Any] | None]:
         target = operation.get("target")
         if not isinstance(target, dict):
-            return "operation target must be an object"
+            return "operation target must be an object", None
 
         setting_id = target.get("settingId")
         action_path = target.get("actionPath")
         if not isinstance(setting_id, str) or not isinstance(action_path, str):
-            return "operation target requires settingId and actionPath"
+            return "operation target requires settingId and actionPath", None
 
-        setting = context.setting_by_id.get(setting_id)
+        setting = setting_by_id.get(setting_id)
         if not isinstance(setting, dict):
-            return f"unknown settingId '{setting_id}'"
+            return f"unknown settingId '{setting_id}'", None
 
         if setting.get("actionPath") != action_path:
             return (
                 f"actionPath mismatch for settingId '{setting_id}': expected "
                 f"{setting.get('actionPath')}, got {action_path}"
-            )
-
-        if self._is_disallowed_white_balance_action_path(action_path):
-            return (
-                "White-balance module controls are disabled for safety "
-                "(iop/temperature/*). Use other available color controls instead."
-            )
+            ), None
 
         kind = operation.get("kind")
         if setting.get("kind") != kind:
-            return f"kind mismatch for settingId '{setting_id}'"
+            return f"kind mismatch for settingId '{setting_id}'", None
 
         value = operation.get("value")
         if not isinstance(value, dict):
-            return "operation value must be an object"
+            return "operation value must be an object", None
 
         mode = value.get("mode")
         supported_modes = setting.get("supportedModes")
         if not isinstance(mode, str):
-            return "operation value requires mode"
+            return "operation value requires mode", None
         if isinstance(supported_modes, list) and mode not in supported_modes:
-            return f"mode '{mode}' is not supported by settingId '{setting_id}'"
+            return f"mode '{mode}' is not supported by settingId '{setting_id}'", None
 
         if kind == "set-float":
             number_value = value.get("number")
             if not isinstance(number_value, (int, float)):
-                return f"set-float operation requires numeric value.number for '{setting_id}'"
+                return (
+                    f"set-float operation requires numeric value.number for '{setting_id}'",
+                    None,
+                )
             current = setting.get("currentNumber")
             if not isinstance(current, (int, float)):
                 current = setting.get("defaultNumber")
             if not isinstance(current, (int, float)):
                 current = 0.0
-            next_value = float(current) + float(number_value) if mode == "delta" else float(number_value)
+            requested_number = float(number_value)
+            resolved_number = (
+                float(current) + requested_number
+                if mode == "delta"
+                else requested_number
+            )
+            next_value = resolved_number
             min_number = setting.get("minNumber")
             max_number = setting.get("maxNumber")
             if isinstance(min_number, (int, float)):
@@ -1838,28 +2026,79 @@ class CodexAppServerBridge:
             if isinstance(max_number, (int, float)):
                 next_value = min(next_value, float(max_number))
             setting["currentNumber"] = next_value
-            return None
+            return (
+                None,
+                {
+                    "actionPath": action_path,
+                    "settingId": setting_id,
+                    "kind": kind,
+                    "mode": mode,
+                    "requestedNumber": requested_number,
+                    "resolvedNumber": resolved_number,
+                    "appliedNumber": next_value,
+                    "wasClamped": abs(next_value - resolved_number) > 1e-12,
+                },
+            )
 
         if kind == "set-choice":
             choice_value = value.get("choiceValue")
             if not isinstance(choice_value, int):
-                return f"set-choice operation requires integer value.choiceValue for '{setting_id}'"
+                return (
+                    f"set-choice operation requires integer value.choiceValue for '{setting_id}'",
+                    None,
+                )
             choice_mapping = self._choice_mapping(setting)
             if choice_mapping and choice_value not in choice_mapping:
-                return f"choiceValue {choice_value} is not valid for '{setting_id}'"
+                return (
+                    f"choiceValue {choice_value} is not valid for '{setting_id}'",
+                    None,
+                )
+            choice_id = value.get("choiceId")
+            if isinstance(choice_id, str) and choice_mapping.get(choice_value) not in {
+                None,
+                choice_id,
+            }:
+                expected_choice_id = choice_mapping.get(choice_value)
+                return (
+                    f"choiceId mismatch for '{setting_id}': expected {expected_choice_id}, got {choice_id}",
+                    None,
+                )
             setting["currentChoiceValue"] = choice_value
             if choice_value in choice_mapping:
                 setting["currentChoiceId"] = choice_mapping[choice_value]
-            return None
+            return (
+                None,
+                {
+                    "actionPath": action_path,
+                    "settingId": setting_id,
+                    "kind": kind,
+                    "mode": mode,
+                    "requestedChoiceValue": choice_value,
+                    "appliedChoiceValue": choice_value,
+                    "appliedChoiceId": setting.get("currentChoiceId"),
+                },
+            )
 
         if kind == "set-bool":
             bool_value = value.get("boolValue")
             if not isinstance(bool_value, bool):
-                return f"set-bool operation requires boolean value.boolValue for '{setting_id}'"
+                return (
+                    f"set-bool operation requires boolean value.boolValue for '{setting_id}'",
+                    None,
+                )
             setting["currentBool"] = bool_value
-            return None
+            return (
+                None,
+                {
+                    "actionPath": action_path,
+                    "settingId": setting_id,
+                    "kind": kind,
+                    "mode": mode,
+                    "appliedBoolValue": bool_value,
+                },
+            )
 
-        return f"unsupported operation kind '{kind}'"
+        return f"unsupported operation kind '{kind}'", None
 
     @staticmethod
     def _extract_error_message(message: str) -> str:
