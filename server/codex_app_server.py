@@ -133,6 +133,7 @@ class CodexAppServerBridge:
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads: dict[str, str] = {}
+        self._conversation_turn_counts: dict[str, int] = {}
         self._active_requests: dict[str, _ActiveRequestState] = {}
         self._cancelled_request_ids: set[str] = set()
 
@@ -178,12 +179,19 @@ class CodexAppServerBridge:
                 self._raise_if_cancelled_locked(active_request)
                 self._ensure_initialized_locked(deadline)
                 self._raise_if_cancelled_locked(active_request)
+                thread_reused = request.session.conversationId in self._conversation_threads
                 thread_id = self._get_or_create_thread_locked(
                     request.session.conversationId, model, deadline
                 )
                 active_request.thread_id = thread_id
                 return self._run_turn_locked(
-                    thread_id, request, model, effort, deadline, active_request
+                    thread_id,
+                    request,
+                    model,
+                    effort,
+                    deadline,
+                    active_request,
+                    thread_reused,
                 )
         finally:
             self._unregister_request(request.requestId)
@@ -301,6 +309,15 @@ class CodexAppServerBridge:
     ) -> str:
         existing = self._conversation_threads.get(conversation_id)
         if existing:
+            logger.info(
+                "codex_thread_reused",
+                extra={
+                    "structured": {
+                        "conversationId": conversation_id,
+                        "threadId": existing,
+                    }
+                },
+            )
             return existing
 
         params: dict[str, Any] = {
@@ -322,6 +339,15 @@ class CodexAppServerBridge:
             ) from exc
 
         self._conversation_threads[conversation_id] = thread_id
+        logger.info(
+            "codex_thread_started",
+            extra={
+                "structured": {
+                    "conversationId": conversation_id,
+                    "threadId": thread_id,
+                }
+            },
+        )
         return thread_id
 
     def _run_turn_locked(
@@ -332,10 +358,25 @@ class CodexAppServerBridge:
         effort: str,
         deadline: float,
         active_request: _ActiveRequestState,
+        thread_reused: bool,
     ) -> CodexTurnResult:
+        started_at = time.monotonic()
+        turn_input = self._build_turn_input(request)
+        self._conversation_turn_counts[active_request.conversation_id] = (
+            self._conversation_turn_counts.get(active_request.conversation_id, 0) + 1
+        )
+        turn_index = self._conversation_turn_counts[active_request.conversation_id]
+        prompt_text_chars = 0
+        image_data_url_chars = 0
+        for item in turn_input:
+            if item.get("type") == "text":
+                prompt_text_chars += len(str(item.get("text", "")))
+            elif item.get("type") == "image":
+                image_data_url_chars += len(str(item.get("url", "")))
+
         turn_request = {
             "threadId": thread_id,
-            "input": self._build_turn_input(request),
+            "input": turn_input,
             "outputSchema": self._build_output_schema(),
             "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
             "personality": _DEFAULT_PERSONALITY,
@@ -360,6 +401,8 @@ class CodexAppServerBridge:
             "final_message": None,
             "turn_error": None,
             "completed": False,
+            "token_usage_last": None,
+            "token_usage_total": None,
         }
 
         while not state["completed"]:
@@ -383,6 +426,26 @@ class CodexAppServerBridge:
                 "codex_invalid_response",
                 f"Codex returned invalid plan JSON: {raw_message}",
             ) from exc
+
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "codex_turn_completed",
+            extra={
+                "structured": {
+                    "requestId": active_request.request_id,
+                    "conversationId": active_request.conversation_id,
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "threadReused": thread_reused,
+                    "turnIndexInConversation": turn_index,
+                    "durationMs": duration_ms,
+                    "promptTextChars": prompt_text_chars,
+                    "imageDataUrlChars": image_data_url_chars,
+                    "tokenUsageLast": state["token_usage_last"],
+                    "tokenUsageTotal": state["token_usage_total"],
+                }
+            },
+        )
 
         return CodexTurnResult(
             plan=plan,
@@ -509,6 +572,7 @@ class CodexAppServerBridge:
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads.clear()
+        self._conversation_turn_counts.clear()
 
     def _reset_process_locked(self) -> None:
         if self._process:
@@ -524,6 +588,7 @@ class CodexAppServerBridge:
         self._initialized = False
         self._next_request_id = 1
         self._conversation_threads.clear()
+        self._conversation_turn_counts.clear()
 
     def _send_request_locked(
         self,
@@ -635,6 +700,18 @@ class CodexAppServerBridge:
         if method == "item/agentMessage/delta":
             if params.get("threadId") == turn_state["thread_id"] and params.get("turnId") == turn_state["turn_id"]:
                 turn_state["chunks"].append(params.get("delta", ""))
+            return
+
+        if method == "thread/tokenUsage/updated":
+            if params.get("threadId") != turn_state["thread_id"] or params.get("turnId") != turn_state["turn_id"]:
+                return
+            usage = params.get("tokenUsage", {})
+            last_usage = usage.get("last")
+            total_usage = usage.get("total")
+            if isinstance(last_usage, dict):
+                turn_state["token_usage_last"] = last_usage
+            if isinstance(total_usage, dict):
+                turn_state["token_usage_total"] = total_usage
             return
 
         if method == "item/completed":

@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from server.codex_app_server import (
@@ -370,3 +372,107 @@ def test_cancel_request_records_unknown_request_ids_for_future_preflight() -> No
         assert active_request.cancel_event.is_set() is True
     finally:
         bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
+
+
+def test_get_or_create_thread_reuses_cached_thread_without_rpc() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    bridge._conversation_threads["conv-1"] = "thread-existing"  # type: ignore[attr-defined]
+
+    def _unexpected_send_request(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("thread/start should not be called for cached conversations")
+
+    bridge._send_request_locked = _unexpected_send_request  # type: ignore[method-assign,attr-defined]
+
+    thread_id = bridge._get_or_create_thread_locked(  # type: ignore[attr-defined]
+        "conv-1", _DEFAULT_MODEL, time.monotonic() + 5.0
+    )
+
+    assert thread_id == "thread-existing"
+
+
+def test_token_usage_notification_updates_turn_state() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    turn_state = {
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+        "chunks": [],
+        "final_message": None,
+        "turn_error": None,
+        "completed": False,
+        "token_usage_last": None,
+        "token_usage_total": None,
+    }
+
+    bridge._handle_message_locked(  # type: ignore[attr-defined]
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "tokenUsage": {
+                    "last": {
+                        "cachedInputTokens": 100,
+                        "inputTokens": 200,
+                        "outputTokens": 50,
+                        "reasoningOutputTokens": 25,
+                        "totalTokens": 275,
+                    },
+                    "total": {
+                        "cachedInputTokens": 100,
+                        "inputTokens": 200,
+                        "outputTokens": 50,
+                        "reasoningOutputTokens": 25,
+                        "totalTokens": 275,
+                    },
+                },
+            },
+        },
+        turn_state,
+    )
+
+    assert turn_state["token_usage_last"]["inputTokens"] == 200
+    assert turn_state["token_usage_total"]["totalTokens"] == 275
+
+
+def test_token_usage_notification_ignores_other_turns() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    turn_state = {
+        "thread_id": "thread-1",
+        "turn_id": "turn-1",
+        "chunks": [],
+        "final_message": None,
+        "turn_error": None,
+        "completed": False,
+        "token_usage_last": None,
+        "token_usage_total": None,
+    }
+
+    bridge._handle_message_locked(  # type: ignore[attr-defined]
+        {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "different-turn",
+                "tokenUsage": {
+                    "last": {
+                        "cachedInputTokens": 1,
+                        "inputTokens": 1,
+                        "outputTokens": 1,
+                        "reasoningOutputTokens": 1,
+                        "totalTokens": 1,
+                    },
+                    "total": {
+                        "cachedInputTokens": 1,
+                        "inputTokens": 1,
+                        "outputTokens": 1,
+                        "reasoningOutputTokens": 1,
+                        "totalTokens": 1,
+                    },
+                },
+            },
+        },
+        turn_state,
+    )
+
+    assert turn_state["token_usage_last"] is None
+    assert turn_state["token_usage_total"] is None
