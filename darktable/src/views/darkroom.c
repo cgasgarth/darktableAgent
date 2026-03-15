@@ -2635,6 +2635,23 @@ static gchar *_agent_chat_table_cell(const char *text)
   return cell;
 }
 
+static void _agent_chat_append_table_separator(GString *summary,
+                                               const guint action_width,
+                                               const guint value_width,
+                                               const guint note_width)
+{
+  g_string_append_c(summary, '+');
+  for(guint i = 0; i < action_width + 2; i++)
+    g_string_append_c(summary, '-');
+  g_string_append_c(summary, '+');
+  for(guint i = 0; i < value_width + 2; i++)
+    g_string_append_c(summary, '-');
+  g_string_append_c(summary, '+');
+  for(guint i = 0; i < note_width + 2; i++)
+    g_string_append_c(summary, '-');
+  g_string_append(summary, "+\n");
+}
+
 static void _agent_chat_append_operation_summary(dt_develop_t *dev,
                                                  const dt_agent_execution_report_t *report)
 {
@@ -2642,14 +2659,15 @@ static void _agent_chat_append_operation_summary(dt_develop_t *dev,
     return;
 
   GString *summary = g_string_new(NULL);
-  g_string_append_printf(summary,
-                         ngettext("applied %u operation", "applied %u operations",
-                                  report->results->len),
-                         report->results->len);
-  g_string_append(summary, "\n");
-  g_string_append(summary, _("status | action | value | note"));
-  g_string_append(summary, "\n");
-  g_string_append(summary, "------ | ------ | ----- | ----");
+  const char *action_header = _("action");
+  const char *value_header = _("change");
+  const char *note_header = _("note");
+  guint action_width = strlen(action_header);
+  guint value_width = strlen(value_header);
+  guint note_width = strlen(note_header);
+  GPtrArray *action_cells = g_ptr_array_new_with_free_func(g_free);
+  GPtrArray *value_cells = g_ptr_array_new_with_free_func(g_free);
+  GPtrArray *note_cells = g_ptr_array_new_with_free_func(g_free);
 
   for(guint i = 0; i < report->results->len; i++)
   {
@@ -2664,20 +2682,61 @@ static void _agent_chat_append_operation_summary(dt_develop_t *dev,
     else
       value = g_strdup("-");
 
-    g_autofree gchar *status_cell
+    g_autofree gchar *status_text
       = _agent_chat_table_cell(dt_agent_execution_status_to_string(result->status));
-    g_autofree gchar *action_cell
-      = _agent_chat_table_cell(result->action_path ? result->action_path : _("unknown"));
-    g_autofree gchar *value_cell = _agent_chat_table_cell(value);
-    g_autofree gchar *note_cell = _agent_chat_table_cell(result->message);
+    g_autofree gchar *raw_note = _agent_chat_table_cell(result->message);
+    g_autofree gchar *note_text = NULL;
+    if(raw_note && raw_note[0] != '\0' && g_strcmp0(raw_note, "-") != 0)
+      note_text = g_strdup(raw_note);
+    else
+      note_text = g_strdup(status_text);
 
-    g_string_append(summary, "\n");
-    g_string_append_printf(summary, "%s | %s | %s | %s",
-                           status_cell, action_cell, value_cell, note_cell);
+    gchar *action_cell
+      = _agent_chat_table_cell(result->action_path ? result->action_path : _("unknown"));
+    gchar *value_cell = _agent_chat_table_cell(value);
+    gchar *note_cell = _agent_chat_table_cell(note_text);
+
+    action_width = MAX(action_width, (guint)strlen(action_cell));
+    value_width = MAX(value_width, (guint)strlen(value_cell));
+    note_width = MAX(note_width, (guint)strlen(note_cell));
+
+    g_ptr_array_add(action_cells, action_cell);
+    g_ptr_array_add(value_cells, value_cell);
+    g_ptr_array_add(note_cells, note_cell);
   }
+
+  g_string_append_printf(summary,
+                         ngettext("applied %u operation", "applied %u operations",
+                                  report->results->len),
+                         report->results->len);
+  g_string_append(summary, "\n\n");
+
+  _agent_chat_append_table_separator(summary, action_width, value_width, note_width);
+  g_string_append_printf(summary,
+                         "| %-*s | %-*s | %-*s |\n",
+                         (gint)action_width, action_header,
+                         (gint)value_width, value_header,
+                         (gint)note_width, note_header);
+  _agent_chat_append_table_separator(summary, action_width, value_width, note_width);
+
+  for(guint i = 0; i < action_cells->len; i++)
+  {
+    const char *action_cell = g_ptr_array_index(action_cells, i);
+    const char *value_cell = g_ptr_array_index(value_cells, i);
+    const char *note_cell = g_ptr_array_index(note_cells, i);
+    g_string_append_printf(summary,
+                           "| %-*s | %-*s | %-*s |\n",
+                           (gint)action_width, action_cell,
+                           (gint)value_width, value_cell,
+                           (gint)note_width, note_cell);
+  }
+  _agent_chat_append_table_separator(summary, action_width, value_width, note_width);
 
   _agent_chat_append_message(dev, _("system"), summary->str);
   g_string_free(summary, TRUE);
+  g_ptr_array_unref(action_cells);
+  g_ptr_array_unref(value_cells);
+  g_ptr_array_unref(note_cells);
 }
 
 static gboolean _agent_chat_apply_operation_range(const GPtrArray *operations,
