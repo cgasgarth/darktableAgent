@@ -456,7 +456,6 @@ static void _collect_preview_from_pixbuf(dt_agent_image_state_t *state,
                                 "85",
                                 NULL))
   {
-    g_object_unref(pixbuf);
     g_clear_error(&save_error);
     return;
   }
