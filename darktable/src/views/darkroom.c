@@ -2370,7 +2370,7 @@ static void _agent_chat_update_refinement_status(dt_develop_t *dev,
 
   if(max_passes > 1)
   {
-    g_autofree gchar *status = g_strdup_printf(_("Refinement pass %u of %u"), pass_index, max_passes);
+    g_autofree gchar *status = g_strdup_printf(_("Agent run pass %u of %u"), pass_index, max_passes);
     _agent_chat_set_status(dev, status);
   }
   else
@@ -2417,15 +2417,6 @@ static guint _agent_chat_max_refinement_passes(const dt_develop_t *dev)
     return DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS;
 
   return dev->agent_chat.max_refinement_passes;
-}
-
-static gchar *_agent_chat_build_refinement_prompt(const guint next_pass_index,
-                                                  const guint max_passes)
-{
-  return g_strdup_printf(
-    _("Continue refining this image toward the original goal using the updated image state. This is pass %u of %u."),
-    next_pass_index,
-    max_passes);
 }
 
 static void _agent_chat_set_loading(dt_develop_t *dev, const gboolean is_loading)
@@ -2935,7 +2926,7 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
       {
         _agent_chat_session_set_status(session,
                                        result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI
-                                         ? _("Refinement complete")
+                                         ? _("Agent run complete")
                                          : _("Response received"));
         _agent_chat_write_test_report(dev, "ok", result, NULL, NULL,
                                       submission ? submission->exposure_before : NAN);
@@ -2977,7 +2968,7 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
                                       : "apply_failed");
     if(handled && !should_continue
        && result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI)
-      _agent_chat_set_status(dev, _("Refinement complete"));
+      _agent_chat_set_status(dev, _("Agent run complete"));
     _agent_chat_write_test_report(dev, status, result, &execution_report, response_error,
                                   submission ? submission->exposure_before : NAN);
     if(should_continue)
@@ -3022,13 +3013,6 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
   {
     _agent_chat_cancel_pending_refinement(dev);
     _agent_chat_append_message(dev, _("you"), message);
-  }
-  else
-  {
-    g_autofree gchar *progress_message = g_strdup_printf(_("continuing refinement pass %u of %u"),
-                                                         refinement_pass_index,
-                                                         refinement_max_passes);
-    _agent_chat_append_message(dev, _("system"), progress_message);
   }
 
   _agent_chat_set_error(dev, NULL);
@@ -3173,8 +3157,9 @@ static void _agent_chat_schedule_refinement_continue(dt_develop_t *dev,
   _agent_chat_cancel_pending_refinement(dev);
 
   dt_agent_chat_continuation_t *continuation = g_malloc0(sizeof(*continuation));
-  continuation->prompt_text = _agent_chat_build_refinement_prompt(submission->refinement_pass_index + 1,
-                                                                  submission->refinement_max_passes);
+  continuation->prompt_text = g_strdup(submission->goal_text && submission->goal_text[0]
+                                         ? submission->goal_text
+                                         : submission->prompt_text);
   continuation->goal_text = g_strdup(submission->goal_text);
   continuation->conversation_id = g_strdup(submission->conversation_id);
   continuation->image_session_id = g_strdup(submission->image_session_id);
@@ -4236,9 +4221,9 @@ void gui_init(dt_view_t *self)
     gtk_box_pack_start(GTK_BOX(outer), options_row, FALSE, FALSE, 0);
 
     dev->agent_chat.multi_turn_check_button
-      = gtk_check_button_new_with_label(_("multi-turn refinement"));
+      = gtk_check_button_new_with_label(_("agent run (live iterative)"));
     gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_check_button,
-                                _("let the agent apply edits, refresh the preview, and continue for multiple passes"));
+                                _("run one iterative agent flow: apply edits, refresh image state, and continue up to the turn limit"));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.multi_turn_check_button),
                                  dev->agent_chat.multi_turn_enabled);
     g_signal_connect(G_OBJECT(dev->agent_chat.multi_turn_check_button), "toggled",
@@ -4253,7 +4238,7 @@ void gui_init(dt_view_t *self)
     dev->agent_chat.multi_turn_turn_limit_spin
       = gtk_spin_button_new_with_range(1.0, DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS, 1.0);
     gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_turn_limit_spin,
-                                _("maximum refinement passes for multi-turn mode"));
+                                _("maximum passes for the live iterative agent run"));
     gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin), TRUE);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin),
                               (gdouble)_agent_chat_max_refinement_passes(dev));

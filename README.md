@@ -50,7 +50,7 @@ This repository is in its initial agent-integration stage.
 - keep expanding the editable control surface beyond the first working operations
 - improve the persistent chat UI and make it easier to keep open while editing
 - add richer multi-step plans, previews, and safer apply/revert flows
-- add optional multi-turn agent refinement so the agent can edit, inspect a refreshed preview, and continue up to 10 passes by default, with a chat UI toggle for single-turn vs multi-turn mode
+- add optional live iterative agent runs so the agent can edit, inspect a refreshed preview, and continue up to 10 passes by default, with a chat UI toggle for single-turn vs iterative mode
 - expand into masking, local adjustments, and broader workflow automation
 
 ## Current Request Payload
@@ -83,10 +83,10 @@ The current protocol details live in [docs/protocol-v1.md](docs/protocol-v1.md).
 ## Multi-turn smoke settings
 
 - Single-turn remains the default behavior.
-- When the chat UI toggle enables multi-turn refinement, the agent can apply a pass, request a refreshed preview/state snapshot, and continue until it decides to stop or hits the configured limit.
+- When the chat UI toggle enables iterative agent runs, the agent can apply a pass, inspect refreshed preview/state snapshot data, and continue until it decides to stop or hits the configured limit.
 - Set `MULTI_TURN_ENABLED=1` to ask the chat flow to keep refining after each applied pass.
 - `MULTI_TURN_MAX_TURNS` defaults to `10`.
-- When multi-turn mode is enabled, the smoke script automatically raises its default time budgets to `DARKTABLE_TIMEOUT_SECONDS=360` and `SERVER_TIMEOUT_SECONDS=180` unless you override them.
+- The smoke script defaults to `DARKTABLE_TIMEOUT_SECONDS=600` and `SERVER_TIMEOUT_SECONDS=600` unless you override them.
 - The smoke harness prefers deterministic server-side mock responses so refinement pass counts stay machine-checkable instead of depending on live planner variability.
 - The smoke harness validates refinement deterministically by counting `accepted_request` and `fulfilled_request` events in the server log for a single conversation/image session and by checking the logged `refinement` settings for every pass.
 - Use `EXPECTED_MIN_REFINEMENT_PASSES` and `EXPECTED_MAX_REFINEMENT_PASSES` to bound how many passes should occur.

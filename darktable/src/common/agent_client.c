@@ -73,6 +73,8 @@ typedef enum dt_agent_client_error_t
   DT_AGENT_CLIENT_ERROR_QUEUE_UNAVAILABLE,
 } dt_agent_client_error_t;
 
+#define DT_AGENT_CLIENT_DEFAULT_TIMEOUT_SECONDS 600L
+
 static GQuark _agent_client_error_quark(void)
 {
   return g_quark_from_static_string("dt-agent-client-error");
@@ -369,7 +371,9 @@ static int32_t _chat_job_run(dt_job_t *job)
   const char *env_timeout = g_getenv("DARKTABLE_AGENT_SERVER_TIMEOUT_SECONDS");
   const long configured_timeout = env_timeout && *env_timeout ? g_ascii_strtoll(env_timeout, NULL, 10)
                                                               : dt_conf_get_int(DT_AGENT_CHAT_TIMEOUT_SECONDS_CONF);
-  const long timeout_seconds = MAX(1, configured_timeout);
+  const long timeout_seconds = configured_timeout > 0
+                                 ? configured_timeout
+                                 : DT_AGENT_CLIENT_DEFAULT_TIMEOUT_SECONDS;
 
   GString *response = g_string_new(NULL);
   struct curl_slist *headers = NULL;

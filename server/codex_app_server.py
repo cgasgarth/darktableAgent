@@ -33,7 +33,7 @@ _DEFAULT_COMMAND = [
     "--listen",
     "stdio://",
 ]
-_DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS", "200"))
+_DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS", "600"))
 _DEFAULT_PERSONALITY = os.environ.get("DARKTABLE_AGENT_CODEX_PERSONALITY", "pragmatic")
 _DEFAULT_REASONING_EFFORT = os.environ.get("DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "high")
 _DEFAULT_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_MODEL", "gpt-5.3-codex")
@@ -61,6 +61,9 @@ Refinement rules:
 - In single-turn mode, continueRefining must be false.
 - In multi-turn mode, set continueRefining true only if another pass is likely useful after these operations apply.
 - Set continueRefining false when image is good enough, gains are speculative, or operations is empty.
+- automaticContinuation=true means this is the same ongoing agent run after darktable already applied prior operations.
+- In continuation passes, treat the newly supplied preview + histogram as refreshed visual feedback for the same goal, and refine from there.
+- Do not ask the user to re-state intent during continuation passes.
 
 Value rules:
 - Use mode `delta` only for set-float when supported.
@@ -619,6 +622,11 @@ class CodexAppServerBridge:
             if not is_followup
             else "Follow-up payloads may omit module labels; rely on settingId/actionPath and prior goal context.\n"
         )
+        continuation_line = (
+            "This pass is an automatic continuation of the same run after darktable applied prior operations and refreshed the image state.\n"
+            if is_followup
+            else ""
+        )
         preview_summary = (
             f"attached separately as {preview.mimeType} {preview.width}x{preview.height}"
             if preview is not None
@@ -633,6 +641,7 @@ class CodexAppServerBridge:
             f"Preview: {preview_summary}\n"
             "\n"
             "Use the provided editable settings and image state exactly as provided.\n"
+            f"{continuation_line}"
             f"{module_grouping_line}"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
