@@ -865,7 +865,7 @@ void dt_agent_chat_request_init(dt_agent_chat_request_t *request)
   request->refinement_enabled = FALSE;
   request->refinement_pass_index = 1;
   request->refinement_max_passes = 1;
-  request->refinement_fast_mode = FALSE;
+  request->fast_mode = FALSE;
   request->refinement_automatic_continuation = FALSE;
   request->capabilities = g_ptr_array_new_with_free_func(dt_agent_capability_free);
 }
@@ -908,7 +908,7 @@ void dt_agent_chat_request_copy(dt_agent_chat_request_t *dest,
   dest->refinement_enabled = src->refinement_enabled;
   dest->refinement_pass_index = src->refinement_pass_index;
   dest->refinement_max_passes = src->refinement_max_passes;
-  dest->refinement_fast_mode = src->refinement_fast_mode;
+  dest->fast_mode = src->fast_mode;
   dest->refinement_automatic_continuation = src->refinement_automatic_continuation;
   dest->refinement_goal_text = g_strdup(src->refinement_goal_text);
   dest->ui_context.view = g_strdup(src->ui_context.view);
@@ -1103,6 +1103,9 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
   json_builder_add_string_value(builder, request->message_text);
   json_builder_end_object(builder);
 
+  json_builder_set_member_name(builder, "fast");
+  json_builder_add_boolean_value(builder, request->fast_mode);
+
   json_builder_set_member_name(builder, "uiContext");
   json_builder_begin_object(builder);
   json_builder_set_member_name(builder, "view");
@@ -1130,8 +1133,6 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
   json_builder_add_int_value(builder, MAX(1, (gint)request->refinement_pass_index));
   json_builder_set_member_name(builder, "maxPasses");
   json_builder_add_int_value(builder, MAX(1, (gint)request->refinement_max_passes));
-  json_builder_set_member_name(builder, "fastMode");
-  json_builder_add_boolean_value(builder, request->refinement_fast_mode);
   json_builder_set_member_name(builder, "automaticContinuation");
   json_builder_add_boolean_value(builder, request->refinement_automatic_continuation);
   json_builder_set_member_name(builder, "goalText");

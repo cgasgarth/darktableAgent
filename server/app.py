@@ -203,6 +203,7 @@ async def chat(request: RequestEnvelope) -> ResponseEnvelope:
                 "imageSessionId": request.session.imageSessionId,
                 "conversationId": request.session.conversationId,
                 "turnId": request.session.turnId,
+                "fast": request.fast,
                 "refinement": request.refinement.model_dump(),
                 "view": request.uiContext.view,
                 "imageId": request.uiContext.imageId,

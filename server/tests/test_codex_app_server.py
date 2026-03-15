@@ -27,12 +27,12 @@ def _sample_request() -> RequestEnvelope:
                 "role": "user",
                 "text": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
             },
+            "fast": False,
             "refinement": {
                 "mode": "multi-turn",
                 "enabled": True,
                 "maxPasses": 10,
                 "passIndex": 1,
-                "fastMode": False,
                 "automaticContinuation": False,
                 "goalText": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
             },
@@ -259,7 +259,7 @@ def test_model_selection_uses_default_model_when_fast_mode_disabled() -> None:
 
 def test_model_selection_uses_fast_mode_model_when_fast_mode_enabled() -> None:
     request = _sample_request()
-    request.refinement.fastMode = True
+    request.fast = True
 
     assert CodexAppServerBridge._model_for_request(request) == _FAST_MODE_MODEL
 
@@ -272,7 +272,7 @@ def test_effort_selection_uses_default_effort_when_fast_mode_disabled() -> None:
 
 def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None:
     request = _sample_request()
-    request.refinement.fastMode = True
+    request.fast = True
 
     assert CodexAppServerBridge._effort_for_request(request) == _FAST_MODE_REASONING_EFFORT
 

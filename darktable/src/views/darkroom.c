@@ -2580,7 +2580,7 @@ static gboolean _agent_chat_build_request(dt_develop_t *dev,
   request->refinement_enabled = refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI;
   request->refinement_pass_index = refinement_pass_index;
   request->refinement_max_passes = refinement_max_passes;
-  request->refinement_fast_mode = fast_mode_enabled;
+  request->fast_mode = fast_mode_enabled;
   request->refinement_automatic_continuation = automatic_continuation;
   request->refinement_goal_text = g_strdup(goal_text && goal_text[0] ? goal_text : message_text);
   _agent_chat_fill_ui_context(request);

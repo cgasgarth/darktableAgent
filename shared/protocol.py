@@ -37,7 +37,6 @@ class RefinementRequest(StrictBaseModel):
     enabled: bool
     maxPasses: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
     passIndex: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
-    fastMode: bool
     automaticContinuation: bool
     goalText: str = Field(min_length=1)
 
@@ -256,6 +255,7 @@ class RequestEnvelope(StrictBaseModel):
     requestId: str = Field(min_length=1)
     session: RequestSession
     message: UserMessage
+    fast: bool
     refinement: RefinementRequest
     uiContext: UIContext
     capabilityManifest: CapabilityManifest

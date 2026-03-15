@@ -286,13 +286,13 @@ class CodexAppServerBridge:
 
     @staticmethod
     def _model_for_request(request: RequestEnvelope) -> str | None:
-        if request.refinement.fastMode and _FAST_MODE_MODEL:
+        if request.fast and _FAST_MODE_MODEL:
             return _FAST_MODE_MODEL
         return _DEFAULT_MODEL
 
     @staticmethod
     def _effort_for_request(request: RequestEnvelope) -> str:
-        if request.refinement.fastMode:
+        if request.fast:
             return _FAST_MODE_REASONING_EFFORT
         return _DEFAULT_REASONING_EFFORT
 
@@ -471,7 +471,8 @@ class CodexAppServerBridge:
             "Plan the next darktable response for this request.\n\n"
             f"Goal: {request.refinement.goalText}\n"
             f"Latest user message: {request.message.text}\n"
-            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, fastMode={str(request.refinement.fastMode).lower()}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
+            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
+            f"Fast mode: {str(request.fast).lower()}\n"
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             f"Preview: {preview_summary}\n"
             f"Histogram summary: {histogram_summary}\n"

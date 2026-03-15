@@ -13,12 +13,12 @@ def _sample_request_payload() -> dict:
             "turnId": "turn-1",
         },
         "message": {"role": "user", "text": "Increase exposure by exactly 0.7 EV."},
+        "fast": False,
         "refinement": {
             "mode": "single-turn",
             "enabled": False,
             "maxPasses": 1,
             "passIndex": 1,
-            "fastMode": False,
             "automaticContinuation": False,
             "goalText": "Increase exposure by exactly 0.7 EV.",
         },
@@ -100,7 +100,6 @@ def test_mock_planner_splits_multi_turn_response_across_two_passes() -> None:
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 1,
-        "fastMode": False,
         "automaticContinuation": False,
         "goalText": "Increase exposure by exactly 0.7 EV.",
     }
