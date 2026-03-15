@@ -331,6 +331,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                     turn_id=request.session.turnId,
                 )
                 progress_signature = (
+                    progress_payload.get("progressVersion"),
                     progress_payload.get("found"),
                     progress_payload.get("status"),
                     progress_payload.get("toolCallsUsed"),
@@ -338,6 +339,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                     progress_payload.get("appliedOperationCount"),
                     len(progress_payload.get("operations", [])),
                     progress_payload.get("message"),
+                    progress_payload.get("lastToolName"),
                 )
                 if progress_signature != last_progress_signature:
                     last_progress_signature = progress_signature

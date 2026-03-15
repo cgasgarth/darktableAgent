@@ -45,6 +45,7 @@ typedef struct dt_agent_client_progress_t
   gboolean has_response;
   gchar *status;
   gchar *message;
+  gchar *last_tool_name;
   guint tool_calls_used;
   guint tool_calls_max;
   guint applied_operation_count;

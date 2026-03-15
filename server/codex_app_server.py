@@ -125,6 +125,7 @@ class _ActiveRequestState:
     status: str = "queued"
     message: str = "Request accepted"
     last_tool_name: str | None = None
+    progress_version: int = 0
 
 
 @dataclass(slots=True)
@@ -348,6 +349,8 @@ class CodexAppServerBridge:
                     "appliedOperationCount": 0,
                     "operations": [],
                     "message": "No active request found for that requestId.",
+                    "lastToolName": None,
+                    "progressVersion": 0,
                 }
 
             if (
@@ -364,6 +367,8 @@ class CodexAppServerBridge:
                     "appliedOperationCount": 0,
                     "operations": [],
                     "message": "No active request matched the provided session identifiers.",
+                    "lastToolName": None,
+                    "progressVersion": 0,
                 }
 
             context = None
@@ -382,6 +387,8 @@ class CodexAppServerBridge:
                 "appliedOperationCount": len(operations),
                 "operations": operations,
                 "message": active_request.message,
+                "lastToolName": active_request.last_tool_name,
+                "progressVersion": active_request.progress_version,
             }
 
     def _is_cancelled(self, active_request: _ActiveRequestState) -> bool:
@@ -435,6 +442,7 @@ class CodexAppServerBridge:
                 active_request.message = message
             if last_tool_name is not None:
                 active_request.last_tool_name = last_tool_name
+            active_request.progress_version += 1
 
     def _set_active_request_status_for_turn_locked(
         self,
@@ -452,6 +460,7 @@ class CodexAppServerBridge:
                     active_request.message = message
                     if last_tool_name is not None:
                         active_request.last_tool_name = last_tool_name
+                    active_request.progress_version += 1
                     return
 
     def _ensure_initialized_locked(self, deadline: float) -> None:

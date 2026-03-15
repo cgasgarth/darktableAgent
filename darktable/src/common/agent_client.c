@@ -493,6 +493,7 @@ void dt_agent_client_progress_clear(dt_agent_client_progress_t *progress)
   g_free(progress->transport_error);
   g_free(progress->status);
   g_free(progress->message);
+  g_free(progress->last_tool_name);
   if(progress->has_response)
     dt_agent_chat_response_clear(&progress->response);
   memset(progress, 0, sizeof(*progress));
@@ -542,7 +543,7 @@ static gchar *_build_progress_response_json(const dt_agent_client_request_t *req
   json_builder_set_member_name(builder, "role");
   json_builder_add_string_value(builder, "assistant");
   json_builder_set_member_name(builder, "text");
-  json_builder_add_string_value(builder, "");
+  json_builder_add_string_value(builder, "Live progress update.");
   json_builder_end_object(builder);
 
   json_builder_set_member_name(builder, "refinement");
@@ -636,6 +637,11 @@ static gboolean _parse_progress_payload(const dt_agent_client_request_t *request
   if(message_node && JSON_NODE_HOLDS_VALUE(message_node)
      && g_type_is_a(json_node_get_value_type(message_node), G_TYPE_STRING))
     progress->message = g_strdup(json_node_get_string(message_node));
+
+  JsonNode *last_tool_name_node = json_object_get_member(object, "lastToolName");
+  if(last_tool_name_node && JSON_NODE_HOLDS_VALUE(last_tool_name_node)
+     && g_type_is_a(json_node_get_value_type(last_tool_name_node), G_TYPE_STRING))
+    progress->last_tool_name = g_strdup(json_node_get_string(last_tool_name_node));
 
   JsonNode *tool_used_node = json_object_get_member(object, "toolCallsUsed");
   if(tool_used_node && JSON_NODE_HOLDS_VALUE(tool_used_node)

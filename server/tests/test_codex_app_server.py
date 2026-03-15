@@ -495,6 +495,8 @@ def test_get_request_progress_returns_not_found_for_unknown_request() -> None:
         "appliedOperationCount": 0,
         "operations": [],
         "message": "No active request found for that requestId.",
+        "lastToolName": None,
+        "progressVersion": 0,
     }
 
 
@@ -544,6 +546,8 @@ def test_get_request_progress_returns_live_applied_operations_for_active_turn() 
         assert progress["maxToolCalls"] == request.refinement.maxPasses
         assert progress["appliedOperationCount"] == 1
         assert len(progress["operations"]) == 1
+        assert progress["lastToolName"] is None
+        assert progress["progressVersion"] == 0
     finally:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]

@@ -132,4 +132,6 @@ class MockPlannerBridge:
             "maxToolCalls": 0,
             "appliedOperationCount": 0,
             "operations": [],
+            "lastToolName": None,
+            "progressVersion": 0,
         }
