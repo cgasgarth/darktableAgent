@@ -117,6 +117,8 @@ class ChoiceOption(StrictBaseModel):
 
 
 class Capability(StrictBaseModel):
+    moduleId: str = Field(min_length=1)
+    moduleLabel: str = Field(min_length=1)
     capabilityId: str = Field(min_length=1)
     label: str = Field(min_length=1)
     kind: OperationKind
@@ -207,6 +209,8 @@ class CapabilityManifest(StrictBaseModel):
 
 
 class EditableSetting(StrictBaseModel):
+    moduleId: str = Field(min_length=1)
+    moduleLabel: str = Field(min_length=1)
     settingId: str = Field(min_length=1)
     capabilityId: str = Field(min_length=1)
     label: str = Field(min_length=1)
@@ -269,6 +273,10 @@ class RequestEnvelope(StrictBaseModel):
                 )
             if capability.actionPath != setting.actionPath:
                 raise ValueError("editableSetting actionPath does not match capability manifest")
+            if capability.moduleId != setting.moduleId:
+                raise ValueError("editableSetting moduleId does not match capability manifest")
+            if capability.moduleLabel != setting.moduleLabel:
+                raise ValueError("editableSetting moduleLabel does not match capability manifest")
             if capability.label != setting.label:
                 raise ValueError("editableSetting label does not match capability manifest")
             if capability.kind != setting.kind:

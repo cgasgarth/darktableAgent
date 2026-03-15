@@ -108,6 +108,8 @@ static void _agent_image_control_free(gpointer data)
   if(!control)
     return;
 
+  g_free(control->module_id);
+  g_free(control->module_label);
   g_free(control->setting_id);
   g_free(control->capability_id);
   g_free(control->label);
@@ -122,6 +124,8 @@ static void _agent_image_control_free(gpointer data)
 static dt_agent_image_control_t *_agent_image_control_copy(const dt_agent_image_control_t *src)
 {
   dt_agent_image_control_t *dest = g_new0(dt_agent_image_control_t, 1);
+  dest->module_id = g_strdup(src->module_id);
+  dest->module_label = g_strdup(src->module_label);
   dest->setting_id = g_strdup(src->setting_id);
   dest->capability_id = g_strdup(src->capability_id);
   dest->label = g_strdup(src->label);
@@ -300,6 +304,8 @@ static void _collect_controls(const dt_develop_t *dev, dt_agent_image_state_t *s
   {
     const dt_agent_action_descriptor_t *descriptor = g_ptr_array_index(descriptors, i);
     dt_agent_image_control_t *control = g_new0(dt_agent_image_control_t, 1);
+    control->module_id = g_strdup(descriptor->module_id);
+    control->module_label = g_strdup(descriptor->module_label);
     control->setting_id = g_strdup(descriptor->setting_id);
     control->capability_id = g_strdup(descriptor->capability_id);
     control->label = g_strdup(descriptor->label);

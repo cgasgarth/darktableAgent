@@ -6,6 +6,8 @@ from shared.protocol import AgentPlan, RequestEnvelope, build_response_from_plan
 def _sample_capabilities() -> list[dict]:
     return [
         {
+            "moduleId": "exposure",
+            "moduleLabel": "exposure",
             "capabilityId": "exposure.primary",
             "label": "Exposure",
             "kind": "set-float",
@@ -18,6 +20,8 @@ def _sample_capabilities() -> list[dict]:
             "stepNumber": 0.01,
         },
         {
+            "moduleId": "filmicrgb",
+            "moduleLabel": "filmic rgb",
             "capabilityId": "filmic.preserve-highlights",
             "label": "Preserve highlights",
             "kind": "set-bool",
@@ -27,6 +31,8 @@ def _sample_capabilities() -> list[dict]:
             "defaultBool": False,
         },
         {
+            "moduleId": "colorbalancergb",
+            "moduleLabel": "color balance rgb",
             "capabilityId": "colorbalancergb.saturation-formula",
             "label": "Saturation formula",
             "kind": "set-choice",
@@ -46,6 +52,20 @@ def _sample_capabilities() -> list[dict]:
                 },
             ],
             "defaultChoiceValue": 0,
+        },
+        {
+            "moduleId": "colorequal",
+            "moduleLabel": "color equalizer",
+            "capabilityId": "colorequal.sat-blue",
+            "label": "Blue saturation",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/colorequal/sat_blue",
+            "supportedModes": ["set", "delta"],
+            "minNumber": -1.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
         }
     ]
 
@@ -69,6 +89,8 @@ def _sample_image_snapshot() -> dict:
         "historyCount": 1,
         "editableSettings": [
             {
+                "moduleId": "exposure",
+                "moduleLabel": "exposure",
                 "settingId": "setting.exposure.primary",
                 "capabilityId": "exposure.primary",
                 "label": "Exposure",
@@ -82,6 +104,8 @@ def _sample_image_snapshot() -> dict:
                 "stepNumber": 0.01,
             },
             {
+                "moduleId": "filmicrgb",
+                "moduleLabel": "filmic rgb",
                 "settingId": "setting.filmic.preserve-highlights",
                 "capabilityId": "filmic.preserve-highlights",
                 "label": "Preserve highlights",
@@ -92,6 +116,8 @@ def _sample_image_snapshot() -> dict:
                 "defaultBool": False,
             },
             {
+                "moduleId": "colorbalancergb",
+                "moduleLabel": "color balance rgb",
                 "settingId": "setting.colorbalancergb.saturation-formula",
                 "capabilityId": "colorbalancergb.saturation-formula",
                 "label": "Saturation formula",
@@ -113,6 +139,21 @@ def _sample_image_snapshot() -> dict:
                     },
                 ],
                 "defaultChoiceValue": 0,
+            },
+            {
+                "moduleId": "colorequal",
+                "moduleLabel": "color equalizer",
+                "settingId": "setting.colorequal.sat-blue",
+                "capabilityId": "colorequal.sat-blue",
+                "label": "Blue saturation",
+                "actionPath": "iop/colorequal/sat_blue",
+                "kind": "set-float",
+                "currentNumber": 0.15,
+                "supportedModes": ["set", "delta"],
+                "minNumber": -1.0,
+                "maxNumber": 1.0,
+                "defaultNumber": 0.0,
+                "stepNumber": 0.01,
             }
         ],
         "history": [
@@ -180,11 +221,13 @@ def test_request_envelope_accepts_v3_payload() -> None:
     assert envelope.capabilityManifest.targets[0].supportedModes == ["set", "delta"]
     assert envelope.capabilityManifest.targets[1].defaultBool is False
     assert envelope.capabilityManifest.targets[2].choices[1].choiceId == "rgb"
+    assert envelope.capabilityManifest.targets[3].moduleId == "colorequal"
     assert (
         envelope.imageSnapshot.editableSettings[0].actionPath == "iop/exposure/exposure"
     )
     assert envelope.imageSnapshot.editableSettings[1].currentBool is True
     assert envelope.imageSnapshot.editableSettings[2].currentChoiceId == "rgb"
+    assert envelope.imageSnapshot.editableSettings[3].moduleLabel == "color equalizer"
     assert envelope.imageSnapshot.preview.width == 1000
     assert envelope.imageSnapshot.histogram.binCount == 4
 
@@ -209,6 +252,18 @@ def test_request_envelope_rejects_invalid_single_turn_refinement_shape() -> None
         RequestEnvelope.model_validate(payload)
     except ValidationError as exc:
         assert "single-turn refinement must use maxPasses=1" in str(exc)
+    else:
+        raise AssertionError("Expected validation failure")
+
+
+def test_request_envelope_rejects_module_metadata_mismatch() -> None:
+    payload = _sample_request_payload()
+    payload["imageSnapshot"]["editableSettings"][3]["moduleId"] = "colorbalancergb"
+
+    try:
+        RequestEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        assert "editableSetting moduleId does not match capability manifest" in str(exc)
     else:
         raise AssertionError("Expected validation failure")
 

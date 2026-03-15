@@ -61,6 +61,8 @@ void dt_agent_capability_free(gpointer data)
   if(!capability)
     return;
 
+  g_free(capability->module_id);
+  g_free(capability->module_label);
   g_free(capability->capability_id);
   g_free(capability->label);
   g_free(capability->kind);
@@ -77,6 +79,8 @@ dt_agent_capability_t *dt_agent_capability_copy(const dt_agent_capability_t *src
     return NULL;
 
   dt_agent_capability_t *dest = g_new0(dt_agent_capability_t, 1);
+  dest->module_id = g_strdup(src->module_id);
+  dest->module_label = g_strdup(src->module_label);
   dest->capability_id = g_strdup(src->capability_id);
   dest->label = g_strdup(src->label);
   dest->kind = g_strdup(src->kind);
@@ -125,6 +129,8 @@ gboolean dt_agent_capabilities_collect(const struct dt_develop_t *dev,
   {
     const dt_agent_action_descriptor_t *descriptor = g_ptr_array_index(descriptors, i);
     dt_agent_capability_t *capability = g_new0(dt_agent_capability_t, 1);
+    capability->module_id = g_strdup(descriptor->module_id);
+    capability->module_label = g_strdup(descriptor->module_label);
     capability->capability_id = g_strdup(descriptor->capability_id);
     capability->label = g_strdup(descriptor->label);
     capability->kind = g_strdup(descriptor->kind_name);

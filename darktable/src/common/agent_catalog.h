@@ -30,6 +30,8 @@ G_BEGIN_DECLS
 
 typedef struct dt_agent_action_descriptor_t
 {
+  gchar *module_id;
+  gchar *module_label;
   gchar *capability_id;
   gchar *setting_id;
   gchar *label;

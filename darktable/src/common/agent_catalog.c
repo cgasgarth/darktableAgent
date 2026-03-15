@@ -93,6 +93,23 @@ static gchar *_build_capability_id(const char *setting_id)
   return g_strdup_printf("capability.%s", sanitized);
 }
 
+static gchar *_build_module_id(const dt_iop_module_t *module)
+{
+  return g_strdup((module && module->op[0]) ? module->op : "unknown");
+}
+
+static gchar *_build_module_label(const dt_iop_module_t *module)
+{
+  if(module && module->name)
+  {
+    const char *label = module->name();
+    if(label && label[0])
+      return g_strdup(label);
+  }
+
+  return g_strdup((module && module->op[0]) ? module->op : "unknown");
+}
+
 static dt_introspection_field_t *_find_field_for_widget(const dt_iop_module_t *module,
                                                         GtkWidget *widget)
 {
@@ -260,6 +277,8 @@ static dt_agent_action_descriptor_t *_descriptor_for_widget(dt_iop_module_t *mod
 
   g_autofree gchar *action_path = _action_full_id(referral->action);
   dt_agent_action_descriptor_t *descriptor = g_new0(dt_agent_action_descriptor_t, 1);
+  descriptor->module_id = _build_module_id(module);
+  descriptor->module_label = _build_module_label(module);
   descriptor->setting_id = _build_setting_id(action_path, module);
   descriptor->capability_id = _build_capability_id(descriptor->setting_id);
   descriptor->label = g_strdup(referral->action->label ? referral->action->label
@@ -320,6 +339,8 @@ static dt_agent_action_descriptor_t *_descriptor_for_module_toggle(dt_iop_module
 
   g_autofree gchar *action_path = _action_full_id(referral->action);
   dt_agent_action_descriptor_t *descriptor = g_new0(dt_agent_action_descriptor_t, 1);
+  descriptor->module_id = _build_module_id(module);
+  descriptor->module_label = _build_module_label(module);
   descriptor->setting_id = _build_setting_id(action_path, module);
   descriptor->capability_id = _build_capability_id(descriptor->setting_id);
   descriptor->label = g_strdup_printf("%s enabled", module->name());
@@ -360,6 +381,8 @@ void dt_agent_action_descriptor_free(gpointer data)
   if(!descriptor)
     return;
 
+  g_free(descriptor->module_id);
+  g_free(descriptor->module_label);
   g_free(descriptor->capability_id);
   g_free(descriptor->setting_id);
   g_free(descriptor->label);
@@ -378,6 +401,8 @@ dt_agent_action_descriptor_t *dt_agent_action_descriptor_copy(
     return NULL;
 
   dt_agent_action_descriptor_t *dest = g_new0(dt_agent_action_descriptor_t, 1);
+  dest->module_id = g_strdup(src->module_id);
+  dest->module_label = g_strdup(src->module_label);
   dest->capability_id = g_strdup(src->capability_id);
   dest->setting_id = g_strdup(src->setting_id);
   dest->label = g_strdup(src->label);

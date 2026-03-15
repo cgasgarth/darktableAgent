@@ -322,6 +322,10 @@ static void _serialize_capabilities(JsonBuilder *builder, const GPtrArray *capab
       const dt_agent_capability_t *capability = g_ptr_array_index((GPtrArray *)capabilities, i);
       json_builder_begin_object(builder);
 
+      json_builder_set_member_name(builder, "moduleId");
+      json_builder_add_string_value(builder, capability->module_id);
+      json_builder_set_member_name(builder, "moduleLabel");
+      json_builder_add_string_value(builder, capability->module_label);
       json_builder_set_member_name(builder, "capabilityId");
       json_builder_add_string_value(builder, capability->capability_id);
       json_builder_set_member_name(builder, "label");
@@ -461,6 +465,10 @@ static void _serialize_image_snapshot(JsonBuilder *builder,
     const dt_agent_image_control_t *control = g_ptr_array_index(state->controls, i);
 
     json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "moduleId");
+    json_builder_add_string_value(builder, control->module_id);
+    json_builder_set_member_name(builder, "moduleLabel");
+    json_builder_add_string_value(builder, control->module_label);
     json_builder_set_member_name(builder, "settingId");
     if(control->setting_id)
       json_builder_add_string_value(builder, control->setting_id);

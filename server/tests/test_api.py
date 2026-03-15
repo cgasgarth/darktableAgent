@@ -11,6 +11,8 @@ from shared.protocol import AgentPlan
 def _sample_capabilities() -> list[dict]:
     return [
         {
+            "moduleId": "exposure",
+            "moduleLabel": "exposure",
             "capabilityId": "exposure.primary",
             "label": "Exposure",
             "kind": "set-float",
@@ -23,6 +25,8 @@ def _sample_capabilities() -> list[dict]:
             "stepNumber": 0.01,
         },
         {
+            "moduleId": "filmicrgb",
+            "moduleLabel": "filmic rgb",
             "capabilityId": "filmic.preserve-highlights",
             "label": "Preserve highlights",
             "kind": "set-bool",
@@ -32,6 +36,8 @@ def _sample_capabilities() -> list[dict]:
             "defaultBool": False,
         },
         {
+            "moduleId": "colorbalancergb",
+            "moduleLabel": "color balance rgb",
             "capabilityId": "colorbalancergb.saturation-formula",
             "label": "Saturation formula",
             "kind": "set-choice",
@@ -43,6 +49,20 @@ def _sample_capabilities() -> list[dict]:
                 {"choiceValue": 1, "choiceId": "rgb", "label": "RGB"},
             ],
             "defaultChoiceValue": 0,
+        },
+        {
+            "moduleId": "colorequal",
+            "moduleLabel": "color equalizer",
+            "capabilityId": "colorequal.sat-blue",
+            "label": "Blue saturation",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/colorequal/sat_blue",
+            "supportedModes": ["set", "delta"],
+            "minNumber": -1.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
         }
     ]
 
@@ -66,6 +86,8 @@ def _sample_image_snapshot() -> dict:
         "historyCount": 1,
         "editableSettings": [
             {
+                "moduleId": "exposure",
+                "moduleLabel": "exposure",
                 "settingId": "setting.exposure.primary",
                 "capabilityId": "exposure.primary",
                 "label": "Exposure",
@@ -79,6 +101,8 @@ def _sample_image_snapshot() -> dict:
                 "stepNumber": 0.01,
             },
             {
+                "moduleId": "filmicrgb",
+                "moduleLabel": "filmic rgb",
                 "settingId": "setting.filmic.preserve-highlights",
                 "capabilityId": "filmic.preserve-highlights",
                 "label": "Preserve highlights",
@@ -89,6 +113,8 @@ def _sample_image_snapshot() -> dict:
                 "defaultBool": False,
             },
             {
+                "moduleId": "colorbalancergb",
+                "moduleLabel": "color balance rgb",
                 "settingId": "setting.colorbalancergb.saturation-formula",
                 "capabilityId": "colorbalancergb.saturation-formula",
                 "label": "Saturation formula",
@@ -102,6 +128,21 @@ def _sample_image_snapshot() -> dict:
                     {"choiceValue": 1, "choiceId": "rgb", "label": "RGB"},
                 ],
                 "defaultChoiceValue": 0,
+            },
+            {
+                "moduleId": "colorequal",
+                "moduleLabel": "color equalizer",
+                "settingId": "setting.colorequal.sat-blue",
+                "capabilityId": "colorequal.sat-blue",
+                "label": "Blue saturation",
+                "actionPath": "iop/colorequal/sat_blue",
+                "kind": "set-float",
+                "currentNumber": 0.15,
+                "supportedModes": ["set", "delta"],
+                "minNumber": -1.0,
+                "maxNumber": 1.0,
+                "defaultNumber": 0.0,
+                "stepNumber": 0.01,
             }
         ],
         "history": [

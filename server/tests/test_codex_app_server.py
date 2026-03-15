@@ -40,6 +40,8 @@ def _sample_request() -> RequestEnvelope:
                 "manifestVersion": "manifest-1",
                 "targets": [
                     {
+                        "moduleId": "exposure",
+                        "moduleLabel": "exposure",
                         "capabilityId": "exposure.primary",
                         "label": "Exposure",
                         "kind": "set-float",
@@ -48,6 +50,20 @@ def _sample_request() -> RequestEnvelope:
                         "supportedModes": ["set", "delta"],
                         "minNumber": -18.0,
                         "maxNumber": 18.0,
+                        "defaultNumber": 0.0,
+                        "stepNumber": 0.01,
+                    },
+                    {
+                        "moduleId": "colorequal",
+                        "moduleLabel": "color equalizer",
+                        "capabilityId": "colorequal.sat-blue",
+                        "label": "Blue saturation",
+                        "kind": "set-float",
+                        "targetType": "darktable-action",
+                        "actionPath": "iop/colorequal/sat_blue",
+                        "supportedModes": ["set", "delta"],
+                        "minNumber": -1.0,
+                        "maxNumber": 1.0,
                         "defaultNumber": 0.0,
                         "stepNumber": 0.01,
                     }
@@ -71,6 +87,8 @@ def _sample_request() -> RequestEnvelope:
                 "historyCount": 1,
                 "editableSettings": [
                     {
+                        "moduleId": "exposure",
+                        "moduleLabel": "exposure",
                         "settingId": "setting.exposure.primary",
                         "capabilityId": "exposure.primary",
                         "label": "Exposure",
@@ -80,6 +98,21 @@ def _sample_request() -> RequestEnvelope:
                         "supportedModes": ["set", "delta"],
                         "minNumber": -18.0,
                         "maxNumber": 18.0,
+                        "defaultNumber": 0.0,
+                        "stepNumber": 0.01,
+                    },
+                    {
+                        "moduleId": "colorequal",
+                        "moduleLabel": "color equalizer",
+                        "settingId": "setting.colorequal.sat-blue",
+                        "capabilityId": "colorequal.sat-blue",
+                        "label": "Blue saturation",
+                        "actionPath": "iop/colorequal/sat_blue",
+                        "kind": "set-float",
+                        "currentNumber": 0.15,
+                        "supportedModes": ["set", "delta"],
+                        "minNumber": -1.0,
+                        "maxNumber": 1.0,
                         "defaultNumber": 0.0,
                         "stepNumber": 0.01,
                     }
@@ -188,6 +221,8 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Treat broad creative requests" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "If visual context is present, do not answer with \"be more specific\"" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "Use refinement.goalText as the root user goal" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "moduleId/moduleLabel" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "colorbalancergb" in _THREAD_DEVELOPER_INSTRUCTIONS
 
 
 def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() -> None:
@@ -198,6 +233,9 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "infer a conservative supported edit plan" in prompt
     assert "preview, histogram, history, and current settings" in prompt
     assert "Respect refinement state" in prompt
+    assert "Use moduleId/moduleLabel to group related controls" in prompt
+    assert "color equalizer or color balance rgb" in prompt
+    assert '"moduleId":"colorequal"' in prompt
     assert '"text":"Do a full edit so this becomes a polished gallery-ready landscape photo."' in prompt
 
 

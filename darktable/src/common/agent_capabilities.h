@@ -35,6 +35,8 @@ typedef struct dt_agent_choice_option_t
 
 typedef struct dt_agent_capability_t
 {
+  gchar *module_id;
+  gchar *module_label;
   gchar *capability_id;
   gchar *label;
   gchar *kind;

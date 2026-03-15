@@ -153,6 +153,8 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
+              "moduleId",
+              "moduleLabel",
               "capabilityId",
               "label",
               "kind",
@@ -165,6 +167,14 @@
               "stepNumber"
             ],
             "properties": {
+              "moduleId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "moduleLabel": {
+                "type": "string",
+                "minLength": 1
+              },
               "capabilityId": {
                 "type": "string",
                 "minLength": 1
@@ -174,7 +184,11 @@
                 "minLength": 1
               },
               "kind": {
-                "const": "set-float"
+                "enum": [
+                  "set-float",
+                  "set-choice",
+                  "set-bool"
+                ]
               },
               "targetType": {
                 "const": "darktable-action"
@@ -194,16 +208,68 @@
                 }
               },
               "minNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "maxNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "defaultNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "stepNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "choices": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "choiceValue",
+                    "choiceId",
+                    "label"
+                  ],
+                  "properties": {
+                    "choiceValue": {
+                      "type": "integer"
+                    },
+                    "choiceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "defaultChoiceValue": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "defaultBool": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             }
           }
@@ -300,18 +366,35 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
+              "moduleId",
+              "moduleLabel",
               "settingId",
               "capabilityId",
               "label",
+              "kind",
               "actionPath",
               "currentNumber",
               "supportedModes",
               "minNumber",
               "maxNumber",
               "defaultNumber",
-              "stepNumber"
+              "stepNumber",
+              "currentChoiceValue",
+              "currentChoiceId",
+              "choices",
+              "defaultChoiceValue",
+              "currentBool",
+              "defaultBool"
             ],
             "properties": {
+              "moduleId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "moduleLabel": {
+                "type": "string",
+                "minLength": 1
+              },
               "settingId": {
                 "type": "string",
                 "minLength": 1
@@ -323,6 +406,13 @@
               "label": {
                 "type": "string",
                 "minLength": 1
+              },
+              "kind": {
+                "enum": [
+                  "set-float",
+                  "set-choice",
+                  "set-bool"
+                ]
               },
               "actionPath": {
                 "type": "string",
@@ -345,16 +435,86 @@
                 }
               },
               "minNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "maxNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "defaultNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "stepNumber": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "currentChoiceValue": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currentChoiceId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "choices": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "choiceValue",
+                    "choiceId",
+                    "label"
+                  ],
+                  "properties": {
+                    "choiceValue": {
+                      "type": "integer"
+                    },
+                    "choiceId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "defaultChoiceValue": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "currentBool": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "defaultBool": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             }
           }

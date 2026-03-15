@@ -26,6 +26,8 @@ def _sample_request_payload() -> dict:
             "manifestVersion": "manifest-1",
             "targets": [
                 {
+                    "moduleId": "exposure",
+                    "moduleLabel": "exposure",
                     "capabilityId": "exposure.primary",
                     "label": "Exposure",
                     "kind": "set-float",
@@ -57,6 +59,8 @@ def _sample_request_payload() -> dict:
             "historyCount": 1,
             "editableSettings": [
                 {
+                    "moduleId": "exposure",
+                    "moduleLabel": "exposure",
                     "settingId": "setting.exposure.primary",
                     "capabilityId": "exposure.primary",
                     "label": "Exposure",

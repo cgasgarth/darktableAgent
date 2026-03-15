@@ -43,6 +43,8 @@ typedef struct dt_agent_image_metadata_t
 
 typedef struct dt_agent_image_control_t
 {
+  gchar *module_id;
+  gchar *module_label;
   gchar *setting_id;
   gchar *capability_id;
   gchar *label;
