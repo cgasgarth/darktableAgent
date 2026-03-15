@@ -32,8 +32,8 @@ _DEFAULT_COMMAND = [
 ]
 _DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS", "90"))
 _DEFAULT_PERSONALITY = os.environ.get("DARKTABLE_AGENT_CODEX_PERSONALITY", "pragmatic")
-_DEFAULT_REASONING_EFFORT = os.environ.get("DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "low")
-_DEFAULT_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_MODEL")
+_DEFAULT_REASONING_EFFORT = os.environ.get("DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "high")
+_DEFAULT_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_MODEL", "gpt-5.4")
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
 
@@ -50,11 +50,16 @@ You are given:
 Rules:
 - Only plan operations that are explicitly supported by the capability manifest and editable settings snapshot.
 - Never invent capability IDs, setting IDs, or action paths.
-- Use zero operations when the request is unsupported, ambiguous, unsafe, or impossible with the supplied capabilities.
+- Use zero operations only when the request is unsupported, unsafe, or impossible with the supplied capabilities.
 - Keep assistantText brief and user-facing.
 - Every operation must be immediately executable by darktable.
 - Use the supplied preview and histogram when they are present.
 - Prefer the specific editable settings and current values supplied in the image snapshot over generic photography assumptions.
+- Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or current settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
+- When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the current settings.
+- Favor restrained, high-confidence edits over extreme changes. Preserve highlight detail, avoid crushed shadows, and avoid oversaturation unless the user explicitly asks for a stylized look.
+- Prefer existing supported controls for global tone, color, detail, and presence before giving up on the request.
+- If visual context is present, do not answer with "be more specific" unless no safe supported edit can be inferred.
 - Use mode "delta" only for set-float operations when the capability supports delta.
 - Use mode "set" for all set-choice and set-bool operations.
 - For set-choice operations, return value.choiceValue and prefer including value.choiceId when it is known from the editable setting choices.
@@ -264,6 +269,8 @@ class CodexAppServerBridge:
         return (
             "Plan the next darktable response for this request.\n\n"
             "Use the capability manifest and image state exactly as provided.\n"
+            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, history, and current settings instead of asking for more specificity.\n"
+            "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
             "Return only the JSON object required by the output schema.\n\n"
             f"{json.dumps(payload, separators=(',', ':'))}"
         )

@@ -50,6 +50,7 @@ This repository is in its initial agent-integration stage.
 - keep expanding the editable control surface beyond the first working operations
 - improve the persistent chat UI and make it easier to keep open while editing
 - add richer multi-step plans, previews, and safer apply/revert flows
+- add optional multi-turn agent refinement so the agent can edit, inspect a refreshed preview, and continue up to 10 passes by default, with a chat UI toggle for single-turn vs multi-turn mode
 - expand into masking, local adjustments, and broader workflow automation
 
 ## Current Request Payload
@@ -69,8 +70,10 @@ The current protocol details live in [docs/protocol-v1.md](docs/protocol-v1.md).
 
 - Rebuild the local custom darktable with `./scripts/build_darktable_local.sh`
 - Run the local custom darktable with `./scripts/run_darktable_local.sh`
+- The launcher now detaches by default and writes logs to `.darktable-local/darktable.log`; pass `--foreground` if you want it to keep the terminal attached
 - Run the live Codex server-to-darktable exposure smoke check with `./scripts/agent_exposure_smoke.sh`
 - Or use the root npm scripts: `npm run darktable:build`, `npm run darktable:start`, `npm run darktable:build-and-start`, `npm run server:start`, and `npm run agent:smoke`
+- The Codex bridge defaults to `gpt-5.4` with `high` reasoning effort; override with `DARKTABLE_AGENT_CODEX_MODEL` and `DARKTABLE_AGENT_CODEX_REASONING_EFFORT` if needed
 - The launcher keeps its config, cache, and library isolated under `.darktable-local/` so it does not reuse a system darktable profile
 - The build uses `darktable/build-5.4.1` for build artifacts and `darktable/.install-5.4.1` for the runnable install tree
 - The server expects a working local `codex` CLI login because it uses `codex app-server` as the planning backend

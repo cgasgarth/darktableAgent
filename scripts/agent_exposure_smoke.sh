@@ -90,7 +90,7 @@ if ! curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
   exit 1
 fi
 
-launcher=("$SCRIPT_DIR/run_darktable_local.sh" --disable-opencl "$ASSET_PATH")
+launcher=("$SCRIPT_DIR/run_darktable_local.sh" --foreground --disable-opencl "$ASSET_PATH")
 if [[ -z "${DISPLAY:-}" ]]; then
   if command -v xvfb-run >/dev/null 2>&1; then
     launcher=(xvfb-run -a "${launcher[@]}")
