@@ -149,7 +149,7 @@ static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *op
       result,
       error,
       "%s",
-      _("direct white-balance channel multipliers are disabled; use temperature/tint controls"));
+      _("white-balance module controls are disabled for safety; use other color controls"));
   }
 
   dt_agent_action_descriptor_t *descriptor

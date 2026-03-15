@@ -62,12 +62,9 @@ _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY = int(
 _TOOL_GET_IMAGE_STATE = "get_image_state"
 _TOOL_GET_PREVIEW_IMAGE = "get_preview_image"
 _TOOL_APPLY_OPERATIONS = "apply_operations"
-_DISALLOWED_WHITE_BALANCE_ACTION_PATHS = {
-    "iop/temperature/red",
-    "iop/temperature/green",
-    "iop/temperature/blue",
-    "iop/temperature/g2",
-}
+_DISALLOWED_WHITE_BALANCE_ACTION_PATH_PREFIXES = (
+    "iop/temperature/",
+)
 
 _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing planner for darktable.
 
@@ -83,7 +80,7 @@ Only emit operations targeting provided settingId/actionPath pairs. Never invent
 Keep edits coherent, conservative, and executable.
 If user intent is broad, infer a reasonable plan from the visible image instead of asking for more specificity.
 Prefer advanced color controls (`colorequal`, `colorbalancergb`, `primaries`) when available for nuanced color work.
-For white balance, prefer explicit temperature/tint-style controls when available; avoid aggressive red/blue channel gain swings unless those are the only controls exposed.
+Do not use white-balance module controls (`iop/temperature/*`); those controls are disabled for safety.
 
 Refinement rules:
 - Always optimize toward refinement.goalText.
@@ -552,7 +549,7 @@ class CodexAppServerBridge:
                 "no_safe_controls_available",
                 (
                     "No safe editable controls are available for this image. "
-                    "Direct white-balance channel multipliers are blocked."
+                    "White-balance module controls are blocked."
                 ),
                 status_code=422,
             )
@@ -1111,7 +1108,7 @@ class CodexAppServerBridge:
             "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
-            "For white balance, prefer temperature/tint controls over direct channel multipliers when both exist.\n"
+            "White-balance module controls (`iop/temperature/*`) are disabled for safety; use other available color controls.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
             "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
             "Return only the JSON object required by the output schema."
@@ -1778,7 +1775,10 @@ class CodexAppServerBridge:
 
     @staticmethod
     def _is_disallowed_white_balance_action_path(action_path: str) -> bool:
-        return action_path in _DISALLOWED_WHITE_BALANCE_ACTION_PATHS
+        return any(
+            action_path.startswith(prefix)
+            for prefix in _DISALLOWED_WHITE_BALANCE_ACTION_PATH_PREFIXES
+        )
 
     def _apply_operation_to_state(self, context: _TurnContext, operation: dict[str, Any]) -> str | None:
         target = operation.get("target")
@@ -1802,8 +1802,8 @@ class CodexAppServerBridge:
 
         if self._is_disallowed_white_balance_action_path(action_path):
             return (
-                "Direct white-balance channel multipliers are disabled for safety "
-                "(temperature red/green/blue/g2). Use temperature/tint-style controls instead."
+                "White-balance module controls are disabled for safety "
+                "(iop/temperature/*). Use other available color controls instead."
             )
 
         kind = operation.get("kind")
