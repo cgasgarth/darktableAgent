@@ -92,6 +92,14 @@ static dt_agent_execution_result_t *_execution_result_new(const dt_agent_chat_op
   return result;
 }
 
+static gboolean _is_disallowed_white_balance_action_path(const char *action_path)
+{
+  return g_strcmp0(action_path, "iop/temperature/red") == 0
+      || g_strcmp0(action_path, "iop/temperature/green") == 0
+      || g_strcmp0(action_path, "iop/temperature/blue") == 0
+      || g_strcmp0(action_path, "iop/temperature/g2") == 0;
+}
+
 static double _read_descriptor_float_value(const dt_agent_action_descriptor_t *descriptor,
                                            GError **error)
 {
@@ -153,6 +161,17 @@ static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *op
                                          _("unsupported action path: %s"),
                                          operation->action_path ? operation->action_path
                                                                 : _("unknown"));
+  }
+
+  if(_is_disallowed_white_balance_action_path(operation->action_path))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return _execution_result_set_blocked(
+      report,
+      result,
+      error,
+      "%s",
+      _("direct white-balance channel multipliers are disabled; use temperature/tint controls"));
   }
 
   result->has_value_before = TRUE;

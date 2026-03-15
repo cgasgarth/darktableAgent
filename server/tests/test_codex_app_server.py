@@ -794,6 +794,56 @@ def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 
 
+def test_apply_operations_tool_rejects_disallowed_white_balance_channel_operations() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    first_setting = request.imageSnapshot.editableSettings[0]
+    first_setting.actionPath = "iop/temperature/red"
+    first_setting.moduleId = "temperature"
+    first_setting.moduleLabel = "white balance"
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 210,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-wb-red",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/temperature/red",
+                                    "settingId": first_setting.settingId,
+                                },
+                                "value": {"mode": "delta", "number": 0.1},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "disabled for safety" in result["contentItems"][0]["text"]
+
+
 def test_apply_operations_tool_rejected_for_single_turn_mode() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()

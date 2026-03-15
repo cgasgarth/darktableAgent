@@ -62,6 +62,12 @@ _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY = int(
 _TOOL_GET_IMAGE_STATE = "get_image_state"
 _TOOL_GET_PREVIEW_IMAGE = "get_preview_image"
 _TOOL_APPLY_OPERATIONS = "apply_operations"
+_DISALLOWED_WHITE_BALANCE_ACTION_PATHS = {
+    "iop/temperature/red",
+    "iop/temperature/green",
+    "iop/temperature/blue",
+    "iop/temperature/g2",
+}
 
 _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing planner for darktable.
 
@@ -1700,6 +1706,10 @@ class CodexAppServerBridge:
                 mapping[value] = choice_id
         return mapping
 
+    @staticmethod
+    def _is_disallowed_white_balance_action_path(action_path: str) -> bool:
+        return action_path in _DISALLOWED_WHITE_BALANCE_ACTION_PATHS
+
     def _apply_operation_to_state(self, context: _TurnContext, operation: dict[str, Any]) -> str | None:
         target = operation.get("target")
         if not isinstance(target, dict):
@@ -1718,6 +1728,12 @@ class CodexAppServerBridge:
             return (
                 f"actionPath mismatch for settingId '{setting_id}': expected "
                 f"{setting.get('actionPath')}, got {action_path}"
+            )
+
+        if self._is_disallowed_white_balance_action_path(action_path):
+            return (
+                "Direct white-balance channel multipliers are disabled for safety "
+                "(temperature red/green/blue/g2). Use temperature/tint-style controls instead."
             )
 
         kind = operation.get("kind")
