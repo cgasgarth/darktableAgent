@@ -296,7 +296,7 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     prompt = bridge._build_turn_prompt(_sample_request())  # type: ignore[attr-defined]
 
     assert "infer a conservative supported edit plan" in prompt
-    assert "preview, histogram, history, and current settings" in prompt
+    assert "preview, histogram, and available controls" in prompt
     assert "Respect refinement state" in prompt
     assert "Use moduleId/moduleLabel to group related controls" in prompt
     assert "rgb primaries, color equalizer, or color balance rgb" in prompt
@@ -306,6 +306,8 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Histogram summary: shadows=0.00, midtones=0.70, highlights=0.30" in prompt
     assert "Editable modules: colorequal (color equalizer): 1, exposure (exposure): 1, primaries (rgb primaries): 1" in prompt
     assert '"base64Data":null' in prompt
+    assert '"currentNumber"' not in prompt
+    assert '"history":[]' not in prompt
     assert "ZmFrZS1wcmV2aWV3" not in prompt
     assert '"text":"Do a full edit so this becomes a polished gallery-ready landscape photo."' in prompt
 

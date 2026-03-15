@@ -53,18 +53,18 @@ You are given:
 - the latest user message
 - refinement state describing whether this is a single-turn request or an automatic continuation pass
 - a capability manifest describing writable darktable controls
-- a current image snapshot with metadata, history, editable settings, and optionally a 1k rendered JPEG preview and histogram
+- a current image snapshot with metadata, editable setting targets, and optionally a 1k rendered JPEG preview and histogram
 - when available, the 1k preview is attached as a separate image input and the text payload only includes preview metadata
 
 Rules:
-- Only plan operations that are explicitly supported by the capability manifest and editable settings snapshot.
+- Only plan operations that are explicitly supported by the capability manifest and editable setting targets snapshot.
 - Never invent capability IDs, setting IDs, or action paths.
 - Use zero operations only when the request is unsupported, unsafe, or impossible with the supplied capabilities.
 - Keep assistantText brief and user-facing.
 - Every operation must be immediately executable by darktable.
 - Use the supplied preview and histogram when they are present.
 - Use the attached image input directly when it is present; do not expect raw preview bytes inside the text payload.
-- Prefer the specific editable settings and current values supplied in the image snapshot over generic photography assumptions.
+- Prefer the supplied editable setting targets and capability metadata over generic photography assumptions.
 - Use moduleId/moduleLabel to understand which controls belong to the same darktable module.
 - Treat broad creative requests like "make this a polished gallery-ready landscape" as valid when preview, histogram, or current settings are available. Infer a conservative edit plan instead of asking for narrower instructions.
 - When the user asks for a full edit or a target look, proactively choose a small coherent set of supported global adjustments that fit the visible image and the current settings.
@@ -522,6 +522,56 @@ class CodexAppServerBridge:
         preview = payload.get("imageSnapshot", {}).get("preview")
         if isinstance(preview, dict) and "base64Data" in preview:
             preview["base64Data"] = None
+        capability_targets = payload.get("capabilityManifest", {}).get("targets")
+        if isinstance(capability_targets, list):
+            compact_targets: list[dict[str, Any]] = []
+            for target in capability_targets:
+                if not isinstance(target, dict):
+                    continue
+                compact_target: dict[str, Any] = {
+                    "moduleId": target.get("moduleId"),
+                    "moduleLabel": target.get("moduleLabel"),
+                    "capabilityId": target.get("capabilityId"),
+                    "kind": target.get("kind"),
+                    "targetType": target.get("targetType"),
+                    "actionPath": target.get("actionPath"),
+                    "supportedModes": target.get("supportedModes"),
+                }
+                if target.get("minNumber") is not None:
+                    compact_target["minNumber"] = target.get("minNumber")
+                if target.get("maxNumber") is not None:
+                    compact_target["maxNumber"] = target.get("maxNumber")
+                if target.get("stepNumber") is not None:
+                    compact_target["stepNumber"] = target.get("stepNumber")
+                if target.get("choices") is not None:
+                    compact_target["choices"] = target.get("choices")
+                compact_targets.append(compact_target)
+            payload["capabilityManifest"]["targets"] = compact_targets
+
+        image_snapshot = payload.get("imageSnapshot", {})
+        if isinstance(image_snapshot, dict):
+            editable_settings = image_snapshot.get("editableSettings")
+            if isinstance(editable_settings, list):
+                compact_settings: list[dict[str, Any]] = []
+                for setting in editable_settings:
+                    if not isinstance(setting, dict):
+                        continue
+                    compact_settings.append(
+                        {
+                            "moduleId": setting.get("moduleId"),
+                            "moduleLabel": setting.get("moduleLabel"),
+                            "settingId": setting.get("settingId"),
+                            "capabilityId": setting.get("capabilityId"),
+                            "kind": setting.get("kind"),
+                            "actionPath": setting.get("actionPath"),
+                            "supportedModes": setting.get("supportedModes"),
+                            "choices": setting.get("choices"),
+                        }
+                    )
+                image_snapshot["editableSettings"] = compact_settings
+
+            # Avoid sending full history stack in every turn; we keep summary counters.
+            image_snapshot.pop("history", None)
         return payload
 
     @staticmethod
@@ -607,7 +657,7 @@ class CodexAppServerBridge:
             f"Editable modules: {module_summary}\n\n"
             "Use the capability manifest and image state exactly as provided.\n"
             "Use moduleId/moduleLabel to group related controls from the same darktable module.\n"
-            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, history, and current settings instead of asking for more specificity.\n"
+            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from the preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
             "The preview image is attached separately when available; the JSON payload below only keeps preview metadata so the prompt stays compact.\n"
             "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
