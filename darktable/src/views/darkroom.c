@@ -1940,9 +1940,7 @@ static void _agent_chat_load_session(dt_develop_t *dev,
 
   dev->agent_chat.multi_turn_enabled = session->last_refinement_enabled;
   dev->agent_chat.max_refinement_passes
-    = CLAMP(MAX(1u, session->last_refinement_max_passes),
-            1u,
-            DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS);
+    = MAX(1u, session->last_refinement_max_passes);
   dev->agent_chat.fast_mode_enabled = session->last_fast_mode_enabled;
 
   if(dev->agent_chat.multi_turn_check_button)
@@ -2399,7 +2397,7 @@ static void _agent_chat_max_turns_changed(GtkSpinButton *spin, gpointer user_dat
   dt_develop_t *dev = user_data;
   const gint value = gtk_spin_button_get_value_as_int(spin);
   dev->agent_chat.max_refinement_passes
-    = CLAMP((guint)MAX(value, 1), 1u, DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS);
+    = (guint)MAX(value, 1);
   dt_conf_set_int("plugins/darkroom/agent_chat/multi_turn_max_passes",
                   (gint)dev->agent_chat.max_refinement_passes);
   _agent_chat_sync_current_session(dev);
@@ -4242,7 +4240,7 @@ void gui_init(dt_view_t *self)
     gtk_box_pack_start(GTK_BOX(options_row), turn_limit_label, FALSE, FALSE, 0);
 
     dev->agent_chat.multi_turn_turn_limit_spin
-      = gtk_spin_button_new_with_range(1.0, DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS, 1.0);
+      = gtk_spin_button_new_with_range(1.0, (gdouble)G_MAXINT, 1.0);
     gtk_widget_set_tooltip_text(dev->agent_chat.multi_turn_turn_limit_spin,
                                 _("maximum tool calls for the live iterative agent run"));
     gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(dev->agent_chat.multi_turn_turn_limit_spin), TRUE);
@@ -4967,9 +4965,7 @@ void enter(dt_view_t *self)
     = dt_conf_get_int("plugins/darkroom/agent_chat/multi_turn_max_passes");
   dev->agent_chat.max_refinement_passes
     = configured_max_refinement_passes > 0
-        ? CLAMP((guint)configured_max_refinement_passes,
-                1u,
-                DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS)
+        ? (guint)configured_max_refinement_passes
         : DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS;
   dev->agent_chat.multi_turn_enabled
     = dt_conf_get_bool("plugins/darkroom/agent_chat/multi_turn_enabled");
@@ -4979,10 +4975,15 @@ void enter(dt_view_t *self)
     dev->agent_chat.multi_turn_enabled
       = g_strcmp0(g_getenv(DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV), "0") != 0;
   if(_agent_chat_env_enabled(DT_AGENT_CHAT_TEST_MULTI_TURN_MAX_TURNS_ENV))
-    dev->agent_chat.max_refinement_passes
-      = CLAMP((guint)g_ascii_strtoull(g_getenv(DT_AGENT_CHAT_TEST_MULTI_TURN_MAX_TURNS_ENV), NULL, 10),
-              1u,
-              DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS);
+  {
+    guint64 configured_passes
+      = g_ascii_strtoull(g_getenv(DT_AGENT_CHAT_TEST_MULTI_TURN_MAX_TURNS_ENV), NULL, 10);
+    if(configured_passes < 1u)
+      configured_passes = 1u;
+    if(configured_passes > (guint64)G_MAXINT)
+      configured_passes = (guint64)G_MAXINT;
+    dev->agent_chat.max_refinement_passes = (guint)configured_passes;
+  }
   if(dev->agent_chat.multi_turn_check_button)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.multi_turn_check_button),
                                  dev->agent_chat.multi_turn_enabled);

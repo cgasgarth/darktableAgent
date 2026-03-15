@@ -51,7 +51,7 @@ This repository is in its initial agent-integration stage.
 - keep expanding the editable control surface beyond the first working operations
 - improve the persistent chat UI and make it easier to keep open while editing
 - add richer multi-step plans, previews, and safer apply/revert flows
-- add optional live iterative agent runs so the agent can edit with tool calls in one request, inspect refreshed state, and continue up to 15 tool calls by default, with a chat UI toggle for single-turn vs live run mode
+- add optional live iterative agent runs so the agent can edit with tool calls in one request, inspect refreshed state, and continue with a default tool-call budget of 15 (user configurable, no hard cap), with a chat UI toggle for single-turn vs live run mode
 - expand into masking, local adjustments, and broader workflow automation
 
 ## Current Request Payload

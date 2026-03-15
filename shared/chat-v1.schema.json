@@ -94,13 +94,11 @@
         },
         "maxPasses": {
           "type": "integer",
-          "minimum": 1,
-          "maximum": 15
+          "minimum": 1
         },
         "passIndex": {
           "type": "integer",
-          "minimum": 1,
-          "maximum": 15
+          "minimum": 1
         },
         "automaticContinuation": {
           "type": "boolean"

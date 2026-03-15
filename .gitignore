@@ -2,7 +2,10 @@
 __pycache__/
 *.pyc
 *.pyo
-*.pytest_cache/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+uv.lock
 
 darktable/build/
 darktable/build-*/

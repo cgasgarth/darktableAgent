@@ -35,8 +35,8 @@ class UIContext(StrictBaseModel):
 class RefinementRequest(StrictBaseModel):
     mode: RefinementMode
     enabled: bool
-    maxPasses: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
-    passIndex: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
+    maxPasses: int = Field(ge=1)
+    passIndex: int = Field(ge=1)
     automaticContinuation: bool
     goalText: str = Field(min_length=1)
 
@@ -400,8 +400,8 @@ class PlanEnvelope(StrictBaseModel):
 class RefinementStatus(StrictBaseModel):
     mode: RefinementMode
     enabled: bool
-    passIndex: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
-    maxPasses: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
+    passIndex: int = Field(ge=1)
+    maxPasses: int = Field(ge=1)
     continueRefining: bool
     stopReason: Literal["single-turn", "continue", "planner-complete", "no-operations", "max-passes"]
 
