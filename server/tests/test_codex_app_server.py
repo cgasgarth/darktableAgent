@@ -3,6 +3,8 @@ import pytest
 from server.codex_app_server import (
     CodexAppServerBridge,
     CodexAppServerError,
+    _DEFAULT_MODEL,
+    _DEFAULT_SPARK_MODEL,
     _THREAD_DEVELOPER_INSTRUCTIONS,
 )
 from shared.protocol import RequestEnvelope
@@ -28,6 +30,7 @@ def _sample_request() -> RequestEnvelope:
                 "enabled": True,
                 "maxPasses": 10,
                 "passIndex": 1,
+                "fastMode": False,
                 "automaticContinuation": False,
                 "goalText": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
             },
@@ -244,6 +247,19 @@ def test_output_schema_marks_nullable_object_fields_as_required() -> None:
         "choiceId",
         "boolValue",
     ]
+
+
+def test_model_selection_uses_default_model_when_fast_mode_disabled() -> None:
+    request = _sample_request()
+
+    assert CodexAppServerBridge._model_for_request(request) == _DEFAULT_MODEL
+
+
+def test_model_selection_uses_spark_model_when_fast_mode_enabled() -> None:
+    request = _sample_request()
+    request.refinement.fastMode = True
+
+    assert CodexAppServerBridge._model_for_request(request) == _DEFAULT_SPARK_MODEL
 
 
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:

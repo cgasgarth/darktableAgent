@@ -205,6 +205,7 @@ def _sample_request_payload() -> dict:
             "enabled": False,
             "maxPasses": 1,
             "passIndex": 1,
+            "fastMode": False,
             "automaticContinuation": False,
             "goalText": "Make it brighter",
         },
@@ -472,6 +473,7 @@ async def test_chat_returns_multi_turn_refinement_status(
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 1,
+        "fastMode": False,
         "automaticContinuation": False,
         "goalText": "Do a full edit",
     }

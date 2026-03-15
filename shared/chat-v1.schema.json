@@ -75,6 +75,7 @@
         "enabled",
         "maxPasses",
         "passIndex",
+        "fastMode",
         "automaticContinuation",
         "goalText"
       ],
@@ -97,6 +98,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 10
+        },
+        "fastMode": {
+          "type": "boolean"
         },
         "automaticContinuation": {
           "type": "boolean"

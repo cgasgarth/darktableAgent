@@ -340,7 +340,7 @@ typedef struct dt_develop_t
   {
     GtkWidget *floating_window, *button; // TODO (#18559): remove gtk stuff from here
     GtkWidget *conversation_view, *input_entry, *send_button, *cancel_button, *new_chat_button;
-    GtkWidget *multi_turn_check_button;
+    GtkWidget *multi_turn_check_button, *multi_turn_turn_limit_spin, *fast_mode_check_button;
     GtkWidget *status_label, *error_label, *spinner;
     gchar *app_session_id;
     gchar *image_session_id;
@@ -355,6 +355,7 @@ typedef struct dt_develop_t
     guint continuation_source_id;
     guint max_refinement_passes;
     gboolean multi_turn_enabled;
+    gboolean fast_mode_enabled;
     gboolean active_request_canceling;
     gboolean is_loading;
     gboolean autorun_sent;

@@ -34,6 +34,9 @@ _DEFAULT_TIMEOUT_SECONDS = float(os.environ.get("DARKTABLE_AGENT_CODEX_TIMEOUT_S
 _DEFAULT_PERSONALITY = os.environ.get("DARKTABLE_AGENT_CODEX_PERSONALITY", "pragmatic")
 _DEFAULT_REASONING_EFFORT = os.environ.get("DARKTABLE_AGENT_CODEX_REASONING_EFFORT", "high")
 _DEFAULT_MODEL = os.environ.get("DARKTABLE_AGENT_CODEX_MODEL", "gpt-5.3-codex")
+_DEFAULT_SPARK_MODEL = os.environ.get(
+    "DARKTABLE_AGENT_CODEX_SPARK_MODEL", "gpt-5.3-codex-spark"
+)
 _DEFAULT_SANDBOX = os.environ.get("DARKTABLE_AGENT_CODEX_SANDBOX", "read-only")
 _DEFAULT_APPROVAL_POLICY = "never"
 
@@ -168,13 +171,16 @@ class CodexAppServerBridge:
         deadline = time.monotonic() + self._timeout_seconds
         active_request = self._register_request(request)
         try:
+            model = self._model_for_request(request)
             with self._lock:
                 self._raise_if_cancelled_locked(active_request)
                 self._ensure_initialized_locked(deadline)
                 self._raise_if_cancelled_locked(active_request)
-                thread_id = self._get_or_create_thread_locked(request.session.conversationId, deadline)
+                thread_id = self._get_or_create_thread_locked(
+                    request.session.conversationId, model, deadline
+                )
                 active_request.thread_id = thread_id
-                return self._run_turn_locked(thread_id, request, deadline, active_request)
+                return self._run_turn_locked(thread_id, request, model, deadline, active_request)
         finally:
             self._unregister_request(request.requestId)
 
@@ -274,7 +280,15 @@ class CodexAppServerBridge:
         self._send_notification_locked("initialized")
         self._initialized = True
 
-    def _get_or_create_thread_locked(self, conversation_id: str, deadline: float) -> str:
+    @staticmethod
+    def _model_for_request(request: RequestEnvelope) -> str | None:
+        if request.refinement.fastMode and _DEFAULT_SPARK_MODEL:
+            return _DEFAULT_SPARK_MODEL
+        return _DEFAULT_MODEL
+
+    def _get_or_create_thread_locked(
+        self, conversation_id: str, model: str | None, deadline: float
+    ) -> str:
         existing = self._conversation_threads.get(conversation_id)
         if existing:
             return existing
@@ -286,8 +300,8 @@ class CodexAppServerBridge:
             "personality": _DEFAULT_PERSONALITY,
             "developerInstructions": _THREAD_DEVELOPER_INSTRUCTIONS,
         }
-        if _DEFAULT_MODEL:
-            params["model"] = _DEFAULT_MODEL
+        if model:
+            params["model"] = model
 
         response = self._send_request_locked("thread/start", params, deadline, None)
         try:
@@ -304,6 +318,7 @@ class CodexAppServerBridge:
         self,
         thread_id: str,
         request: RequestEnvelope,
+        model: str | None,
         deadline: float,
         active_request: _ActiveRequestState,
     ) -> CodexTurnResult:
@@ -315,8 +330,8 @@ class CodexAppServerBridge:
             "personality": _DEFAULT_PERSONALITY,
             "effort": _DEFAULT_REASONING_EFFORT,
         }
-        if _DEFAULT_MODEL:
-            turn_request["model"] = _DEFAULT_MODEL
+        if model:
+            turn_request["model"] = model
 
         response = self._send_request_locked("turn/start", turn_request, deadline, active_request)
         try:
@@ -445,7 +460,7 @@ class CodexAppServerBridge:
             "Plan the next darktable response for this request.\n\n"
             f"Goal: {request.refinement.goalText}\n"
             f"Latest user message: {request.message.text}\n"
-            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
+            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}, fastMode={str(request.refinement.fastMode).lower()}, automaticContinuation={str(request.refinement.automaticContinuation).lower()}\n"
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             f"Preview: {preview_summary}\n"
             f"Histogram summary: {histogram_summary}\n"

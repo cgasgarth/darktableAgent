@@ -230,6 +230,7 @@ def _sample_request_payload() -> dict:
             "enabled": False,
             "maxPasses": 1,
             "passIndex": 1,
+            "fastMode": False,
             "automaticContinuation": False,
             "goalText": "Make it brighter",
         },
@@ -247,6 +248,7 @@ def test_request_envelope_accepts_v3_payload() -> None:
 
     assert envelope.schemaVersion == "3.0"
     assert envelope.refinement.mode == "single-turn"
+    assert envelope.refinement.fastMode is False
     assert envelope.capabilityManifest.targets[0].supportedModes == ["set", "delta"]
     assert envelope.capabilityManifest.targets[1].defaultBool is False
     assert envelope.capabilityManifest.targets[2].choices[1].choiceId == "rgb"
@@ -363,6 +365,7 @@ def test_build_response_from_plan_marks_multi_turn_continuation() -> None:
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 2,
+        "fastMode": False,
         "automaticContinuation": True,
         "goalText": "Do a full edit",
     }
@@ -590,6 +593,7 @@ def test_request_envelope_accepts_multi_turn_refinement() -> None:
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 2,
+        "fastMode": False,
         "automaticContinuation": True,
         "goalText": "Make this a polished landscape",
     }
@@ -598,6 +602,7 @@ def test_request_envelope_accepts_multi_turn_refinement() -> None:
 
     assert envelope.refinement.mode == "multi-turn"
     assert envelope.refinement.enabled is True
+    assert envelope.refinement.fastMode is False
     assert envelope.refinement.passIndex == 2
 
 
@@ -620,6 +625,7 @@ def test_build_response_from_plan_sets_multi_turn_continue_state() -> None:
         "enabled": True,
         "maxPasses": 4,
         "passIndex": 2,
+        "fastMode": False,
         "automaticContinuation": True,
         "goalText": "Do a polished edit",
     }
@@ -668,6 +674,7 @@ def test_build_response_from_plan_stops_multi_turn_without_operations() -> None:
         "enabled": True,
         "maxPasses": 4,
         "passIndex": 3,
+        "fastMode": False,
         "automaticContinuation": True,
         "goalText": "Do a polished edit",
     }
