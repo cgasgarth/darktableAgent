@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import time
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -206,7 +207,6 @@ def _sample_request_payload() -> dict:
             "enabled": False,
             "maxPasses": 1,
             "passIndex": 1,
-            "automaticContinuation": False,
             "goalText": "Make it brighter",
         },
         "uiContext": {"view": "darkroom", "imageId": 12, "imageName": "_DSC8809.ARW"},
@@ -227,18 +227,61 @@ class StubTurnResult:
 
 
 class StubBridge:
-    def __init__(self, result: StubTurnResult | None = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        result: StubTurnResult | None = None,
+        error: Exception | None = None,
+        *,
+        progress_events: list[dict] | None = None,
+        plan_delay_seconds: float = 0.0,
+    ) -> None:
         self.result = result
         self.error = error
         self.requests = []
         self.cancel_requests = []
+        self.progress_events = progress_events or []
+        self.progress_index = 0
+        self.plan_delay_seconds = plan_delay_seconds
 
     def plan(self, request):  # type: ignore[no-untyped-def]
         self.requests.append(request)
         if self.error is not None:
             raise self.error
+        if self.plan_delay_seconds > 0:
+            time.sleep(self.plan_delay_seconds)
         assert self.result is not None
         return self.result
+
+    def get_request_progress(  # type: ignore[no-untyped-def]
+        self,
+        *,
+        request_id,
+        app_session_id,
+        image_session_id,
+        conversation_id,
+        turn_id,
+    ):
+        del request_id
+        del app_session_id
+        del image_session_id
+        del conversation_id
+        del turn_id
+        if not self.progress_events:
+            return {
+                "found": False,
+                "status": "not_found",
+                "toolCallsUsed": 0,
+                "maxToolCalls": 0,
+                "appliedOperationCount": 0,
+                "operations": [],
+                "message": "No active request found for that requestId.",
+                "lastToolName": None,
+                "progressVersion": 0,
+            }
+
+        index = min(self.progress_index, len(self.progress_events) - 1)
+        self.progress_index += 1
+        return dict(self.progress_events[index])
 
     def cancel_request(  # type: ignore[no-untyped-def]
         self,
@@ -473,7 +516,6 @@ async def test_chat_returns_multi_turn_refinement_status(
         "enabled": True,
         "maxPasses": 10,
         "passIndex": 1,
-        "automaticContinuation": False,
         "goalText": "Do a full edit",
     }
 
@@ -595,6 +637,145 @@ async def test_chat_surfaces_codex_backend_errors(
         "message": "Codex app server timed out",
     }
     assert body["refinement"]["continueRefining"] is False
+
+
+@pytest.mark.anyio
+async def test_chat_surfaces_unexpected_backend_errors(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(error=RuntimeError("boom"))
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    response = await api_client.post("/v1/chat", json=_sample_request_payload())
+
+    assert response.status_code == 500
+    body = response.json()
+    assert body["status"] == "error"
+    assert body["error"] == {
+        "code": "internal_error",
+        "message": "Unexpected server error",
+    }
+
+
+@pytest.mark.anyio
+async def test_chat_stream_emits_final_event(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "Streaming done.",
+                    "continueRefining": False,
+                    "operations": [],
+                }
+            )
+        )
+    )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    payload = _sample_request_payload()
+    async with api_client.stream("POST", "/v1/chat/stream", json=payload) as response:
+        assert response.status_code == 200
+        chunks = []
+        async for chunk in response.aiter_text():
+            chunks.append(chunk)
+            joined = "".join(chunks)
+            if "event: final" in joined and "event: completed" in joined:
+                break
+
+    stream_text = "".join(chunks)
+    assert "event: accepted" in stream_text
+    assert "event: final" in stream_text
+    assert '"assistantMessage":{"role":"assistant","text":"Streaming done."}' in stream_text
+    assert "event: completed" in stream_text
+
+
+@pytest.mark.anyio
+async def test_chat_stream_emits_progress_events(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "Streaming done.",
+                    "continueRefining": False,
+                    "operations": [],
+                }
+            )
+        ),
+        progress_events=[
+            {
+                "found": True,
+                "status": "running",
+                "toolCallsUsed": 1,
+                "maxToolCalls": 10,
+                "appliedOperationCount": 0,
+                "operations": [],
+                "message": "Handled tool get_preview_image (1/10); 0 live edits",
+                "lastToolName": "get_preview_image",
+                "progressVersion": 1,
+            },
+            {
+                "found": True,
+                "status": "running",
+                "toolCallsUsed": 2,
+                "maxToolCalls": 10,
+                "appliedOperationCount": 1,
+                "operations": [],
+                "message": "Handled tool apply_operations (2/10); 1 live edits",
+                "lastToolName": "apply_operations",
+                "progressVersion": 2,
+            },
+        ],
+        plan_delay_seconds=0.6,
+    )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    payload = _sample_request_payload()
+    async with api_client.stream("POST", "/v1/chat/stream", json=payload) as response:
+        assert response.status_code == 200
+        chunks = []
+        async for chunk in response.aiter_text():
+            chunks.append(chunk)
+            joined = "".join(chunks)
+            if "event: final" in joined and '"lastToolName":"apply_operations"' in joined:
+                break
+
+    stream_text = "".join(chunks)
+    assert "event: progress" in stream_text
+    assert '"toolCallsUsed":1' in stream_text
+    assert '"toolCallsUsed":2' in stream_text
+    assert '"lastToolName":"get_preview_image"' in stream_text
+    assert '"lastToolName":"apply_operations"' in stream_text
+
+
+@pytest.mark.anyio
+async def test_chat_stream_emits_error_event_for_codex_error(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        error=CodexAppServerError(
+            "codex_timeout", "Codex app server timed out", status_code=504
+        )
+    )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    payload = _sample_request_payload()
+    async with api_client.stream("POST", "/v1/chat/stream", json=payload) as response:
+        assert response.status_code == 200
+        chunks = []
+        async for chunk in response.aiter_text():
+            chunks.append(chunk)
+            joined = "".join(chunks)
+            if "event: error" in joined and "event: completed" in joined:
+                break
+
+    stream_text = "".join(chunks)
+    assert "event: error" in stream_text
+    assert '"code":"codex_timeout"' in stream_text
+    assert '"message":"Codex app server timed out"' in stream_text
 
 
 @pytest.mark.anyio

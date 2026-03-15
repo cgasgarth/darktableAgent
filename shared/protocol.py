@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = "3.0"
-DEFAULT_REFINEMENT_MAX_PASSES = 10
+DEFAULT_REFINEMENT_MAX_PASSES = 15
 
 OperationKind = Literal["set-float", "set-choice", "set-bool"]
 OperationMode = Literal["delta", "set"]
@@ -35,9 +35,8 @@ class UIContext(StrictBaseModel):
 class RefinementRequest(StrictBaseModel):
     mode: RefinementMode
     enabled: bool
-    maxPasses: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
-    passIndex: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
-    automaticContinuation: bool
+    maxPasses: int = Field(ge=1)
+    passIndex: int = Field(ge=1)
     goalText: str = Field(min_length=1)
 
     @model_validator(mode="after")
@@ -52,8 +51,6 @@ class RefinementRequest(StrictBaseModel):
                 raise ValueError("single-turn refinement must use maxPasses=1")
             if self.passIndex != 1:
                 raise ValueError("single-turn refinement must use passIndex=1")
-            if self.automaticContinuation:
-                raise ValueError("single-turn refinement must not be an automatic continuation")
         return self
 
 
@@ -400,8 +397,8 @@ class PlanEnvelope(StrictBaseModel):
 class RefinementStatus(StrictBaseModel):
     mode: RefinementMode
     enabled: bool
-    passIndex: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
-    maxPasses: int = Field(ge=1, le=DEFAULT_REFINEMENT_MAX_PASSES)
+    passIndex: int = Field(ge=1)
+    maxPasses: int = Field(ge=1)
     continueRefining: bool
     stopReason: Literal["single-turn", "continue", "planner-complete", "no-operations", "max-passes"]
 

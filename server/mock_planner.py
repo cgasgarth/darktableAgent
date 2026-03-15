@@ -109,3 +109,29 @@ class MockPlannerBridge:
         del conversation_id
         del turn_id
         return False
+
+    def get_request_progress(
+        self,
+        *,
+        request_id: str,
+        app_session_id: str,
+        image_session_id: str,
+        conversation_id: str,
+        turn_id: str,
+    ) -> dict[str, object]:
+        del request_id
+        del app_session_id
+        del image_session_id
+        del conversation_id
+        del turn_id
+        return {
+            "found": False,
+            "status": "not_found",
+            "message": "No active request found for that requestId.",
+            "toolCallsUsed": 0,
+            "maxToolCalls": 0,
+            "appliedOperationCount": 0,
+            "operations": [],
+            "lastToolName": None,
+            "progressVersion": 0,
+        }

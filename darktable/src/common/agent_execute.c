@@ -142,6 +142,16 @@ static gboolean _execute_set_float_operation(const dt_agent_chat_operation_t *op
                                              dt_agent_execution_result_t *result,
                                              GError **error)
 {
+  if(!dt_agent_catalog_is_action_path_allowed(operation->action_path))
+  {
+    return _execution_result_set_blocked(
+      report,
+      result,
+      error,
+      "%s",
+      _("white-balance module controls are disabled for safety; use other color controls"));
+  }
+
   dt_agent_action_descriptor_t *descriptor
     = dt_agent_catalog_find_descriptor(darktable.develop,
                                        operation->action_path,

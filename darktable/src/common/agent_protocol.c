@@ -866,7 +866,6 @@ void dt_agent_chat_request_init(dt_agent_chat_request_t *request)
   request->refinement_pass_index = 1;
   request->refinement_max_passes = 1;
   request->fast_mode = FALSE;
-  request->refinement_automatic_continuation = FALSE;
   request->capabilities = g_ptr_array_new_with_free_func(dt_agent_capability_free);
 }
 
@@ -909,7 +908,6 @@ void dt_agent_chat_request_copy(dt_agent_chat_request_t *dest,
   dest->refinement_pass_index = src->refinement_pass_index;
   dest->refinement_max_passes = src->refinement_max_passes;
   dest->fast_mode = src->fast_mode;
-  dest->refinement_automatic_continuation = src->refinement_automatic_continuation;
   dest->refinement_goal_text = g_strdup(src->refinement_goal_text);
   dest->ui_context.view = g_strdup(src->ui_context.view);
   dest->ui_context.has_image_id = src->ui_context.has_image_id;
@@ -1064,8 +1062,7 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
      || request->refinement_pass_index > request->refinement_max_passes
      || (!request->refinement_enabled
          && (request->refinement_pass_index != 1
-             || request->refinement_max_passes != 1
-             || request->refinement_automatic_continuation)))
+             || request->refinement_max_passes != 1)))
   {
     g_set_error(error, _agent_protocol_error_quark(), DT_AGENT_PROTOCOL_ERROR_INVALID,
                 "request is incomplete");
@@ -1133,8 +1130,6 @@ gchar *dt_agent_chat_request_serialize(const dt_agent_chat_request_t *request,
   json_builder_add_int_value(builder, MAX(1, (gint)request->refinement_pass_index));
   json_builder_set_member_name(builder, "maxPasses");
   json_builder_add_int_value(builder, MAX(1, (gint)request->refinement_max_passes));
-  json_builder_set_member_name(builder, "automaticContinuation");
-  json_builder_add_boolean_value(builder, request->refinement_automatic_continuation);
   json_builder_set_member_name(builder, "goalText");
   json_builder_add_string_value(builder, request->refinement_goal_text);
   json_builder_end_object(builder);

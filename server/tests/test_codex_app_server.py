@@ -1,5 +1,5 @@
+import base64
 import time
-from pathlib import Path
 
 import pytest
 
@@ -10,9 +10,12 @@ from server.codex_app_server import (
     _DEFAULT_REASONING_EFFORT,
     _FAST_MODE_MODEL,
     _FAST_MODE_REASONING_EFFORT,
+    _TOOL_APPLY_OPERATIONS,
+    _TOOL_GET_IMAGE_STATE,
+    _TOOL_GET_PREVIEW_IMAGE,
     _THREAD_DEVELOPER_INSTRUCTIONS,
 )
-from shared.protocol import RequestEnvelope
+from shared.protocol import AgentPlan, RequestEnvelope
 
 
 def _sample_request() -> RequestEnvelope:
@@ -36,7 +39,6 @@ def _sample_request() -> RequestEnvelope:
                 "enabled": True,
                 "maxPasses": 10,
                 "passIndex": 1,
-                "automaticContinuation": False,
                 "goalText": "Do a full edit so this becomes a polished gallery-ready landscape photo.",
             },
             "uiContext": {
@@ -176,6 +178,44 @@ def _sample_request() -> RequestEnvelope:
     )
 
 
+def _sample_request_with_disallowed_wb_control() -> RequestEnvelope:
+    payload = _sample_request().model_dump(mode="json")
+    payload["capabilityManifest"]["targets"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "capabilityId": "temperature.red",
+            "label": "Red multiplier",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/temperature/red",
+            "supportedModes": ["set", "delta"],
+            "minNumber": 0.0,
+            "maxNumber": 4.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        }
+    )
+    payload["imageSnapshot"]["editableSettings"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "settingId": "setting.temperature.red",
+            "capabilityId": "temperature.red",
+            "label": "Red multiplier",
+            "actionPath": "iop/temperature/red",
+            "kind": "set-float",
+            "currentNumber": 1.0,
+            "supportedModes": ["set", "delta"],
+            "minNumber": 0.0,
+            "maxNumber": 4.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        }
+    )
+    return RequestEnvelope.model_validate(payload)
+
+
 def test_default_command_disables_configured_mcp_servers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -210,6 +250,46 @@ def test_extract_error_message_prefers_nested_json_message() -> None:
     message = '{"error":{"message":"The real error"}}'
 
     assert CodexAppServerBridge._extract_error_message(message) == "The real error"
+
+
+def test_sanitize_request_for_agent_safety_filters_disallowed_controls() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request_with_disallowed_wb_control()
+
+    sanitized = bridge._sanitize_request_for_agent_safety(request)  # type: ignore[attr-defined]
+
+    assert len(sanitized.capabilityManifest.targets) == len(request.capabilityManifest.targets) - 1
+    assert len(sanitized.imageSnapshot.editableSettings) == len(request.imageSnapshot.editableSettings) - 1
+    assert all(
+        capability.actionPath != "iop/temperature/red"
+        for capability in sanitized.capabilityManifest.targets
+    )
+    assert all(
+        setting.actionPath != "iop/temperature/red"
+        for setting in sanitized.imageSnapshot.editableSettings
+    )
+
+
+def test_sanitize_request_for_agent_safety_rejects_when_all_controls_blocked() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request_with_disallowed_wb_control()
+    payload = request.model_dump(mode="json")
+    payload["capabilityManifest"]["targets"] = [
+        capability
+        for capability in payload["capabilityManifest"]["targets"]
+        if capability["actionPath"] == "iop/temperature/red"
+    ]
+    payload["imageSnapshot"]["editableSettings"] = [
+        setting
+        for setting in payload["imageSnapshot"]["editableSettings"]
+        if setting["actionPath"] == "iop/temperature/red"
+    ]
+    unsafe_only_request = RequestEnvelope.model_validate(payload)
+
+    with pytest.raises(CodexAppServerError) as exc_info:
+        bridge._sanitize_request_for_agent_safety(unsafe_only_request)  # type: ignore[attr-defined]
+
+    assert exc_info.value.code == "no_safe_controls_available"
 
 
 def test_task_complete_marks_turn_complete() -> None:
@@ -281,7 +361,11 @@ def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None
 
 
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
-    assert "Use the attached preview image as primary visual context." in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Context and tool usage" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "live mode turn input already includes the current preview image" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "get_preview_image" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "get_image_state" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "apply_operations" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "Only emit operations targeting provided settingId/actionPath pairs." in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "If user intent is broad, infer a reasonable plan" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "Always optimize toward refinement.goalText." in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -318,11 +402,9 @@ def test_prompt_payload_rebins_histogram_when_luma_bin_count_exceeds_limit() -> 
     assert sum(rebinned) == 128
 
 
-def test_followup_prompt_payload_is_context_light() -> None:
+def test_prompt_payload_includes_module_context_for_live_runs() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
-    request.refinement.automaticContinuation = True
-    request.refinement.passIndex = 2
 
     payload = bridge._build_prompt_payload(request)  # type: ignore[attr-defined]
     first_setting = payload["imageSnapshot"]["editableSettings"][0]
@@ -333,9 +415,9 @@ def test_followup_prompt_payload_is_context_light() -> None:
     assert first_setting["supportedModes"] == ["set", "delta"]
     assert first_setting["minNumber"] == -18.0
     assert first_setting["maxNumber"] == 18.0
-    assert "moduleId" not in first_setting
-    assert "moduleLabel" not in first_setting
-    assert "stepNumber" not in first_setting
+    assert first_setting["moduleId"] == "exposure"
+    assert first_setting["moduleLabel"] == "exposure"
+    assert first_setting["stepNumber"] == 0.01
 
     metadata = payload["imageSnapshot"]["metadata"]
     assert metadata == {"width": 9504, "height": 6336}
@@ -352,68 +434,82 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
 
     prompt = bridge._build_turn_prompt(_sample_request())  # type: ignore[attr-defined]
 
+    assert "Use read-only tools only when needed for missing context." in prompt
+    assert "Tool budget: maximum 10 tool calls in this run." in prompt
+    assert "Live run mode is enabled" in prompt
+    assert "initial turn input already includes the current preview image." in prompt
+    assert "Initial turn input includes the current preview image." in prompt
+    assert "Apply at least one edit batch with apply_operations within the first" in prompt
     assert "infer a conservative supported edit plan" in prompt
     assert "preview, histogram, and available controls" in prompt
     assert "Respect refinement state" in prompt
-    assert "Use moduleId/moduleLabel to group related controls" in prompt
+    assert "Use moduleId/moduleLabel from get_image_state" in prompt
     assert "rgb primaries, color equalizer, or color balance rgb" in prompt
-    assert '"moduleId":"colorequal"' in prompt
-    assert '"moduleId":"primaries"' in prompt
-    assert "Preview: attached separately as image/jpeg 1000x667" in prompt
+    assert "Preview:" not in prompt
     assert "Histogram summary:" not in prompt
     assert "Editable modules:" not in prompt
     assert "Fast mode:" not in prompt
-    assert '"base64Data":null' in prompt
+    assert '"base64Data"' not in prompt
     assert '"currentNumber"' not in prompt
-    assert '"history":[]' not in prompt
     assert '"capabilityManifest"' not in prompt
-    assert '"session"' not in prompt
-    assert '"requestId"' not in prompt
-    assert '"fast"' not in prompt
-    assert '"uiContext"' not in prompt
-    assert "ZmFrZS1wcmV2aWV3" not in prompt
     assert "Latest user message: Do a full edit so this becomes a polished gallery-ready landscape photo." in prompt
 
 
-def test_turn_input_sends_preview_as_separate_image_item() -> None:
+def test_turn_input_in_live_mode_includes_text_and_initial_preview_image() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
-    preview_local_paths: list[str] = []
 
-    items = bridge._build_turn_input(_sample_request(), preview_local_paths)  # type: ignore[attr-defined]
+    items = bridge._build_turn_input(_sample_request())  # type: ignore[attr-defined]
 
-    try:
-        assert items[0]["type"] == "text"
-        assert items[1]["type"] == "localImage"
-        assert Path(items[1]["path"]).exists()
-        assert items[1]["path"] in preview_local_paths
-    finally:
-        bridge._cleanup_local_image_paths(preview_local_paths)  # type: ignore[attr-defined]
+    assert len(items) == 2
+    assert items[0]["type"] == "text"
+    assert items[1]["type"] == "image"
+    assert str(items[1]["url"]).startswith("data:image/jpeg;base64,")
 
 
-def test_turn_input_omits_image_item_without_preview() -> None:
+def test_turn_input_in_single_turn_mode_remains_text_only() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.enabled = False
+    request.refinement.mode = "single-turn"
+    request.refinement.maxPasses = 1
+    request.refinement.passIndex = 1
+
+    items = bridge._build_turn_input(request)  # type: ignore[attr-defined]
+
+    assert len(items) == 1
+    assert items[0]["type"] == "text"
+
+
+def test_preview_data_url_requires_preview() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
     request.imageSnapshot.preview = None
-    preview_local_paths: list[str] = []
 
     with pytest.raises(CodexAppServerError) as exc:
-        bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
+        bridge._preview_data_url(request)  # type: ignore[attr-defined]
 
     assert exc.value.code == "codex_preview_unavailable"
-    assert preview_local_paths == []
 
 
-def test_turn_input_fails_when_preview_base64_is_invalid() -> None:
+def test_preview_data_url_fails_when_preview_base64_is_invalid() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     request = _sample_request()
     request.imageSnapshot.preview.base64Data = "not-valid-base64!!!"  # type: ignore[union-attr]
-    preview_local_paths: list[str] = []
 
     with pytest.raises(CodexAppServerError) as exc:
-        bridge._build_turn_input(request, preview_local_paths)  # type: ignore[attr-defined]
+        bridge._preview_data_url(request)  # type: ignore[attr-defined]
 
     assert exc.value.code == "codex_preview_decode_failed"
-    assert preview_local_paths == []
+
+
+def test_preview_data_url_returns_data_url() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+
+    data_url = bridge._preview_data_url(_sample_request())  # type: ignore[attr-defined]
+
+    assert data_url.startswith("data:image/jpeg;base64,")
+    encoded = data_url.split(",", 1)[1]
+    assert base64.b64decode(encoded).decode("utf-8") == "fake-preview"
 
 
 def test_cancel_request_marks_matching_active_turn_cancelled() -> None:
@@ -460,6 +556,83 @@ def test_cancel_request_records_unknown_request_ids_for_future_preflight() -> No
         bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
 
 
+def test_get_request_progress_returns_not_found_for_unknown_request() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+
+    progress = bridge.get_request_progress(
+        request_id="missing-request",
+        app_session_id="app-1",
+        image_session_id="img-1",
+        conversation_id="conv-1",
+        turn_id="turn-1",
+    )
+
+    assert progress == {
+        "found": False,
+        "status": "not_found",
+        "toolCallsUsed": 0,
+        "maxToolCalls": 0,
+        "appliedOperationCount": 0,
+        "operations": [],
+        "message": "No active request found for that requestId.",
+        "lastToolName": None,
+        "progressVersion": 0,
+    }
+
+
+def test_get_request_progress_returns_live_applied_operations_for_active_turn() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    active_request = bridge._register_request(request)  # type: ignore[attr-defined]
+    try:
+        data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+        bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+        active_request.thread_id = "thread-1"
+        active_request.codex_turn_id = "turn-1"
+        active_request.status = "running"
+        active_request.message = "Waiting for Codex turn output"
+        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert context is not None
+        context.tool_calls_used = 3
+        context.applied_operations = [
+            {
+                "operationId": "tool-op-1",
+                "sequence": 1,
+                "kind": "set-float",
+                "target": {
+                    "type": "darktable-action",
+                    "actionPath": "iop/exposure/exposure",
+                    "settingId": "setting.exposure.primary",
+                },
+                "value": {"mode": "delta", "number": 0.25},
+                "reason": None,
+                "constraints": {
+                    "onOutOfRange": "clamp",
+                    "onRevisionMismatch": "fail",
+                },
+            }
+        ]
+
+        progress = bridge.get_request_progress(
+            request_id=request.requestId,
+            app_session_id=request.session.appSessionId,
+            image_session_id=request.session.imageSessionId,
+            conversation_id=request.session.conversationId,
+            turn_id=request.session.turnId,
+        )
+        assert progress["found"] is True
+        assert progress["status"] == "running"
+        assert progress["toolCallsUsed"] == 3
+        assert progress["maxToolCalls"] == request.refinement.maxPasses
+        assert progress["appliedOperationCount"] == 1
+        assert len(progress["operations"]) == 1
+        assert progress["lastToolName"] is None
+        assert progress["progressVersion"] == 0
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
+
+
 def test_get_or_create_thread_reuses_cached_thread_without_rpc() -> None:
     bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
     bridge._conversation_threads["conv-1"] = "thread-existing"  # type: ignore[attr-defined]
@@ -474,6 +647,631 @@ def test_get_or_create_thread_reuses_cached_thread_without_rpc() -> None:
     )
 
     assert thread_id == "thread-existing"
+
+
+def test_get_or_create_thread_includes_native_dynamic_tools() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    captured: dict[str, object] = {}
+
+    def _stub_send_request(method, params, deadline, active_request):  # type: ignore[no-untyped-def]
+        captured["method"] = method
+        captured["params"] = params
+        return {"result": {"thread": {"id": "thread-new"}}}
+
+    bridge._send_request_locked = _stub_send_request  # type: ignore[method-assign,attr-defined]
+
+    thread_id = bridge._get_or_create_thread_locked(  # type: ignore[attr-defined]
+        "conv-2", _DEFAULT_MODEL, time.monotonic() + 5.0
+    )
+
+    assert thread_id == "thread-new"
+    assert captured["method"] == "thread/start"
+    params = captured["params"]  # type: ignore[assignment]
+    tool_specs = params["dynamicTools"]  # type: ignore[index]
+    names = {tool["name"] for tool in tool_specs}
+    assert names == {_TOOL_GET_PREVIEW_IMAGE, _TOOL_GET_IMAGE_STATE, _TOOL_APPLY_OPERATIONS}
+    for tool in tool_specs:
+        assert tool["inputSchema"]["type"] == "object"
+        assert tool["inputSchema"]["additionalProperties"] is False
+
+
+def test_handle_server_request_denies_approval_requests_with_decline() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+
+    bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+        {"jsonrpc": "2.0", "id": 9, "method": "item/permissions/requestApproval", "params": {}}
+    )
+
+    assert sent_payloads == [
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "result": {"decision": "decline"},
+        }
+    ]
+
+
+def test_handle_server_request_routes_preview_tool_call_to_dynamic_result() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 15,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-1",
+                    "tool": _TOOL_GET_PREVIEW_IMAGE,
+                    "arguments": {},
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    assert sent_payloads[0]["id"] == 15
+    result = sent_payloads[0]["result"]
+    assert result["success"] is True
+    assert result["contentItems"][0]["type"] == "inputImage"
+    assert result["contentItems"][0]["imageUrl"] == data_url
+
+
+def test_handle_server_request_routes_image_state_tool_call_to_dynamic_result() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 16,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-2",
+                    "tool": _TOOL_GET_IMAGE_STATE,
+                    "arguments": {},
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is True
+    assert result["contentItems"][0]["type"] == "inputText"
+    state_payload = result["contentItems"][0]["text"]
+    assert '"editableSettings"' in state_payload
+    assert '"histogram"' in state_payload
+    assert '"base64Data":null' in state_payload
+
+
+def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 18,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-preview-before",
+                    "tool": _TOOL_GET_PREVIEW_IMAGE,
+                    "arguments": {},
+                },
+            }
+        )
+        preview_before = sent_payloads[0]["result"]["contentItems"][0]["imageUrl"]
+        sent_payloads.clear()
+
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 19,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/exposure/exposure",
+                                    "settingId": "setting.exposure.primary",
+                                },
+                                "value": {"mode": "delta", "number": 0.4},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+        result = sent_payloads[0]["result"]
+        assert result["success"] is True
+        assert "Applied 1 operations" in result["contentItems"][0]["text"]
+        assert "Preview refreshed" in result["contentItems"][0]["text"]
+
+        sent_payloads.clear()
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 20,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-preview-after-apply",
+                    "tool": _TOOL_GET_PREVIEW_IMAGE,
+                    "arguments": {},
+                },
+            }
+        )
+        preview_after = sent_payloads[0]["result"]["contentItems"][0]["imageUrl"]
+        assert preview_after != preview_before
+        assert "x-darktable-stage=1" in preview_after
+
+        sent_payloads.clear()
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 21,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-state-after-apply",
+                    "tool": _TOOL_GET_IMAGE_STATE,
+                    "arguments": {},
+                },
+            }
+        )
+        state_payload = sent_payloads[0]["result"]["contentItems"][0]["text"]
+        assert '"currentNumber":0.4' in state_payload
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+
+def test_apply_operations_tool_rejects_disallowed_white_balance_channel_operations() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    first_setting = request.imageSnapshot.editableSettings[0]
+    first_setting.actionPath = "iop/temperature/red"
+    first_setting.moduleId = "temperature"
+    first_setting.moduleLabel = "white balance"
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 210,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-wb-red",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/temperature/red",
+                                    "settingId": first_setting.settingId,
+                                },
+                                "value": {"mode": "delta", "number": 0.1},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "disabled for safety" in result["contentItems"][0]["text"]
+
+
+def test_apply_operations_tool_rejects_disallowed_white_balance_module_controls() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    first_setting = request.imageSnapshot.editableSettings[0]
+    first_setting.actionPath = "iop/temperature/temperature"
+    first_setting.moduleId = "temperature"
+    first_setting.moduleLabel = "white balance"
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 211,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-wb-temperature",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/temperature/temperature",
+                                    "settingId": first_setting.settingId,
+                                },
+                                "value": {"mode": "delta", "number": 150.0},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "disabled for safety" in result["contentItems"][0]["text"]
+
+
+def test_apply_operations_tool_rejected_for_single_turn_mode() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.enabled = False
+    request.refinement.mode = "single-turn"
+    request.refinement.maxPasses = 1
+    request.refinement.passIndex = 1
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 21,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-single",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/exposure/exposure",
+                                    "settingId": "setting.exposure.primary",
+                                },
+                                "value": {"mode": "delta", "number": 0.1},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "only available when live run mode is enabled" in result["contentItems"][0]["text"]
+
+
+def test_tool_call_budget_limits_total_tool_calls() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.maxPasses = 2
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        for request_id in (22, 23, 24):
+            bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "item/tool/call",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "callId": f"call-budget-{request_id}",
+                        "tool": _TOOL_GET_IMAGE_STATE,
+                        "arguments": {},
+                    },
+                }
+            )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    assert sent_payloads[0]["result"]["success"] is True
+    assert sent_payloads[1]["result"]["success"] is True
+    assert sent_payloads[2]["result"]["success"] is False
+    assert "Tool call budget exceeded" in sent_payloads[2]["result"]["contentItems"][0]["text"]
+
+
+def test_live_run_guardrail_requires_apply_after_initial_read_only_calls() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.maxPasses = 20
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        for request_id in (31, 32, 33, 34):
+            bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "item/tool/call",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "callId": f"call-read-only-{request_id}",
+                        "tool": _TOOL_GET_IMAGE_STATE,
+                        "arguments": {},
+                    },
+                }
+            )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    assert sent_payloads[0]["result"]["success"] is True
+    assert sent_payloads[1]["result"]["success"] is True
+    assert sent_payloads[2]["result"]["success"] is True
+    assert sent_payloads[3]["result"]["success"] is False
+    assert (
+        "No live edits have been applied yet in live mode"
+        in sent_payloads[3]["result"]["contentItems"][0]["text"]
+    )
+
+
+def test_read_only_guardrail_requires_apply_or_finalize_after_streak() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    request.refinement.maxPasses = 20
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 36,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-first",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/exposure/exposure",
+                                    "settingId": "setting.exposure.primary",
+                                },
+                                "value": {"mode": "delta", "number": 0.1},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+        for request_id in (37, 38, 39, 40, 41):
+            bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "item/tool/call",
+                    "params": {
+                        "threadId": "thread-1",
+                        "turnId": "turn-1",
+                        "callId": f"call-read-only-{request_id}",
+                        "tool": _TOOL_GET_IMAGE_STATE,
+                        "arguments": {},
+                    },
+                }
+            )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    assert sent_payloads[0]["result"]["success"] is True
+    assert sent_payloads[1]["result"]["success"] is True
+    assert sent_payloads[2]["result"]["success"] is True
+    assert sent_payloads[3]["result"]["success"] is True
+    assert sent_payloads[4]["result"]["success"] is True
+    assert sent_payloads[5]["result"]["success"] is False
+    assert (
+        "Too many consecutive read-only tool calls"
+        in sent_payloads[5]["result"]["contentItems"][0]["text"]
+    )
+
+
+def test_finalize_plan_with_live_context_merges_applied_operations() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    try:
+        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert context is not None
+        context.applied_operations.append(
+            {
+                "operationId": "applied-1",
+                "sequence": 1,
+                "kind": "set-float",
+                "target": {
+                    "type": "darktable-action",
+                    "actionPath": "iop/exposure/exposure",
+                    "settingId": "setting.exposure.primary",
+                },
+                "value": {"mode": "delta", "number": 0.5},
+                "reason": None,
+                "constraints": {
+                    "onOutOfRange": "clamp",
+                    "onRevisionMismatch": "fail",
+                },
+            }
+        )
+        plan = bridge._finalize_plan_with_live_context(  # type: ignore[attr-defined]
+            AgentPlan.model_validate(
+                {
+                    "assistantText": "done",
+                    "continueRefining": True,
+                    "operations": [],
+                }
+            ),
+            context,
+        )
+        assert plan.continueRefining is False
+        assert len(plan.operations) == 1
+        assert plan.operations[0].operationId == "applied-1"
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+
+def test_handle_server_request_returns_failed_result_for_unsupported_tool() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 17,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-3",
+                    "tool": "not_a_real_tool",
+                    "arguments": {},
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "Unsupported tool" in result["contentItems"][0]["text"]
+
+
+def test_handle_server_request_returns_failed_result_when_turn_context_missing() -> None:
+    bridge = CodexAppServerBridge(command=["codex", "app-server", "--listen", "stdio://"])
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+        {
+            "jsonrpc": "2.0",
+            "id": 18,
+            "method": "item/tool/call",
+            "params": {
+                "threadId": "thread-404",
+                "turnId": "turn-404",
+                "callId": "call-4",
+                "tool": _TOOL_GET_IMAGE_STATE,
+                "arguments": {},
+            },
+        }
+    )
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "No active image context" in result["contentItems"][0]["text"]
 
 
 def test_token_usage_notification_updates_turn_state() -> None:

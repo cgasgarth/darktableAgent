@@ -38,6 +38,22 @@ static GQuark _agent_catalog_error_quark(void)
   return g_quark_from_static_string("dt-agent-catalog-error");
 }
 
+static const char *const _blocked_action_path_prefixes[] = {
+  "iop/temperature/",
+};
+
+gboolean dt_agent_catalog_is_action_path_allowed(const char *action_path)
+{
+  if(!action_path || !action_path[0])
+    return FALSE;
+
+  for(guint i = 0; i < G_N_ELEMENTS(_blocked_action_path_prefixes); i++)
+    if(g_str_has_prefix(action_path, _blocked_action_path_prefixes[i]))
+      return FALSE;
+
+  return TRUE;
+}
+
 static gchar *_action_full_id(dt_action_t *action)
 {
   gchar *full_label = NULL;
@@ -276,6 +292,9 @@ static dt_agent_action_descriptor_t *_descriptor_for_widget(dt_iop_module_t *mod
     return NULL;
 
   g_autofree gchar *action_path = _action_full_id(referral->action);
+  if(!dt_agent_catalog_is_action_path_allowed(action_path))
+    return NULL;
+
   dt_agent_action_descriptor_t *descriptor = g_new0(dt_agent_action_descriptor_t, 1);
   descriptor->module_id = _build_module_id(module);
   descriptor->module_label = _build_module_label(module);
@@ -338,6 +357,9 @@ static dt_agent_action_descriptor_t *_descriptor_for_module_toggle(dt_iop_module
     return NULL;
 
   g_autofree gchar *action_path = _action_full_id(referral->action);
+  if(!dt_agent_catalog_is_action_path_allowed(action_path))
+    return NULL;
+
   dt_agent_action_descriptor_t *descriptor = g_new0(dt_agent_action_descriptor_t, 1);
   descriptor->module_id = _build_module_id(module);
   descriptor->module_label = _build_module_label(module);
@@ -366,6 +388,11 @@ static void _add_descriptor_unique(GPtrArray *descriptors,
   }
 
   if(!descriptor->setting_id || g_hash_table_contains(seen_setting_ids, descriptor->setting_id))
+  {
+    dt_agent_action_descriptor_free(descriptor);
+    return;
+  }
+  if(!dt_agent_catalog_is_action_path_allowed(descriptor->action_path))
   {
     dt_agent_action_descriptor_free(descriptor);
     return;
@@ -472,6 +499,14 @@ dt_agent_action_descriptor_t *dt_agent_catalog_find_descriptor(const dt_develop_
                                                                const char *setting_id,
                                                                GError **error)
 {
+  if(!dt_agent_catalog_is_action_path_allowed(action_path))
+  {
+    g_set_error(error, _agent_catalog_error_quark(), DT_AGENT_CATALOG_ERROR_INVALID,
+                _("unsupported action path: %s"),
+                action_path ? action_path : _("unknown"));
+    return NULL;
+  }
+
   g_autoptr(GPtrArray) descriptors = g_ptr_array_new_with_free_func(dt_agent_action_descriptor_free);
   if(!dt_agent_catalog_collect_descriptors(dev, descriptors, error))
     return NULL;

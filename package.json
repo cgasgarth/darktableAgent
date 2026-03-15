@@ -8,6 +8,6 @@
     "darktable:build-and-start": "npm run darktable:build && npm run darktable:start",
     "server:start": "./scripts/run_server.sh",
     "agent:smoke": "./scripts/agent_exposure_smoke.sh",
-    "agent:smoke:multi-turn": "MULTI_TURN_ENABLED=1 EXPECTED_MIN_REFINEMENT_PASSES=2 EXPECTED_MAX_REFINEMENT_PASSES=10 ./scripts/agent_exposure_smoke.sh"
+    "agent:smoke:multi-turn": "MULTI_TURN_ENABLED=1 EXPECTED_MIN_REFINEMENT_PASSES=2 EXPECTED_MAX_REFINEMENT_PASSES=15 ./scripts/agent_exposure_smoke.sh"
   }
 }

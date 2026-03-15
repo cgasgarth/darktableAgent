@@ -64,6 +64,7 @@ dt_agent_action_descriptor_t *dt_agent_catalog_find_descriptor(const struct dt_d
                                                                const char *action_path,
                                                                const char *setting_id,
                                                                GError **error);
+gboolean dt_agent_catalog_is_action_path_allowed(const char *action_path);
 
 gboolean dt_agent_catalog_supports_mode(const dt_agent_action_descriptor_t *descriptor,
                                         dt_agent_value_mode_t mode);
