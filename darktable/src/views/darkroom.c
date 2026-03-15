@@ -2649,6 +2649,23 @@ static gboolean _agent_chat_is_stale_response(dt_develop_t *dev,
   return FALSE;
 }
 
+static gchar *_agent_chat_table_cell(const char *text)
+{
+  if(!text || text[0] == '\0')
+    return g_strdup("-");
+
+  gchar *cell = g_strdup(text);
+  for(gchar *cursor = cell; *cursor; cursor++)
+  {
+    if(*cursor == '\n' || *cursor == '\r' || *cursor == '\t')
+      *cursor = ' ';
+    else if(*cursor == '|')
+      *cursor = '/';
+  }
+  g_strstrip(cell);
+  return cell;
+}
+
 static void _agent_chat_append_operation_summary(dt_develop_t *dev,
                                                  const dt_agent_execution_report_t *report)
 {
@@ -2656,21 +2673,38 @@ static void _agent_chat_append_operation_summary(dt_develop_t *dev,
     return;
 
   GString *summary = g_string_new(NULL);
+  g_string_append_printf(summary,
+                         ngettext("applied %u operation", "applied %u operations",
+                                  report->results->len),
+                         report->results->len);
+  g_string_append(summary, "\n");
+  g_string_append(summary, _("status | action | value | note"));
+  g_string_append(summary, "\n");
+  g_string_append(summary, "------ | ------ | ----- | ----");
+
   for(guint i = 0; i < report->results->len; i++)
   {
     const dt_agent_execution_result_t *result = g_ptr_array_index(report->results, i);
-    if(i > 0)
-      g_string_append(summary, "; ");
-
-    g_string_append_printf(summary, _("%s %s"),
-                           dt_agent_execution_status_to_string(result->status),
-                           result->action_path ? result->action_path : _("unknown"));
-
+    g_autofree gchar *value = NULL;
     if(result->has_value_before && result->has_value_after)
-      g_string_append_printf(summary, _(" %.2f -> %.2f"),
-                             result->value_before, result->value_after);
-    else if(result->message && result->message[0] != '\0')
-      g_string_append_printf(summary, _(" (%s)"), result->message);
+      value = g_strdup_printf("%.2f -> %.2f", result->value_before, result->value_after);
+    else if(result->has_value_before)
+      value = g_strdup_printf("%.2f -> -", result->value_before);
+    else if(result->has_value_after)
+      value = g_strdup_printf("- -> %.2f", result->value_after);
+    else
+      value = g_strdup("-");
+
+    g_autofree gchar *status_cell
+      = _agent_chat_table_cell(dt_agent_execution_status_to_string(result->status));
+    g_autofree gchar *action_cell
+      = _agent_chat_table_cell(result->action_path ? result->action_path : _("unknown"));
+    g_autofree gchar *value_cell = _agent_chat_table_cell(value);
+    g_autofree gchar *note_cell = _agent_chat_table_cell(result->message);
+
+    g_string_append(summary, "\n");
+    g_string_append_printf(summary, "%s | %s | %s | %s",
+                           status_cell, action_cell, value_cell, note_cell);
   }
 
   _agent_chat_append_message(dev, _("system"), summary->str);
@@ -4246,6 +4280,7 @@ void gui_init(dt_view_t *self)
     gtk_box_pack_start(GTK_BOX(outer), scroll, TRUE, TRUE, 0);
 
     dev->agent_chat.conversation_view = gtk_text_view_new();
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(dev->agent_chat.conversation_view), TRUE);
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(dev->agent_chat.conversation_view), GTK_WRAP_WORD_CHAR);
     gtk_text_view_set_editable(GTK_TEXT_VIEW(dev->agent_chat.conversation_view), FALSE);
     gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(dev->agent_chat.conversation_view), FALSE);
