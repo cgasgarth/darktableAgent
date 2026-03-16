@@ -60,7 +60,7 @@ typedef void (*dt_agent_client_progress_callback_t)(const dt_agent_client_progre
 void dt_agent_client_result_clear(dt_agent_client_result_t *result);
 void dt_agent_client_progress_clear(dt_agent_client_progress_t *progress);
 char *dt_agent_client_dup_endpoint(void);
-void dt_agent_client_request_cancel(dt_agent_client_request_t *request);
+void dt_agent_client_request_cancel(dt_agent_client_request_t *request, const char *reason);
 void dt_agent_client_request_unref(dt_agent_client_request_t *request);
 
 dt_agent_client_request_t *dt_agent_client_chat_async(const dt_agent_chat_request_t *request,

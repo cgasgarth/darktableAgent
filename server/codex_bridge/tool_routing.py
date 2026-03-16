@@ -1,0 +1,250 @@
+from __future__ import annotations
+
+# pyright: reportAttributeAccessIssue=false
+
+import json
+from typing import Any
+
+from .config import (
+    _DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS,
+    _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY,
+    _TOOL_APPLY_OPERATIONS,
+    _TOOL_GET_IMAGE_STATE,
+    _TOOL_GET_PREVIEW_IMAGE,
+    logger,
+)
+
+
+class ToolRoutingMixin:
+    @staticmethod
+    def _dynamic_tools() -> list[dict[str, Any]]:
+        empty_object_schema = {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+        apply_operations_schema = {
+            "type": "object",
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "object"},
+                }
+            },
+            "required": ["operations"],
+            "additionalProperties": False,
+        }
+        return [
+            {
+                "name": _TOOL_GET_IMAGE_STATE,
+                "description": "Get current image state for planning: editable settings and trimmed histogram.",
+                "inputSchema": empty_object_schema,
+            },
+            {
+                "name": _TOOL_GET_PREVIEW_IMAGE,
+                "description": "Get the current rendered preview image as a data URL for visual analysis.",
+                "inputSchema": empty_object_schema,
+            },
+            {
+                "name": _TOOL_APPLY_OPERATIONS,
+                "description": "Apply one or more darktable operations in the live run and update image state for follow-up tool calls.",
+                "inputSchema": apply_operations_schema,
+            },
+        ]
+
+    def _handle_server_request_locked(self, message: dict[str, Any]) -> None:
+        method = message.get("method")
+        request_id = message.get("id")
+        if request_id is None:
+            return
+
+        if method in {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+            "applyPatchApproval",
+            "execCommandApproval",
+        }:
+            logger.warning(
+                "codex_request_denied", extra={"structured": {"method": method}}
+            )
+            self._send_json_locked(
+                {"jsonrpc": "2.0", "id": request_id, "result": {"decision": "decline"}}
+            )
+            return
+
+        if method == "item/tool/call":
+            response_payload = self._handle_dynamic_tool_call_locked(message)
+            self._send_json_locked(
+                {"jsonrpc": "2.0", "id": request_id, "result": response_payload}
+            )
+            return
+
+        logger.warning(
+            "codex_request_unsupported", extra={"structured": {"method": method}}
+        )
+        self._send_json_locked(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {
+                    "code": -32000,
+                    "message": f"Unsupported Codex server request: {method}",
+                },
+            }
+        )
+
+    def _handle_dynamic_tool_call_locked(
+        self, message: dict[str, Any]
+    ) -> dict[str, Any]:
+        params = message.get("params", {})
+        thread_id = params.get("threadId")
+        turn_id = params.get("turnId")
+        tool_name = params.get("tool")
+        call_id = params.get("callId")
+
+        if not isinstance(thread_id, str) or not isinstance(turn_id, str):
+            return self._tool_error_response("Missing threadId/turnId for tool call.")
+        if not isinstance(tool_name, str):
+            return self._tool_error_response("Missing tool name for tool call.")
+
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return self._tool_error_response("Tool arguments must be an object.")
+
+        with self._state_lock:
+            context = self._turn_contexts.get((thread_id, turn_id))
+            if context is None:
+                return self._tool_error_response(
+                    "No active image context is available for this tool call."
+                )
+
+            guardrail_error = self._register_tool_call_progress_locked(
+                context, tool_name
+            )
+            if guardrail_error is not None:
+                response = self._tool_error_response(guardrail_error)
+            elif tool_name == _TOOL_GET_PREVIEW_IMAGE:
+                response = {
+                    "success": True,
+                    "contentItems": [
+                        {"type": "inputImage", "imageUrl": context.preview_data_url}
+                    ],
+                }
+            elif tool_name == _TOOL_GET_IMAGE_STATE:
+                response = {
+                    "success": True,
+                    "contentItems": [
+                        {
+                            "type": "inputText",
+                            "text": json.dumps(
+                                context.state_payload, separators=(",", ":")
+                            ),
+                        }
+                    ],
+                }
+            elif tool_name == _TOOL_APPLY_OPERATIONS:
+                response = self._apply_operations_tool_call(context, arguments)
+            else:
+                response = self._tool_error_response(
+                    f"Unsupported tool '{tool_name}'. Supported tools: {_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_APPLY_OPERATIONS}."
+                )
+
+            tool_calls_used = context.tool_calls_used
+            max_tool_calls = context.max_tool_calls
+            applied_operation_count = len(context.applied_operations)
+            read_only_streak = context.consecutive_read_only_tool_calls
+            tool_error = None
+            if not response["success"]:
+                content_items = response.get("contentItems")
+                if isinstance(content_items, list):
+                    for content_item in content_items:
+                        if not isinstance(content_item, dict):
+                            continue
+                        text = content_item.get("text")
+                        if isinstance(text, str) and text:
+                            tool_error = text
+                            break
+
+        self._set_active_request_status_for_turn_locked(
+            thread_id,
+            turn_id,
+            status="running",
+            message=(
+                f"Handled tool {tool_name} ({tool_calls_used}/{max_tool_calls}); {applied_operation_count} live edits"
+                if response["success"]
+                else f"Tool {tool_name} failed ({tool_calls_used}/{max_tool_calls}): {tool_error or 'No details provided'}"
+            ),
+            last_tool_name=tool_name,
+        )
+
+        logger.info(
+            "codex_tool_call_handled",
+            extra={
+                "structured": {
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                    "tool": tool_name,
+                    "callId": call_id,
+                    "success": response["success"],
+                    "toolCallsUsed": tool_calls_used,
+                    "maxToolCalls": max_tool_calls,
+                    "appliedOperationCount": applied_operation_count,
+                    "readOnlyToolCallStreak": read_only_streak,
+                    "toolError": tool_error,
+                }
+            },
+        )
+        return response
+
+    @staticmethod
+    def _is_read_only_tool(tool_name: str) -> bool:
+        return tool_name in {_TOOL_GET_PREVIEW_IMAGE, _TOOL_GET_IMAGE_STATE}
+
+    def _register_tool_call_progress_locked(
+        self, context, tool_name: str
+    ) -> str | None:  # type: ignore[no-untyped-def]
+        context.tool_calls_used += 1
+        if context.tool_calls_used > context.max_tool_calls:
+            return f"Tool call budget exceeded ({context.max_tool_calls}). Finalize the run now."
+
+        if (
+            context.live_run_enabled
+            and not context.applied_operations
+            and tool_name != _TOOL_APPLY_OPERATIONS
+            and context.tool_calls_used > _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
+        ):
+            return (
+                "No live edits have been applied yet in live mode. "
+                f"Call {_TOOL_APPLY_OPERATIONS} now with concrete operations or finalize."
+            )
+
+        if tool_name == _TOOL_APPLY_OPERATIONS:
+            context.consecutive_read_only_tool_calls = 0
+            return None
+
+        if self._is_read_only_tool(tool_name):
+            context.consecutive_read_only_tool_calls += 1
+            if (
+                context.live_run_enabled
+                and context.consecutive_read_only_tool_calls
+                > _DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS
+            ):
+                return (
+                    "Too many consecutive read-only tool calls. "
+                    f"Call {_TOOL_APPLY_OPERATIONS} with concrete edits or finalize now."
+                )
+            return None
+
+        context.consecutive_read_only_tool_calls = 0
+        return None
+
+    @staticmethod
+    def _tool_error_response(message: str) -> dict[str, Any]:
+        return {
+            "success": False,
+            "contentItems": [{"type": "inputText", "text": message}],
+        }

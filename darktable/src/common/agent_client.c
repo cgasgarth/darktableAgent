@@ -81,6 +81,7 @@ typedef struct dt_agent_client_cancel_delivery_t
   gchar *image_session_id;
   gchar *conversation_id;
   gchar *turn_id;
+  gchar *reason;
   gchar *endpoint;
 } dt_agent_client_cancel_delivery_t;
 
@@ -183,6 +184,12 @@ static gchar *_serialize_cancel_payload(const dt_agent_client_cancel_delivery_t 
   json_builder_add_string_value(builder, delivery->turn_id ? delivery->turn_id : "");
   json_builder_end_object(builder);
 
+  if(delivery->reason && delivery->reason[0])
+  {
+    json_builder_set_member_name(builder, "reason");
+    json_builder_add_string_value(builder, delivery->reason);
+  }
+
   json_builder_end_object(builder);
 
   JsonGenerator *generator = json_generator_new();
@@ -210,6 +217,7 @@ static void _cancel_delivery_free(dt_agent_client_cancel_delivery_t *delivery)
   g_free(delivery->image_session_id);
   g_free(delivery->conversation_id);
   g_free(delivery->turn_id);
+  g_free(delivery->reason);
   g_free(delivery->endpoint);
   g_free(delivery);
 }
@@ -272,7 +280,7 @@ static gpointer _cancel_request_thread(gpointer user_data)
   return NULL;
 }
 
-void dt_agent_client_request_cancel(dt_agent_client_request_t *request)
+void dt_agent_client_request_cancel(dt_agent_client_request_t *request, const char *reason)
 {
   if(!request)
     return;
@@ -287,6 +295,7 @@ void dt_agent_client_request_cancel(dt_agent_client_request_t *request)
     delivery->image_session_id = g_strdup(request->image_session_id);
     delivery->conversation_id = g_strdup(request->conversation_id);
     delivery->turn_id = g_strdup(request->turn_id);
+    delivery->reason = g_strdup(reason);
     delivery->endpoint = g_strdup(request->endpoint);
     g_thread_unref(g_thread_new("agent-chat-cancel", _cancel_request_thread, delivery));
   }

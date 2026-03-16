@@ -1,9 +1,21 @@
 repos:
   - repo: local
     hooks:
+      - id: python-file-length
+        name: Python File Length
+        entry: python3 scripts/lint-python-file-length.py
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
       - id: python-typecheck
         name: Python Typecheck
         entry: bash scripts/typecheck-python.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: python-tests
+        name: Python Tests
+        entry: bash scripts/test-python.sh
         language: system
         pass_filenames: false
         stages: [pre-commit]

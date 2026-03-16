@@ -35,6 +35,7 @@ class PlannerBridge(Protocol):
         image_session_id: str,
         conversation_id: str,
         turn_id: str,
+        reason: str | None = None,
     ) -> bool: ...
 
     def get_request_progress(

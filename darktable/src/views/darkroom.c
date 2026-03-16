@@ -1777,7 +1777,7 @@ static void _agent_chat_cancel_active_request(dt_develop_t *dev,
 
   if(dev->agent_chat.active_request)
   {
-    dt_agent_client_request_cancel(dev->agent_chat.active_request);
+    dt_agent_client_request_cancel(dev->agent_chat.active_request, stop_reason);
     _agent_chat_drop_active_request_handle(dev);
     dev->agent_chat.active_request_canceling = TRUE;
   }
