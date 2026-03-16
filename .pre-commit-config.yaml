@@ -1,0 +1,9 @@
+repos:
+  - repo: local
+    hooks:
+      - id: python-typecheck
+        name: Python Typecheck
+        entry: bash scripts/typecheck-python.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
