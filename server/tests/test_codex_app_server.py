@@ -442,6 +442,10 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
         "live mode turn input already includes the current preview image"
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
+    assert (
+        "turn input already includes the current editable settings and luma histogram snapshot"
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
     assert "get_preview_image" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "get_image_state" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "apply_operations" in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -532,15 +536,21 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Use read-only tools only when needed for missing context." in prompt
     assert "Tool budget: maximum 10 tool calls in this run." in prompt
     assert "Live run mode is enabled" in prompt
-    assert "initial turn input already includes the current preview image." in prompt
-    assert "Initial turn input includes the current preview image." in prompt
+    assert (
+        "Initial turn input already includes the current editable settings, luma histogram snapshot, and in live mode the current preview image."
+        in prompt
+    )
+    assert (
+        "Initial turn input includes the current preview image plus the current editable settings and luma histogram snapshot."
+        in prompt
+    )
     assert (
         "Apply at least one edit batch with apply_operations within the first" in prompt
     )
     assert "infer a conservative supported edit plan" in prompt
     assert "preview, histogram, and available controls" in prompt
     assert "Respect refinement state" in prompt
-    assert "Use moduleId/moduleLabel from get_image_state" in prompt
+    assert "Use moduleId/moduleLabel from the provided image state" in prompt
     assert "rgb primaries, color equalizer, or color balance rgb" in prompt
     assert "Preview:" not in prompt
     assert "Histogram summary:" not in prompt
@@ -555,20 +565,26 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     )
 
 
-def test_turn_input_in_live_mode_includes_text_and_initial_preview_image() -> None:
+def test_turn_input_in_live_mode_includes_prompt_state_and_initial_preview_image() -> (
+    None
+):
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
 
     items = bridge._build_turn_input(_sample_request())  # type: ignore[attr-defined]
 
-    assert len(items) == 2
+    assert len(items) == 3
     assert items[0]["type"] == "text"
-    assert items[1]["type"] == "image"
-    assert str(items[1]["url"]).startswith("data:image/jpeg;base64,")
+    assert items[1]["type"] == "text"
+    assert str(items[1]["text"]).startswith("Current image state JSON:\n")
+    assert '"editableSettings"' in str(items[1]["text"])
+    assert '"histogram"' in str(items[1]["text"])
+    assert items[2]["type"] == "image"
+    assert str(items[2]["url"]).startswith("data:image/jpeg;base64,")
 
 
-def test_turn_input_in_single_turn_mode_remains_text_only() -> None:
+def test_turn_input_in_single_turn_mode_includes_prompt_and_state_text_only() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -580,8 +596,10 @@ def test_turn_input_in_single_turn_mode_remains_text_only() -> None:
 
     items = bridge._build_turn_input(request)  # type: ignore[attr-defined]
 
-    assert len(items) == 1
+    assert len(items) == 2
     assert items[0]["type"] == "text"
+    assert items[1]["type"] == "text"
+    assert str(items[1]["text"]).startswith("Current image state JSON:\n")
 
 
 def test_preview_data_url_requires_preview() -> None:

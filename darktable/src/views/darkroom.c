@@ -2787,8 +2787,7 @@ static gchar *_agent_chat_format_tool_progress_message(const dt_agent_client_pro
 
   if(g_strcmp0(tool_name, "get_image_state") == 0)
   {
-    return g_strdup_printf(_("Tool %u/%u: reviewed current settings and histogram."),
-                           progress->tool_calls_used, max_tool_calls);
+    return NULL;
   }
 
   if(g_strcmp0(tool_name, "apply_operations") == 0)

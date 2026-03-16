@@ -76,7 +76,8 @@ _THREAD_DEVELOPER_INSTRUCTIONS = """You are darktableAgent, a structured editing
 
 Context and tool usage:
 - live mode turn input already includes the current preview image
-- call `get_image_state` when you need exact editable settings or histogram details
+- turn input already includes the current editable settings and luma histogram snapshot
+- call `get_image_state` only when you need refreshed exact state after edits or when state may have changed
 - call `get_preview_image` when you need a refreshed visual check (especially after `apply_operations`)
 - in live agent runs (`mode=multi-turn`), call `apply_operations` to apply edits iteratively
 Return exactly one JSON object matching the output schema after tool calls.
@@ -1054,10 +1055,18 @@ class CodexAppServerBridge:
                 "type": "text",
                 "text": self._build_turn_prompt(request),
                 "text_elements": [],
-            }
+            },
+            {
+                "type": "text",
+                "text": "Current image state JSON:\n"
+                + json.dumps(
+                    self._build_prompt_payload(request), separators=(",", ":")
+                ),
+                "text_elements": [],
+            },
         ]
         # In live mode, provide the current preview image up front so the first
-        # tool call can focus on state or edits instead of fetching an initial image.
+        # tool call can focus on edits instead of fetching initial state.
         if request.refinement.enabled:
             if preview_data_url is None:
                 preview_data_url = self._preview_data_url(request)
@@ -1074,7 +1083,7 @@ class CodexAppServerBridge:
         max_tool_calls = request.refinement.maxPasses if live_run_enabled else 1
         live_run_line = (
             "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
-            "Initial turn input includes the current preview image.\n"
+            "Initial turn input includes the current preview image plus the current editable settings and luma histogram snapshot.\n"
             "After each apply_operations call, re-check get_image_state and optionally get_preview_image before the next adjustment.\n"
             f"Apply at least one edit batch with apply_operations within the first {_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY} tool calls.\n"
             "When satisfied, return final JSON with continueRefining=false and usually empty operations.\n"
@@ -1090,11 +1099,11 @@ class CodexAppServerBridge:
             f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             "\n"
             "Use read-only tools only when needed for missing context.\n"
-            "In live mode, the initial turn input already includes the current preview image.\n"
-            "Use get_image_state for exact editable settings/histogram; use get_preview_image mainly after apply_operations for refreshed visual checks.\n"
+            "Initial turn input already includes the current editable settings, luma histogram snapshot, and in live mode the current preview image.\n"
+            "Use get_image_state mainly after apply_operations when you need refreshed exact state; use get_preview_image mainly after apply_operations for refreshed visual checks.\n"
             "Use only the tool-provided editable settings and image state.\n"
             f"{live_run_line}"
-            "Use moduleId/moduleLabel from get_image_state to group related controls.\n"
+            "Use moduleId/moduleLabel from the provided image state to group related controls.\n"
             "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
             "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
             "White-balance controls (`iop/temperature/*`) are available when present. Respect their bounds, supported modes, and exact target IDs.\n"
