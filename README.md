@@ -1,122 +1,96 @@
 # darktableAgent
 
-`darktableAgent` is a custom darktable workspace with an integrated chat UI and a local Python agent server.
+darktableAgent is an AI-assisted editing workflow built on top of our fork of darktable. It combines a darkroom chat interface, a local Python backend, and a structured edit protocol so edit requests can be translated into supported darktable operations.
 
-darktable remains the source of truth for rendering and image state. The backend returns structured edit operations, and darktable applies them through supported controls.
+darktable remains the source of truth for image state and rendering. The backend plans edits; darktable validates and applies them through supported controls.
 
 ## Features
 
-- Local custom build of darktable 5.4.1 in this repo
-- Integrated darkroom chat panel
-- Image-scoped chat sessions with reset/new chat
-- Single-turn mode and live iterative agent mode
-- Configurable live tool-call budget (default `15`, no hard cap)
-- Fast mode toggle in UI
-- Structured protocol shared between UI and backend
-- Deterministic smoke test path using mock server responses
+- Integrated darkroom chat UI
+- Single-turn planning and live iterative edit sessions
+- Structured operation protocol between UI and backend
+- Streaming progress during live runs
+- Deterministic smoke-test path using mock responses
 
-## Repository Layout
+## Architecture
 
-- `darktable/` custom darktable source and UI integration
-- `server/` FastAPI service and Codex app-server bridge
-- `shared/` request/response schema and protocol models
-- `scripts/` build, run, and smoke-test helpers
-- `docs/` protocol and design docs
-- `assets/` local test assets
+- `darktable/` contains our darktable fork and the darkroom UI integration
+- `server/` contains the FastAPI backend and Codex bridge
+- `shared/` contains the protocol models and schema
 
-## Prerequisites
+Request flow:
 
-- Linux
-- `python3` (3.10+)
-- `uv` (recommended) or `pip`
-- darktable build dependencies installed on the machine (use upstream darktable build docs for distro packages)
-- `codex` CLI installed and authenticated for live model runs
+1. darktable captures the current image state, editable settings, preview, and session context.
+2. The backend sends that context to the planner.
+3. The planner returns structured edit operations.
+4. darktable validates and applies those operations through supported controls.
+
+In live mode, the backend can stage multiple edit batches, refresh state and preview, and continue refining within the same run.
 
 ## Setup
 
-1. Install Python dependencies:
+Prerequisites:
+
+- Linux
+- `python3` 3.14+
+- `uv`
+- `codex` CLI installed and authenticated
+- darktable build dependencies for your distribution
+- local CLI tools used by the build and test scripts: `ninja`, `curl`, GNU `timeout`
+- optional: `xvfb-run` for headless smoke tests
+
+Install Python dependencies:
 
 ```bash
 uv sync --extra dev
 ```
 
-2. Build darktable:
+Build darktable:
 
 ```bash
-./scripts/build_darktable_local.sh
+npm run darktable:build
 ```
-
-## Run Locally
 
 Start the backend:
 
 ```bash
-./scripts/run_server.sh
+npm run server:start
 ```
 
 Start darktable:
 
 ```bash
-./scripts/run_darktable_local.sh
-```
-
-`run_darktable_local.sh` detaches by default and logs to `.darktable-local/darktable.log`. Use `--foreground` to keep it attached.
-
-You can also use npm shortcuts:
-
-```bash
-npm run darktable:build
 npm run darktable:start
-npm run server:start
-npm run build:serve
 ```
 
-## Configuration
-
-Backend defaults:
-
-- Model: `gpt-5.3-codex`
-- Reasoning effort: `high`
-- Fast mode reasoning effort: `low`
-- Backend timeout: `600s`
-
-Useful environment variables:
-
-- `DARKTABLE_AGENT_CODEX_MODEL`
-- `DARKTABLE_AGENT_CODEX_REASONING_EFFORT`
-- `DARKTABLE_AGENT_CODEX_FAST_MODE_MODEL`
-- `DARKTABLE_AGENT_CODEX_FAST_MODE_REASONING_EFFORT`
-- `DARKTABLE_AGENT_CODEX_TIMEOUT_SECONDS` (server -> codex timeout, default `600`)
-- `DARKTABLE_AGENT_SERVER_TIMEOUT_SECONDS` (darktable -> server timeout, default `600`)
+By default, the backend runs locally on `127.0.0.1:8001`.
 
 ## Testing
 
-Run the deterministic smoke test (uses mock responses by default):
+Run the Python test suite:
 
 ```bash
-./scripts/agent_exposure_smoke.sh
+uv run pytest server/tests
 ```
 
-Or via npm:
+Run Python type checking:
+
+```bash
+uvx pyright server shared
+```
+
+Run local pre-commit checks:
+
+```bash
+uvx pre-commit run --all-files
+```
+
+Run the deterministic smoke test:
 
 ```bash
 npm run agent:smoke
 ```
 
-Multi-turn smoke example:
-
-```bash
-MULTI_TURN_ENABLED=1 \
-MULTI_TURN_MAX_TURNS=15 \
-EXPECTED_MIN_REFINEMENT_PASSES=1 \
-EXPECTED_MAX_REFINEMENT_PASSES=15 \
-./scripts/agent_exposure_smoke.sh
-```
-
 ## Protocol
 
-Protocol details are documented in [docs/protocol-v1.md](docs/protocol-v1.md).
-
-## License
-
-TBD
+Protocol details are documented in `docs/protocol-v1.md`.
