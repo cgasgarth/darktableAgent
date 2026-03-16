@@ -1648,7 +1648,7 @@ class CodexAppServerBridge:
                 self._log_white_balance_tool_call(
                     context,
                     raw_operations,
-                    normalized_batch,
+                    [],
                     success=False,
                     error=error,
                 )
@@ -1874,10 +1874,36 @@ class CodexAppServerBridge:
             return {}, f"operation failed schema validation: {exc}"
 
         operation = validated.model_dump(mode="json")
-        setting_id = operation.get("target", {}).get("settingId")
-        if not isinstance(setting_id, str) or setting_id not in context.setting_by_id:
+        target = operation.get("target")
+        if not isinstance(target, dict):
+            return {}, "operation target must be an object"
+
+        setting_id = target.get("settingId")
+        action_path = target.get("actionPath")
+        if not isinstance(setting_id, str):
+            return {}, f"operation targets unknown settingId '{setting_id}'"
+        if setting_id not in context.setting_by_id:
+            if isinstance(action_path, str):
+                matching_setting_ids = self._setting_ids_for_action_path(
+                    context.setting_by_id,
+                    action_path,
+                )
+                if len(matching_setting_ids) == 1:
+                    target["settingId"] = matching_setting_ids[0]
+                    return operation, None
             return {}, f"operation targets unknown settingId '{setting_id}'"
         return operation, None
+
+    @staticmethod
+    def _setting_ids_for_action_path(
+        setting_by_id: dict[str, dict[str, Any]],
+        action_path: str,
+    ) -> list[str]:
+        matches: list[str] = []
+        for setting_id, setting in setting_by_id.items():
+            if setting.get("actionPath") == action_path:
+                matches.append(setting_id)
+        return matches
 
     @staticmethod
     def _choice_mapping(setting: dict[str, Any]) -> dict[int, str]:

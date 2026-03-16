@@ -1134,6 +1134,154 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
     ]
 
 
+def test_apply_operations_tool_resolves_unknown_setting_id_by_unique_action_path() -> (
+    None
+):
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert context is not None
+
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 211,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-exposure-unknown-setting-id",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/exposure/exposure",
+                                    "settingId": "setting.iop.bilat.local.contrast.instance.0",
+                                },
+                                "value": {"mode": "delta", "number": 0.2},
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+        assert context.setting_by_id["setting.exposure.primary"]["currentNumber"] == 0.2
+        assert (
+            context.applied_operations[-1]["target"]["settingId"]
+            == "setting.exposure.primary"
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is True
+
+
+def test_apply_operations_tool_failed_batch_logs_only_attempted_white_balance_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request_with_white_balance_controls()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    white_balance_logs: list[dict] = []
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    def _capture_info(message, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if message == "apply_operations_white_balance":
+            white_balance_logs.append(kwargs.get("extra", {}).get("structured", {}))
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    monkeypatch.setattr("server.codex_app_server.logger.info", _capture_info)
+    try:
+        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert context is not None
+
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 212,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-wb-with-invalid-non-wb-setting",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "operations": [
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/temperature/temperature",
+                                    "settingId": "setting.temperature.temperature",
+                                },
+                                "value": {"mode": "delta", "number": 100.0},
+                            },
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/temperature/tint",
+                                    "settingId": "setting.temperature.tint",
+                                },
+                                "value": {"mode": "set", "number": 1.1},
+                            },
+                            {
+                                "kind": "set-float",
+                                "target": {
+                                    "type": "darktable-action",
+                                    "actionPath": "iop/bilat/local_contrast",
+                                    "settingId": "setting.iop.bilat.local.contrast.instance.0",
+                                },
+                                "value": {"mode": "delta", "number": 0.1},
+                            },
+                        ]
+                    },
+                },
+            }
+        )
+
+        assert context.applied_operations == []
+        assert (
+            context.setting_by_id["setting.temperature.temperature"]["currentNumber"]
+            == 5003.0
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is False
+    assert "unknown settingId" in result["contentItems"][0]["text"]
+    assert white_balance_logs
+    structured = white_balance_logs[-1]
+    assert structured["attemptedWhiteBalanceActionPaths"] == [
+        "iop/temperature/temperature",
+        "iop/temperature/tint",
+    ]
+    assert structured["appliedWhiteBalanceActionPaths"] == []
+
+
 def test_apply_operations_tool_rejects_white_balance_actionpath_settingid_mismatch_without_state_change() -> (
     None
 ):
