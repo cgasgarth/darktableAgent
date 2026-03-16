@@ -32,7 +32,7 @@ In live mode, the backend can stage multiple edit batches, refresh state and pre
 Prerequisites:
 
 - Linux
-- `python3` 3.10+
+- `python3` 3.14+
 - `uv`
 - `codex` CLI installed and authenticated
 - darktable build dependencies for your distribution
@@ -48,19 +48,19 @@ uv sync --extra dev
 Build darktable:
 
 ```bash
-./scripts/build_darktable_local.sh
+npm run darktable:build
 ```
 
 Start the backend:
 
 ```bash
-./scripts/run_server.sh
+npm run server:start
 ```
 
 Start darktable:
 
 ```bash
-./scripts/run_darktable_local.sh
+npm run darktable:start
 ```
 
 By default, the backend runs locally on `127.0.0.1:8001`.
@@ -88,7 +88,7 @@ uvx pre-commit run --all-files
 Run the deterministic smoke test:
 
 ```bash
-./scripts/agent_exposure_smoke.sh
+npm run agent:smoke
 ```
 
 ## Protocol
