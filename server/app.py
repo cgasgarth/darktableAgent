@@ -61,6 +61,7 @@ _mock_bridge = MockPlannerBridge()
 class CancelRequestEnvelope(BaseModel):
     requestId: str = Field(min_length=1)
     session: RequestSession
+    reason: str | None = None
 
 
 class CancelResponseEnvelope(BaseModel):
@@ -258,6 +259,7 @@ async def cancel_chat(request: CancelRequestEnvelope) -> CancelResponseEnvelope:
                 "imageSessionId": request.session.imageSessionId,
                 "conversationId": request.session.conversationId,
                 "turnId": request.session.turnId,
+                "reason": request.reason,
             }
         },
     )
@@ -269,6 +271,7 @@ async def cancel_chat(request: CancelRequestEnvelope) -> CancelResponseEnvelope:
         image_session_id=request.session.imageSessionId,
         conversation_id=request.session.conversationId,
         turn_id=request.session.turnId,
+        reason=request.reason,
     )
     message = (
         "Cancellation requested for the active chat turn"

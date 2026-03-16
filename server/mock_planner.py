@@ -110,12 +110,14 @@ class MockPlannerBridge:
         image_session_id: str,
         conversation_id: str,
         turn_id: str,
+        reason: str | None = None,
     ) -> bool:
         del request_id
         del app_session_id
         del image_session_id
         del conversation_id
         del turn_id
+        del reason
         return False
 
     def get_request_progress(

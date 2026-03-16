@@ -329,6 +329,7 @@ class StubBridge:
         image_session_id,
         conversation_id,
         turn_id,
+        reason=None,
     ):
         self.cancel_requests.append(
             {
@@ -337,6 +338,7 @@ class StubBridge:
                 "image_session_id": image_session_id,
                 "conversation_id": conversation_id,
                 "turn_id": turn_id,
+                "reason": reason,
             }
         )
         return True
@@ -674,6 +676,7 @@ async def test_cancel_chat_forwards_request_ids_to_bridge(
             "image_session_id": "img-12",
             "conversation_id": "conv-1",
             "turn_id": "turn-1",
+            "reason": None,
         }
     ]
 
@@ -684,7 +687,11 @@ async def test_cancel_chat_accepts_unknown_request_ids(
 ) -> None:
     bridge = StubBridge()
     monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
-    bridge.cancel_request = lambda **_: False  # type: ignore[method-assign]
+
+    def _cancel_request_false(**_: object) -> bool:
+        return False
+
+    bridge.cancel_request = _cancel_request_false  # type: ignore[method-assign]
 
     response = await api_client.post(
         "/v1/chat/cancel",
@@ -706,6 +713,31 @@ async def test_cancel_chat_accepts_unknown_request_ids(
         "canceled": True,
         "message": "Cancellation recorded for this chat turn",
     }
+
+
+@pytest.mark.anyio
+async def test_cancel_chat_forwards_optional_reason_to_bridge(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge()
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    response = await api_client.post(
+        "/v1/chat/cancel",
+        json={
+            "requestId": "req-1",
+            "session": {
+                "appSessionId": "app-1",
+                "imageSessionId": "img-12",
+                "conversationId": "conv-1",
+                "turnId": "turn-1",
+            },
+            "reason": "image-changed",
+        },
+    )
+
+    assert response.status_code == 200
+    assert bridge.cancel_requests[-1]["reason"] == "image-changed"
 
 
 @pytest.mark.anyio

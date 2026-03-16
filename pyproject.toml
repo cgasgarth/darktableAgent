@@ -27,8 +27,8 @@ dev = [
 pythonpath = ["."]
 testpaths = ["server/tests"]
 
-[tool.setuptools]
-packages = ["server", "shared"]
+[tool.setuptools.packages.find]
+include = ["server*", "shared*"]
 
 [tool.pyright]
 include = ["server", "shared"]

@@ -654,13 +654,16 @@ def test_cancel_request_marks_matching_active_turn_cancelled() -> None:
             image_session_id=request.session.imageSessionId,
             conversation_id=request.session.conversationId,
             turn_id=request.session.turnId,
+            reason="image-changed",
         )
 
         assert canceled is True
         assert active_request.cancel_event.is_set() is True
+        assert active_request.cancel_reason == "image-changed"
         with pytest.raises(CodexAppServerError) as exc:
             bridge._raise_if_cancelled_locked(active_request)  # type: ignore[attr-defined]
         assert exc.value.code == "request_cancelled"
+        assert exc.value.message == "image-changed"
     finally:
         bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
 
@@ -676,6 +679,7 @@ def test_cancel_request_records_unknown_request_ids_for_future_preflight() -> No
         image_session_id="img-12",
         conversation_id="conv-1",
         turn_id="turn-1",
+        reason="apply-failed",
     )
 
     assert canceled is False
@@ -684,6 +688,33 @@ def test_cancel_request_records_unknown_request_ids_for_future_preflight() -> No
     active_request = bridge._register_request(request)  # type: ignore[attr-defined]
     try:
         assert active_request.cancel_event.is_set() is True
+        assert active_request.cancel_reason == "apply-failed"
+    finally:
+        bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
+
+
+def test_cancel_request_does_not_preflight_cancel_non_matching_session_tuple() -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+
+    canceled = bridge.cancel_request(
+        request_id="req-future",
+        app_session_id="app-1",
+        image_session_id="img-12",
+        conversation_id="conv-1",
+        turn_id="turn-1",
+        reason="cancelled",
+    )
+
+    assert canceled is False
+    request = _sample_request()
+    request.requestId = "req-future"
+    request.session.conversationId = "conv-2"
+    active_request = bridge._register_request(request)  # type: ignore[attr-defined]
+    try:
+        assert active_request.cancel_event.is_set() is False
+        assert active_request.cancel_reason is None
     finally:
         bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
 
