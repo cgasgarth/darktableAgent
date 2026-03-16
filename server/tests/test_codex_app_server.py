@@ -545,6 +545,10 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
         in prompt
     )
     assert (
+        "After each apply_operations call, inspect the refreshed preview image returned in that tool response"
+        in prompt
+    )
+    assert (
         "Apply at least one edit batch with apply_operations within the first" in prompt
     )
     assert "infer a conservative supported edit plan" in prompt
@@ -1020,7 +1024,14 @@ def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
         result = sent_payloads[0]["result"]
         assert result["success"] is True
         assert "Applied 1 operations" in result["contentItems"][0]["text"]
-        assert "Preview refreshed" in result["contentItems"][0]["text"]
+        assert (
+            "Refreshed preview image included below"
+            in result["contentItems"][0]["text"]
+        )
+        assert result["contentItems"][1]["type"] == "inputImage"
+        auto_preview = result["contentItems"][1]["imageUrl"]
+        assert auto_preview != preview_before
+        assert "x-darktable-stage=1" in auto_preview
 
         sent_payloads.clear()
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
@@ -1168,6 +1179,10 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
     result = sent_payloads[0]["result"]
     assert result["success"] is True
     assert "Applied 3 operations" in result["contentItems"][0]["text"]
+    assert result["contentItems"][1]["type"] == "inputImage"
+    assert result["contentItems"][1]["imageUrl"].endswith(
+        "x-darktable-stage=3;base64,ZmFrZS1wcmV2aWV3"
+    )
 
     assert white_balance_logs
     structured = white_balance_logs[-1]

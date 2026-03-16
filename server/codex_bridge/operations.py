@@ -120,9 +120,13 @@ class OperationsMixin:
                     "text": (
                         f"Applied {len(applied_batch)} operations in this call; "
                         f"{len(context.applied_operations)} total live edits applied. "
-                        "Preview refreshed for get_preview_image."
+                        "Refreshed preview image included below."
                     ),
-                }
+                },
+                {
+                    "type": "inputImage",
+                    "imageUrl": context.preview_data_url,
+                },
             ],
         }
 
