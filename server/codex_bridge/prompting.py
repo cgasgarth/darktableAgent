@@ -278,7 +278,7 @@ class PromptingMixin:
         live_run_line = (
             "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
             "Initial turn input includes the current preview image plus the current editable settings and luma histogram snapshot.\n"
-            "After each apply_operations call, re-check get_image_state and optionally get_preview_image before the next adjustment.\n"
+            "After each apply_operations call, inspect the refreshed preview image returned in that tool response and re-check get_image_state when you need refreshed exact state before the next adjustment.\n"
             f"Apply at least one edit batch with apply_operations within the first {_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY} tool calls.\n"
             "When satisfied, return final JSON with continueRefining=false and usually empty operations.\n"
             if live_run_enabled
@@ -294,7 +294,7 @@ class PromptingMixin:
             "\n"
             "Use read-only tools only when needed for missing context.\n"
             "Initial turn input already includes the current editable settings, luma histogram snapshot, and in live mode the current preview image.\n"
-            "Use get_image_state mainly after apply_operations when you need refreshed exact state; use get_preview_image mainly after apply_operations for refreshed visual checks.\n"
+            "Use get_image_state mainly after apply_operations when you need refreshed exact state; the refreshed preview image is returned directly by successful apply_operations calls, so use get_preview_image only for extra visual checks between edit batches.\n"
             "Use only the tool-provided editable settings and image state.\n"
             f"{live_run_line}"
             "Use moduleId/moduleLabel from the provided image state to group related controls.\n"

@@ -57,7 +57,8 @@ Context and tool usage:
 - live mode turn input already includes the current preview image
 - turn input already includes the current editable settings and luma histogram snapshot
 - call `get_image_state` only when you need refreshed exact state after edits or when state may have changed
-- call `get_preview_image` when you need a refreshed visual check (especially after `apply_operations`)
+- `apply_operations` returns the refreshed preview image automatically after successful edits
+- call `get_preview_image` only when you need another visual check without applying new edits
 - in live agent runs (`mode=multi-turn`), call `apply_operations` to apply edits iteratively
 Return exactly one JSON object matching the output schema after tool calls.
 
