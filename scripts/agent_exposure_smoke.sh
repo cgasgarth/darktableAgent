@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
 ASSET_PATH="${ASSET_PATH:-$REPO_ROOT/assets/_DSC8809.ARW}"
-HOST="${HOST:-127.0.0.1}"
+HOST="${HOST:-${DARKTABLE_AGENT_SERVER_HOST:-127.0.0.1}}"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
 AUTORUN_PROMPT="${AUTORUN_PROMPT:-${DARKTABLE_AGENT_TEST_AUTORUN_PROMPT:-Increase exposure by exactly 0.7 EV.}}"
 AUTORUN_QUIT_AFTER_MS="${AUTORUN_QUIT_AFTER_MS:-${DARKTABLE_AGENT_TEST_AUTORUN_QUIT_AFTER_MS:-1000}}"
@@ -91,8 +91,10 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN="python3"
 fi
 
-if [[ -z "${PORT:-}" ]]; then
+if [[ -z "${PORT:-${DARKTABLE_AGENT_SERVER_PORT:-}}" ]]; then
   PORT="$((20000 + RANDOM % 20000))"
+else
+  PORT="${PORT:-${DARKTABLE_AGENT_SERVER_PORT}}"
 fi
 
 SERVER_URL="${DARKTABLE_AGENT_SERVER_URL:-http://$HOST:$PORT/v1/chat}"

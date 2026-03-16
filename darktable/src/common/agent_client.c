@@ -146,7 +146,7 @@ static int _progress_callback(void *clientp,
 static gchar *_cancel_endpoint_from_chat_endpoint(const gchar *endpoint)
 {
   if(!endpoint || !endpoint[0])
-    return g_strdup("http://127.0.0.1:8001/v1/chat/cancel");
+    endpoint = DT_AGENT_CHAT_DEFAULT_ENDPOINT;
 
   return g_str_has_suffix(endpoint, "/")
            ? g_strconcat(endpoint, "cancel", NULL)
@@ -156,7 +156,7 @@ static gchar *_cancel_endpoint_from_chat_endpoint(const gchar *endpoint)
 static gchar *_stream_endpoint_from_chat_endpoint(const gchar *endpoint)
 {
   if(!endpoint || !endpoint[0])
-    return g_strdup("http://127.0.0.1:8001/v1/chat/stream");
+    endpoint = DT_AGENT_CHAT_DEFAULT_ENDPOINT;
 
   return g_str_has_suffix(endpoint, "/")
            ? g_strconcat(endpoint, "stream", NULL)
