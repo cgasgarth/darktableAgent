@@ -1,6 +1,6 @@
 # darktableAgent
 
-darktableAgent is an AI-assisted editing workflow built on top of our fork of darktable. It combines a darkroom chat interface, a local Python backend, and a structured edit protocol so edit requests can be translated into supported darktable operations.
+darktableAgent is an AI-assisted editing workflow built on top of our fork of [darktable](https://github.com/darktable-org/darktable). It combines a darkroom chat interface, a local Python backend, and a structured edit protocol so edit requests can be translated into supported darktable operations.
 
 darktable remains the source of truth for image state and rendering. The backend plans edits; darktable validates and applies them through supported controls.
 
