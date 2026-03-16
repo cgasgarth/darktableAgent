@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -143,7 +143,9 @@ class Capability(StrictBaseModel):
             if self.minNumber > self.maxNumber:
                 raise ValueError("capability minNumber must be <= maxNumber")
             if not (self.minNumber <= self.defaultNumber <= self.maxNumber):
-                raise ValueError("capability defaultNumber must be within min/max range")
+                raise ValueError(
+                    "capability defaultNumber must be within min/max range"
+                )
             if self.stepNumber <= 0:
                 raise ValueError("capability stepNumber must be positive")
             if self.choices is not None or self.defaultChoiceValue is not None:
@@ -152,7 +154,9 @@ class Capability(StrictBaseModel):
                 raise ValueError("float capability must not define defaultBool")
         elif self.kind == "set-choice":
             if self.supportedModes != ["set"]:
-                raise ValueError('choice capability supportedModes must be exactly ["set"]')
+                raise ValueError(
+                    'choice capability supportedModes must be exactly ["set"]'
+                )
             if not self.choices:
                 raise ValueError("choice capability must define choices")
             choice_values = [choice.choiceValue for choice in self.choices]
@@ -162,7 +166,9 @@ class Capability(StrictBaseModel):
             if len(choice_ids) != len(set(choice_ids)):
                 raise ValueError("choice capability ids must be unique")
             if self.defaultChoiceValue not in choice_values:
-                raise ValueError("choice capability defaultChoiceValue must reference a choice")
+                raise ValueError(
+                    "choice capability defaultChoiceValue must reference a choice"
+                )
             if any(
                 value is not None
                 for value in (
@@ -173,23 +179,32 @@ class Capability(StrictBaseModel):
                     self.defaultBool,
                 )
             ):
-                raise ValueError("choice capability must not define float/bool defaults")
+                raise ValueError(
+                    "choice capability must not define float/bool defaults"
+                )
         elif self.kind == "set-bool":
             if self.supportedModes != ["set"]:
-                raise ValueError('bool capability supportedModes must be exactly ["set"]')
+                raise ValueError(
+                    'bool capability supportedModes must be exactly ["set"]'
+                )
             if self.defaultBool is None:
                 raise ValueError("bool capability requires defaultBool")
-            if any(
-                value is not None
-                for value in (
-                    self.minNumber,
-                    self.maxNumber,
-                    self.defaultNumber,
-                    self.stepNumber,
-                    self.defaultChoiceValue,
+            if (
+                any(
+                    value is not None
+                    for value in (
+                        self.minNumber,
+                        self.maxNumber,
+                        self.defaultNumber,
+                        self.stepNumber,
+                        self.defaultChoiceValue,
+                    )
                 )
-            ) or self.choices is not None:
-                raise ValueError("bool capability must not define float/choice defaults")
+                or self.choices is not None
+            ):
+                raise ValueError(
+                    "bool capability must not define float/choice defaults"
+                )
         return self
 
 
@@ -201,7 +216,9 @@ class CapabilityManifest(StrictBaseModel):
     def validate_capability_ids(self) -> "CapabilityManifest":
         capability_ids = [target.capabilityId for target in self.targets]
         if len(capability_ids) != len(set(capability_ids)):
-            raise ValueError("capability manifest must not contain duplicate capabilityId values")
+            raise ValueError(
+                "capability manifest must not contain duplicate capabilityId values"
+            )
         return self
 
 
@@ -261,7 +278,8 @@ class RequestEnvelope(StrictBaseModel):
     @model_validator(mode="after")
     def validate_capability_consistency(self) -> "RequestEnvelope":
         capability_by_id: dict[str, Capability] = {
-            capability.capabilityId: capability for capability in self.capabilityManifest.targets
+            capability.capabilityId: capability
+            for capability in self.capabilityManifest.targets
         }
         for setting in self.imageSnapshot.editableSettings:
             capability = capability_by_id.get(setting.capabilityId)
@@ -270,15 +288,25 @@ class RequestEnvelope(StrictBaseModel):
                     f"editableSetting references unknown capabilityId: {setting.capabilityId}"
                 )
             if capability.actionPath != setting.actionPath:
-                raise ValueError("editableSetting actionPath does not match capability manifest")
+                raise ValueError(
+                    "editableSetting actionPath does not match capability manifest"
+                )
             if capability.moduleId != setting.moduleId:
-                raise ValueError("editableSetting moduleId does not match capability manifest")
+                raise ValueError(
+                    "editableSetting moduleId does not match capability manifest"
+                )
             if capability.moduleLabel != setting.moduleLabel:
-                raise ValueError("editableSetting moduleLabel does not match capability manifest")
+                raise ValueError(
+                    "editableSetting moduleLabel does not match capability manifest"
+                )
             if capability.label != setting.label:
-                raise ValueError("editableSetting label does not match capability manifest")
+                raise ValueError(
+                    "editableSetting label does not match capability manifest"
+                )
             if capability.kind != setting.kind:
-                raise ValueError("editableSetting kind does not match capability manifest")
+                raise ValueError(
+                    "editableSetting kind does not match capability manifest"
+                )
             if capability.supportedModes != setting.supportedModes:
                 raise ValueError(
                     "editableSetting supportedModes do not match capability manifest"
@@ -292,11 +320,15 @@ class RequestEnvelope(StrictBaseModel):
                     or setting.defaultNumber != capability.defaultNumber
                     or setting.stepNumber != capability.stepNumber
                 ):
-                    raise ValueError("float editableSetting bounds do not match capability")
+                    raise ValueError(
+                        "float editableSetting bounds do not match capability"
+                    )
             elif setting.kind == "set-choice":
                 capability_choices = capability.choices or []
                 if setting.choices != capability_choices:
-                    raise ValueError("choice editableSetting choices do not match capability")
+                    raise ValueError(
+                        "choice editableSetting choices do not match capability"
+                    )
                 if setting.defaultChoiceValue != capability.defaultChoiceValue:
                     raise ValueError(
                         "choice editableSetting defaultChoiceValue does not match capability"
@@ -305,7 +337,9 @@ class RequestEnvelope(StrictBaseModel):
                 if setting.currentBool is None:
                     raise ValueError("bool editableSetting requires currentBool")
                 if setting.defaultBool != capability.defaultBool:
-                    raise ValueError("bool editableSetting defaultBool does not match capability")
+                    raise ValueError(
+                        "bool editableSetting defaultBool does not match capability"
+                    )
         return self
 
 
@@ -343,21 +377,27 @@ class PlannedOperationDraft(StrictBaseModel):
             if self.value.number is None:
                 raise ValueError("set-float operation requires value.number")
             if self.value.choiceValue is not None or self.value.boolValue is not None:
-                raise ValueError("set-float operation must not define choice/bool values")
+                raise ValueError(
+                    "set-float operation must not define choice/bool values"
+                )
         elif self.kind == "set-choice":
             if self.value.mode != "set":
                 raise ValueError('set-choice operation must use mode "set"')
             if self.value.choiceValue is None:
                 raise ValueError("set-choice operation requires value.choiceValue")
             if self.value.number is not None or self.value.boolValue is not None:
-                raise ValueError("set-choice operation must not define number/bool values")
+                raise ValueError(
+                    "set-choice operation must not define number/bool values"
+                )
         elif self.kind == "set-bool":
             if self.value.mode != "set":
                 raise ValueError('set-bool operation must use mode "set"')
             if self.value.boolValue is None:
                 raise ValueError("set-bool operation requires value.boolValue")
             if self.value.number is not None or self.value.choiceValue is not None:
-                raise ValueError("set-bool operation must not define number/choice values")
+                raise ValueError(
+                    "set-bool operation must not define number/choice values"
+                )
         return self
 
 
@@ -400,7 +440,9 @@ class RefinementStatus(StrictBaseModel):
     passIndex: int = Field(ge=1)
     maxPasses: int = Field(ge=1)
     continueRefining: bool
-    stopReason: Literal["single-turn", "continue", "planner-complete", "no-operations", "max-passes"]
+    stopReason: Literal[
+        "single-turn", "continue", "planner-complete", "no-operations", "max-passes"
+    ]
 
 
 class ResponseEnvelope(StrictBaseModel):
@@ -439,7 +481,9 @@ class ProtocolError(Exception):
         self.status_code = status_code
 
 
-def build_response_from_plan(request: RequestEnvelope, plan: AgentPlan) -> ResponseEnvelope:
+def build_response_from_plan(
+    request: RequestEnvelope, plan: AgentPlan
+) -> ResponseEnvelope:
     refinement = _build_refinement_status(request, plan)
     return ResponseEnvelope(
         requestId=request.requestId,
@@ -453,14 +497,18 @@ def build_response_from_plan(request: RequestEnvelope, plan: AgentPlan) -> Respo
             operations=plan.operations,
         ),
         operationResults=[
-            OperationResult(operationId=operation.operationId, status="planned", error=None)
+            OperationResult(
+                operationId=operation.operationId, status="planned", error=None
+            )
             for operation in plan.operations
         ],
         error=None,
     )
 
 
-def _build_refinement_status(request: RequestEnvelope, plan: AgentPlan) -> RefinementStatus:
+def _build_refinement_status(
+    request: RequestEnvelope, plan: AgentPlan
+) -> RefinementStatus:
     can_continue = (
         request.refinement.enabled
         and plan.continueRefining
@@ -500,26 +548,28 @@ def parse_request_ids(payload: Any) -> tuple[str, dict[str, str]]:
             "turnId": "",
         }
 
-    session = payload.get("session")
+    payload_dict = cast(dict[str, object], payload)
+    session = payload_dict.get("session")
     if not isinstance(session, dict):
         session = {}
+    session_dict = cast(dict[str, object], session)
+
+    request_id = payload_dict.get("requestId")
+    app_session_id = session_dict.get("appSessionId")
+    image_session_id = session_dict.get("imageSessionId")
+    conversation_id = session_dict.get("conversationId")
+    turn_id = session_dict.get("turnId")
 
     return (
-        payload.get("requestId") if isinstance(payload.get("requestId"), str) else "",
+        request_id if isinstance(request_id, str) else "",
         {
-            "appSessionId": (
-                session.get("appSessionId") if isinstance(session.get("appSessionId"), str) else ""
-            ),
-            "imageSessionId": (
-                session.get("imageSessionId")
-                if isinstance(session.get("imageSessionId"), str)
-                else ""
-            ),
-            "conversationId": (
-                session.get("conversationId")
-                if isinstance(session.get("conversationId"), str)
-                else ""
-            ),
-            "turnId": session.get("turnId") if isinstance(session.get("turnId"), str) else "",
+            "appSessionId": app_session_id if isinstance(app_session_id, str) else "",
+            "imageSessionId": image_session_id
+            if isinstance(image_session_id, str)
+            else "",
+            "conversationId": conversation_id
+            if isinstance(conversation_id, str)
+            else "",
+            "turnId": turn_id if isinstance(turn_id, str) else "",
         },
     )

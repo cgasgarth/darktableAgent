@@ -14,3 +14,5 @@ If you need to bypass this intentionally, use:
 EOF
   exit 1
 fi
+
+uvx pre-commit run --all-files --hook-stage pre-commit

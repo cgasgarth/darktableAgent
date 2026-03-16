@@ -2414,9 +2414,9 @@ static void _agent_chat_set_loading(dt_develop_t *dev, const gboolean is_loading
 
 static void _agent_chat_window_init(GtkWidget *widget)
 {
-  const gint width = MAX(DT_PIXEL_APPLY_DPI(420),
+  const gint width = MAX(DT_PIXEL_APPLY_DPI(504),
                          dt_conf_get_int("plugins/darkroom/agent_chat/window_w"));
-  const gint height = MAX(DT_PIXEL_APPLY_DPI(520),
+  const gint height = MAX(DT_PIXEL_APPLY_DPI(624),
                           dt_conf_get_int("plugins/darkroom/agent_chat/window_h"));
   const gint x = MAX(0, dt_conf_get_int("plugins/darkroom/agent_chat/window_x"));
   const gint y = MAX(0, dt_conf_get_int("plugins/darkroom/agent_chat/window_y"));
@@ -2787,8 +2787,7 @@ static gchar *_agent_chat_format_tool_progress_message(const dt_agent_client_pro
 
   if(g_strcmp0(tool_name, "get_image_state") == 0)
   {
-    return g_strdup_printf(_("Tool %u/%u: reviewed current settings and histogram."),
-                           progress->tool_calls_used, max_tool_calls);
+    return NULL;
   }
 
   if(g_strcmp0(tool_name, "apply_operations") == 0)

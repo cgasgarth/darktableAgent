@@ -78,7 +78,7 @@ def _sample_capabilities() -> list[dict]:
             "maxNumber": 3.141592653589793,
             "defaultNumber": 0.0,
             "stepNumber": 0.001,
-        }
+        },
     ]
 
 
@@ -173,7 +173,7 @@ def _sample_image_snapshot() -> dict:
                 "maxNumber": 3.141592653589793,
                 "defaultNumber": 0.0,
                 "stepNumber": 0.001,
-            }
+            },
         ],
         "history": [
             {
@@ -216,6 +216,44 @@ def _sample_request_payload() -> dict:
         },
         "imageSnapshot": _sample_image_snapshot(),
     }
+
+
+def _sample_request_payload_with_white_balance() -> dict:
+    payload = _sample_request_payload()
+    payload["capabilityManifest"]["targets"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "capabilityId": "temperature.temperature",
+            "label": "Temperature",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/temperature/temperature",
+            "supportedModes": ["set", "delta"],
+            "minNumber": 2000.0,
+            "maxNumber": 50000.0,
+            "defaultNumber": 5003.0,
+            "stepNumber": 10.0,
+        }
+    )
+    payload["imageSnapshot"]["editableSettings"].append(
+        {
+            "moduleId": "temperature",
+            "moduleLabel": "white balance",
+            "settingId": "setting.temperature.temperature",
+            "capabilityId": "temperature.temperature",
+            "label": "Temperature",
+            "actionPath": "iop/temperature/temperature",
+            "kind": "set-float",
+            "currentNumber": 5003.0,
+            "supportedModes": ["set", "delta"],
+            "minNumber": 2000.0,
+            "maxNumber": 50000.0,
+            "defaultNumber": 5003.0,
+            "stepNumber": 10.0,
+        }
+    )
+    return payload
 
 
 @dataclass
@@ -384,7 +422,9 @@ async def test_chat_returns_codex_plan_response(
             },
         }
     ]
-    assert body["operationResults"] == [{"operationId": "op-exposure-plus-0.7", "status": "planned", "error": None}]
+    assert body["operationResults"] == [
+        {"operationId": "op-exposure-plus-0.7", "status": "planned", "error": None}
+    ]
     assert bridge.requests[0].message.text == "Make it brighter"
 
 
@@ -470,9 +510,59 @@ async def test_chat_supports_operation_free_assistant_messages(
     assert response.status_code == 200
     body = response.json()
     assert body["plan"]["operations"] == []
-    assert body["assistantMessage"]["text"] == "I need a more specific edit instruction."
+    assert (
+        body["assistantMessage"]["text"] == "I need a more specific edit instruction."
+    )
     assert body["refinement"]["continueRefining"] is False
     assert body["refinement"]["stopReason"] == "single-turn"
+
+
+@pytest.mark.anyio
+async def test_chat_returns_white_balance_plan_response(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge(
+        result=StubTurnResult(
+            plan=AgentPlan.model_validate(
+                {
+                    "assistantText": "Warming white balance slightly.",
+                    "continueRefining": False,
+                    "operations": [
+                        {
+                            "operationId": "op-wb-temp-plus-250",
+                            "sequence": 1,
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/temperature/temperature",
+                                "settingId": "setting.temperature.temperature",
+                            },
+                            "value": {"mode": "delta", "number": 250.0},
+                            "reason": None,
+                            "constraints": {
+                                "onOutOfRange": "clamp",
+                                "onRevisionMismatch": "fail",
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+    )
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    response = await api_client.post(
+        "/v1/chat", json=_sample_request_payload_with_white_balance()
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["assistantMessage"]["text"] == "Warming white balance slightly."
+    assert (
+        body["plan"]["operations"][0]["target"]["actionPath"]
+        == "iop/temperature/temperature"
+    )
+    assert body["plan"]["operations"][0]["value"]["number"] == 250.0
 
 
 @pytest.mark.anyio
@@ -543,7 +633,9 @@ async def test_chat_can_use_mock_planner_backend(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["assistantMessage"]["text"] == "Mock single-turn edit: applying +0.70 EV."
+    assert (
+        body["assistantMessage"]["text"] == "Mock single-turn edit: applying +0.70 EV."
+    )
     assert body["plan"]["operations"][0]["value"]["number"] == 0.7
     assert body["refinement"]["continueRefining"] is False
 
@@ -687,7 +779,10 @@ async def test_chat_stream_emits_final_event(
     stream_text = "".join(chunks)
     assert "event: accepted" in stream_text
     assert "event: final" in stream_text
-    assert '"assistantMessage":{"role":"assistant","text":"Streaming done."}' in stream_text
+    assert (
+        '"assistantMessage":{"role":"assistant","text":"Streaming done."}'
+        in stream_text
+    )
     assert "event: completed" in stream_text
 
 
@@ -740,7 +835,10 @@ async def test_chat_stream_emits_progress_events(
         async for chunk in response.aiter_text():
             chunks.append(chunk)
             joined = "".join(chunks)
-            if "event: final" in joined and '"lastToolName":"apply_operations"' in joined:
+            if (
+                "event: final" in joined
+                and '"lastToolName":"apply_operations"' in joined
+            ):
                 break
 
     stream_text = "".join(chunks)
@@ -821,7 +919,9 @@ async def test_chat_rejects_missing_image_snapshot(api_client: AsyncClient) -> N
 
 
 @pytest.mark.anyio
-async def test_chat_rejects_missing_capability_manifest(api_client: AsyncClient) -> None:
+async def test_chat_rejects_missing_capability_manifest(
+    api_client: AsyncClient,
+) -> None:
     payload = _sample_request_payload()
     payload.pop("capabilityManifest")
 
@@ -834,9 +934,13 @@ async def test_chat_rejects_missing_capability_manifest(api_client: AsyncClient)
 
 
 @pytest.mark.anyio
-async def test_chat_rejects_setting_capability_mismatch(api_client: AsyncClient) -> None:
+async def test_chat_rejects_setting_capability_mismatch(
+    api_client: AsyncClient,
+) -> None:
     payload = _sample_request_payload()
-    payload["imageSnapshot"]["editableSettings"][0]["capabilityId"] = "unknown.capability"
+    payload["imageSnapshot"]["editableSettings"][0]["capabilityId"] = (
+        "unknown.capability"
+    )
 
     response = await api_client.post("/v1/chat", json=payload)
 

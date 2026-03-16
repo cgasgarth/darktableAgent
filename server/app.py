@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from server.bridge_types import PlannerBridge, PlannerTurnResult, RequestProgressPayload
 from server.codex_app_server import CodexAppServerBridge, CodexAppServerError
 from server.mock_planner import MockPlannerBridge
 from shared.protocol import (
@@ -67,7 +69,7 @@ class CancelResponseEnvelope(BaseModel):
     message: str
 
 
-def get_codex_bridge() -> CodexAppServerBridge:
+def get_codex_bridge() -> PlannerBridge:
     if os.environ.get("DARKTABLE_AGENT_USE_MOCK_RESPONSES") == "1":
         return _mock_bridge
     return _codex_bridge
@@ -80,7 +82,9 @@ def build_request_error_refinement(request: RequestEnvelope) -> RefinementStatus
         passIndex=request.refinement.passIndex,
         maxPasses=request.refinement.maxPasses,
         continueRefining=False,
-        stopReason="single-turn" if not request.refinement.enabled else "planner-complete",
+        stopReason="single-turn"
+        if not request.refinement.enabled
+        else "planner-complete",
     )
 
 
@@ -160,7 +164,11 @@ def _log_accepted_request(request: RequestEnvelope) -> None:
     )
 
 
-def _log_fulfilled_request(request: RequestEnvelope, response: ResponseEnvelope, turn_result: Any) -> None:
+def _log_fulfilled_request(
+    request: RequestEnvelope,
+    response: ResponseEnvelope,
+    turn_result: PlannerTurnResult,
+) -> None:
     logger.info(
         "fulfilled_request",
         extra={
@@ -181,7 +189,7 @@ def _log_fulfilled_request(request: RequestEnvelope, response: ResponseEnvelope,
     )
 
 
-def _encode_sse(event: str, payload: dict[str, Any]) -> str:
+def _encode_sse(event: str, payload: Mapping[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 
@@ -192,10 +200,19 @@ async def request_validation_exception_handler(
     del request
     body = getattr(exc, "body", None)
     request_id, session = parse_request_ids(body)
-    message = "; ".join(
-        f"{'/'.join(str(part) for part in error['loc'])}: {error['msg']}"
-        for error in exc.errors()
-    )
+    error_parts: list[str] = []
+    for error in exc.errors():
+        if not isinstance(error, dict):
+            continue
+        location = error.get("loc")
+        if isinstance(location, tuple):
+            location_text = "/".join(str(part) for part in location)
+        else:
+            location_text = "request"
+        message = error.get("msg")
+        if isinstance(message, str):
+            error_parts.append(f"{location_text}: {message}")
+    message = "; ".join(error_parts) or "Request validation failed"
     return build_error_response(
         request_id=request_id,
         session=session,
@@ -266,7 +283,7 @@ async def cancel_chat(request: CancelRequestEnvelope) -> CancelResponseEnvelope:
 
 
 @app.post("/v1/chat", response_model=ResponseEnvelope)
-async def chat(request: RequestEnvelope) -> ResponseEnvelope:
+async def chat(request: RequestEnvelope) -> ResponseEnvelope | JSONResponse:
     _log_accepted_request(request)
 
     try:
@@ -314,10 +331,11 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
 
     async def event_generator():
         bridge = get_codex_bridge()
-        progress_getter = getattr(bridge, "get_request_progress", None)
         plan_task = asyncio.create_task(asyncio.to_thread(bridge.plan, request))
-        last_progress_signature: tuple[Any, ...] | None = None
-        last_progress_payload: dict[str, Any] | None = None
+        last_progress_signature: (
+            tuple[int, bool, str, int, int, int, int, str, str | None] | None
+        ) = None
+        last_progress_payload: RequestProgressPayload | None = None
 
         yield _encode_sse("accepted", {"requestId": request.requestId})
 
@@ -325,30 +343,39 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
             if plan_task.done():
                 break
 
-            if callable(progress_getter):
-                progress_payload = await asyncio.to_thread(
-                    progress_getter,
-                    request_id=request.requestId,
-                    app_session_id=request.session.appSessionId,
-                    image_session_id=request.session.imageSessionId,
-                    conversation_id=request.session.conversationId,
-                    turn_id=request.session.turnId,
-                )
-                progress_signature = (
-                    progress_payload.get("progressVersion"),
-                    progress_payload.get("found"),
-                    progress_payload.get("status"),
-                    progress_payload.get("toolCallsUsed"),
-                    progress_payload.get("maxToolCalls"),
-                    progress_payload.get("appliedOperationCount"),
-                    len(progress_payload.get("operations", [])),
-                    progress_payload.get("message"),
-                    progress_payload.get("lastToolName"),
-                )
-                if progress_signature != last_progress_signature:
-                    last_progress_signature = progress_signature
-                    last_progress_payload = dict(progress_payload)
-                    yield _encode_sse("progress", progress_payload)
+            progress_payload = await asyncio.to_thread(
+                bridge.get_request_progress,
+                request_id=request.requestId,
+                app_session_id=request.session.appSessionId,
+                image_session_id=request.session.imageSessionId,
+                conversation_id=request.session.conversationId,
+                turn_id=request.session.turnId,
+            )
+            progress_signature = (
+                progress_payload["progressVersion"],
+                progress_payload["found"],
+                progress_payload["status"],
+                progress_payload["toolCallsUsed"],
+                progress_payload["maxToolCalls"],
+                progress_payload["appliedOperationCount"],
+                len(progress_payload["operations"]),
+                progress_payload["message"],
+                progress_payload["lastToolName"],
+            )
+            if progress_signature != last_progress_signature:
+                last_progress_signature = progress_signature
+                last_progress_payload = {
+                    "found": progress_payload["found"],
+                    "status": progress_payload["status"],
+                    "toolCallsUsed": progress_payload["toolCallsUsed"],
+                    "maxToolCalls": progress_payload["maxToolCalls"],
+                    "appliedOperationCount": progress_payload["appliedOperationCount"],
+                    "operations": list(progress_payload["operations"]),
+                    "message": progress_payload["message"],
+                    "lastToolName": progress_payload["lastToolName"],
+                    "progressVersion": progress_payload["progressVersion"],
+                }
+                yield _encode_sse("progress", progress_payload)
 
             await asyncio.sleep(0.25)
 
@@ -356,15 +383,33 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
             turn_result = plan_task.result()
             response = build_response_from_plan(request, turn_result.plan)
             _log_fulfilled_request(request, response, turn_result)
-            completion_progress = (
-                dict(last_progress_payload)
+            completion_progress: RequestProgressPayload = (
+                {
+                    "found": last_progress_payload["found"],
+                    "status": last_progress_payload["status"],
+                    "toolCallsUsed": last_progress_payload["toolCallsUsed"],
+                    "maxToolCalls": last_progress_payload["maxToolCalls"],
+                    "appliedOperationCount": last_progress_payload[
+                        "appliedOperationCount"
+                    ],
+                    "operations": list(last_progress_payload["operations"]),
+                    "message": last_progress_payload["message"],
+                    "lastToolName": last_progress_payload["lastToolName"],
+                    "progressVersion": last_progress_payload["progressVersion"],
+                }
                 if last_progress_payload is not None
                 else {
                     "found": True,
+                    "status": "running",
                     "toolCallsUsed": 0,
-                    "maxToolCalls": request.refinement.maxPasses if request.refinement.enabled else 1,
-                    "appliedOperationCount": len(response.plan.operations) if response.plan else 0,
+                    "maxToolCalls": request.refinement.maxPasses
+                    if request.refinement.enabled
+                    else 1,
+                    "appliedOperationCount": len(response.plan.operations)
+                    if response.plan
+                    else 0,
                     "operations": [],
+                    "message": "Waiting for Codex turn output",
                     "lastToolName": None,
                     "progressVersion": 0,
                 }
@@ -372,9 +417,9 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
             completion_progress["found"] = True
             completion_progress["status"] = "completed"
             completion_progress["message"] = "Codex plan completed"
-            if completion_progress.get("progressVersion") is None:
-                completion_progress["progressVersion"] = 0
-            completion_progress["progressVersion"] = int(completion_progress["progressVersion"]) + 1
+            completion_progress["progressVersion"] = (
+                completion_progress["progressVersion"] + 1
+            )
             yield _encode_sse("progress", completion_progress)
             yield _encode_sse("final", response.model_dump(mode="json"))
         except CodexAppServerError as exc:
