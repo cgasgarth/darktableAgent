@@ -91,10 +91,6 @@ Run the deterministic smoke test:
 ./scripts/agent_exposure_smoke.sh
 ```
 
-## Current Scope
-
-The agent currently focuses on parameter-backed darkroom module controls such as numeric, choice, boolean, and module enable/disable settings. More complex UI actions and unsupported control classes are being tracked separately.
-
 ## Protocol
 
 Protocol details are documented in `docs/protocol-v1.md`.
