@@ -299,7 +299,7 @@ def _sample_request_with_white_balance_controls() -> RequestEnvelope:
     return RequestEnvelope.model_validate(payload)
 
 
-def test_default_command_disables_configured_mcp_servers(
+def test_default_command_uses_stdio_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("DARKTABLE_AGENT_CODEX_APP_SERVER_CMD", raising=False)
@@ -309,8 +309,6 @@ def test_default_command_disables_configured_mcp_servers(
     assert bridge._command == [
         "codex",
         "app-server",
-        "-c",
-        "mcp_servers.chrome-devtools.enabled=false",
         "--listen",
         "stdio://",
     ]
