@@ -1667,7 +1667,8 @@ typedef struct dt_agent_chat_render_delivery_t
 {
   gchar *image_session_id;
   gchar *turn_id;
-  gchar *base64_data;
+  guchar *jpeg_bytes;
+  gsize jpeg_len;
   gchar *endpoint;
 } dt_agent_chat_render_delivery_t;
 
@@ -1677,46 +1678,18 @@ static void _render_delivery_free(dt_agent_chat_render_delivery_t *delivery)
     return;
   g_free(delivery->image_session_id);
   g_free(delivery->turn_id);
-  g_free(delivery->base64_data);
+  g_free(delivery->jpeg_bytes);
   g_free(delivery->endpoint);
   g_free(delivery);
-}
-
-static gchar *_serialize_render_payload(const dt_agent_chat_render_delivery_t *delivery)
-{
-  JsonBuilder *builder = json_builder_new();
-  json_builder_begin_object(builder);
-
-  json_builder_set_member_name(builder, "imageSessionId");
-  json_builder_add_string_value(builder, delivery->image_session_id ? delivery->image_session_id : "");
-
-  json_builder_set_member_name(builder, "turnId");
-  json_builder_add_string_value(builder, delivery->turn_id ? delivery->turn_id : "");
-
-  json_builder_set_member_name(builder, "base64Data");
-  json_builder_add_string_value(builder, delivery->base64_data ? delivery->base64_data : "");
-
-  json_builder_end_object(builder);
-
-  JsonGenerator *generator = json_generator_new();
-  JsonNode *root = json_builder_get_root(builder);
-  json_generator_set_root(generator, root);
-  gchar *payload = json_generator_to_data(generator, NULL);
-
-  json_node_free(root);
-  g_object_unref(generator);
-  g_object_unref(builder);
-  return payload;
 }
 
 static gpointer _render_post_thread(gpointer user_data)
 {
   dt_agent_chat_render_delivery_t *delivery = user_data;
-  g_autofree gchar *payload = _serialize_render_payload(delivery);
 
-  if(!payload)
+  if(!delivery->jpeg_bytes || delivery->jpeg_len == 0)
   {
-    dt_print(DT_DEBUG_CONTROL, "[agent-chat] failed to serialize render payload");
+    dt_print(DT_DEBUG_CONTROL, "[agent-chat] render delivery has no image data");
     _render_delivery_free(delivery);
     return NULL;
   }
@@ -1733,23 +1706,31 @@ static gpointer _render_post_thread(gpointer user_data)
     return NULL;
   }
 
+  g_autofree gchar *session_header
+    = g_strdup_printf("X-Darktable-Image-Session-Id: %s",
+                      delivery->image_session_id ? delivery->image_session_id : "");
+  g_autofree gchar *turn_header
+    = g_strdup_printf("X-Darktable-Turn-Id: %s",
+                      delivery->turn_id ? delivery->turn_id : "");
+
   struct curl_slist *headers = NULL;
-  headers = curl_slist_append(headers, "Accept: application/json");
-  headers = curl_slist_append(headers, "Content-Type: application/json");
-  
+  headers = curl_slist_append(headers, "Content-Type: image/jpeg");
+  headers = curl_slist_append(headers, session_header);
+  headers = curl_slist_append(headers, turn_header);
+
   dt_curl_init(curl, FALSE);
   curl_easy_setopt(curl, CURLOPT_URL, render_endpoint);
   curl_easy_setopt(curl, CURLOPT_POST, 1L);
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload);
-  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)strlen(payload));
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, delivery->jpeg_bytes);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)delivery->jpeg_len);
   curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // Larger timeout in case of large images
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
 
   const CURLcode curl_result = curl_easy_perform(curl);
   long http_status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
-  
+
   if(curl_result != CURLE_OK)
   {
     dt_print(DT_DEBUG_CONTROL, "[agent-chat] mid-turn render request failed: curl=%d endpoint=%s",
@@ -1774,20 +1755,30 @@ static void _agent_chat_encode_and_post_preview(dt_develop_t *dev, dt_agent_chat
 
   dt_agent_image_state_t state;
   dt_agent_image_state_init(&state);
-  
+
   GError *error = NULL;
   if(dt_agent_image_state_collect_from_dev(dev, &state, &error))
   {
     if(state.preview.available && state.preview.base64_data)
     {
-      dt_agent_chat_render_delivery_t *delivery = g_new0(dt_agent_chat_render_delivery_t, 1);
-      delivery->image_session_id = g_strdup(session->image_session_id);
-      delivery->turn_id = g_strdup(turn_id);
-      delivery->base64_data = g_strdup(state.preview.base64_data);
-      delivery->endpoint = dt_agent_client_dup_endpoint();
-      
-      // Fire and forget thread, the backend will receive the image and proceed
-      g_thread_unref(g_thread_new("agent-chat-render", _render_post_thread, delivery));
+      gsize decoded_len = 0;
+      guchar *decoded = g_base64_decode(state.preview.base64_data, &decoded_len);
+      if(decoded && decoded_len > 0)
+      {
+        dt_agent_chat_render_delivery_t *delivery = g_new0(dt_agent_chat_render_delivery_t, 1);
+        delivery->image_session_id = g_strdup(session->image_session_id);
+        delivery->turn_id = g_strdup(turn_id);
+        delivery->jpeg_bytes = decoded;
+        delivery->jpeg_len = decoded_len;
+        delivery->endpoint = dt_agent_client_dup_endpoint();
+
+        g_thread_unref(g_thread_new("agent-chat-render", _render_post_thread, delivery));
+      }
+      else
+      {
+        g_free(decoded);
+        dt_print(DT_DEBUG_CONTROL, "[agent-chat] failed to decode preview base64 for render callback");
+      }
     }
   }
   else
@@ -3041,6 +3032,12 @@ static void _agent_chat_progress_finished(const dt_agent_client_progress_t *prog
 
       dev->agent_chat.active_request_live_applied_count = live_edit_count;
       dt_agent_execution_report_clear(&live_report);
+
+      if(progress->requires_render_callback)
+      {
+        session->pending_mid_turn_render = TRUE;
+        dt_print(DT_DEBUG_CONTROL, "[agent-chat] armed mid-turn render callback");
+      }
     }
 
     if(_agent_chat_darkroom_is_visible())

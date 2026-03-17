@@ -154,7 +154,5 @@ class MockPlannerBridge:
         turn_id: str,
         image_bytes: bytes,
     ) -> bool:
-        del image_session_id
-        del turn_id
-        del image_bytes
+        _, _, _ = image_session_id, turn_id, image_bytes
         return False

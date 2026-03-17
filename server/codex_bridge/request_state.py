@@ -262,7 +262,8 @@ class RequestStateMixin:
                     break
 
         if context is not None:
-            context.rendered_preview_bytes = image_bytes
+            with self._state_lock:
+                context.rendered_preview_bytes = image_bytes
             context.render_event.set()
             return True
         return False
