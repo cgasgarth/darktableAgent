@@ -5252,8 +5252,10 @@ void enter(dt_view_t *self)
         : DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS;
   dev->agent_chat.multi_turn_enabled
     = dt_conf_get_bool("plugins/darkroom/agent_chat/multi_turn_enabled");
-  dev->agent_chat.fast_mode_enabled
-    = dt_conf_get_bool("plugins/darkroom/agent_chat/fast_mode_enabled");
+  if(!dt_conf_key_exists("plugins/darkroom/agent_chat/fast_mode_enabled"))
+    dev->agent_chat.fast_mode_enabled = TRUE;
+  else
+    dev->agent_chat.fast_mode_enabled = dt_conf_get_bool("plugins/darkroom/agent_chat/fast_mode_enabled");
   if(_agent_chat_env_enabled(DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV))
     dev->agent_chat.multi_turn_enabled
       = g_strcmp0(g_getenv(DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV), "0") != 0;
