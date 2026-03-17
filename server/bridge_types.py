@@ -15,6 +15,7 @@ class RequestProgressPayload(TypedDict):
     message: str
     lastToolName: str | None
     progressVersion: int
+    requiresRenderCallback: bool
 
 
 class PlannerTurnResult(Protocol):
@@ -47,3 +48,11 @@ class PlannerBridge(Protocol):
         conversation_id: str,
         turn_id: str,
     ) -> RequestProgressPayload: ...
+
+    def provide_render_callback(
+        self,
+        *,
+        image_session_id: str,
+        turn_id: str,
+        image_bytes: bytes,
+    ) -> bool: ...
