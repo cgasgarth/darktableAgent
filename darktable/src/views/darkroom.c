@@ -70,6 +70,8 @@
 #include "lua/image.h"
 #endif
 
+#include "common/curl_tools.h"
+#include <curl/curl.h>
 #include <gdk/gdkkeysyms.h>
 #include <glib.h>
 #include <math.h>
@@ -145,6 +147,7 @@ static void _agent_chat_set_status(dt_develop_t *dev, const char *status);
 static void _agent_chat_set_error(dt_develop_t *dev, const char *error);
 static void _agent_chat_set_loading(dt_develop_t *dev, gboolean is_loading);
 static guint _agent_chat_max_refinement_passes(const dt_develop_t *dev);
+static void _agent_chat_encode_and_post_preview(dt_develop_t *dev, dt_agent_chat_session_t *session, const char *turn_id);
 static void _agent_chat_multi_turn_toggled(GtkToggleButton *button, gpointer user_data);
 static void _agent_chat_max_turns_changed(GtkSpinButton *spin, gpointer user_data);
 static void _agent_chat_fast_mode_toggled(GtkToggleButton *button, gpointer user_data);
@@ -3035,7 +3038,9 @@ static void _agent_chat_progress_finished(const dt_agent_client_progress_t *prog
 
       if(progress->requires_render_callback)
       {
-        session->pending_mid_turn_render = TRUE;
+        dt_agent_chat_session_t *session = _agent_chat_lookup_session(dev, dev->agent_chat.current_image_id);
+        if(session)
+          session->pending_mid_turn_render = TRUE;
         dt_print(DT_DEBUG_CONTROL, "[agent-chat] armed mid-turn render callback");
       }
     }
@@ -5252,8 +5257,10 @@ void enter(dt_view_t *self)
         : DT_AGENT_CHAT_DEFAULT_MAX_REFINEMENT_TURNS;
   dev->agent_chat.multi_turn_enabled
     = dt_conf_get_bool("plugins/darkroom/agent_chat/multi_turn_enabled");
-  dev->agent_chat.fast_mode_enabled
-    = dt_conf_get_bool("plugins/darkroom/agent_chat/fast_mode_enabled");
+  if(!dt_conf_key_exists("plugins/darkroom/agent_chat/fast_mode_enabled"))
+    dev->agent_chat.fast_mode_enabled = TRUE;
+  else
+    dev->agent_chat.fast_mode_enabled = dt_conf_get_bool("plugins/darkroom/agent_chat/fast_mode_enabled");
   if(_agent_chat_env_enabled(DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV))
     dev->agent_chat.multi_turn_enabled
       = g_strcmp0(g_getenv(DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV), "0") != 0;
