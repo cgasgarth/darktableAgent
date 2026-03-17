@@ -572,6 +572,30 @@ def test_turn_input_in_live_mode_includes_prompt_state_and_initial_preview_image
     assert str(items[2]["url"]).startswith("data:image/jpeg;base64,")
 
 
+def test_turn_input_with_conversation_history_prepends_history_item() -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request()
+    conv_id = request.session.conversationId
+    bridge._conversation_histories[conv_id] = [  # type: ignore[attr-defined]
+        "Turn 1: 3 operations. Adjusted exposure and contrast.",
+        "Turn 2: 2 operations. Fine-tuned color balance.",
+    ]
+
+    items = bridge._build_turn_input(request)  # type: ignore[attr-defined]
+
+    assert len(items) == 4
+    assert items[0]["type"] == "text"
+    assert "Prior turns in this conversation" in str(items[0]["text"])
+    assert "Turn 1: 3 operations" in str(items[0]["text"])
+    assert "Turn 2: 2 operations" in str(items[0]["text"])
+    assert items[1]["type"] == "text"
+    assert items[2]["type"] == "text"
+    assert str(items[2]["text"]).startswith("Current image state JSON:\n")
+    assert items[3]["type"] == "image"
+
+
 def test_turn_input_in_single_turn_mode_includes_prompt_and_state_text_only() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
@@ -1563,7 +1587,9 @@ def test_tool_call_budget_limits_total_tool_calls() -> None:
     )
 
 
-def test_live_run_guardrail_requires_apply_after_initial_read_only_calls() -> None:
+def test_live_run_guardrail_requires_apply_after_initial_read_only_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -1577,9 +1603,8 @@ def test_live_run_guardrail_requires_apply_after_initial_read_only_calls() -> No
         sent_payloads.append(payload)
 
     bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
-    import server.codex_bridge.tool_routing
-    original_streak_limit = server.codex_bridge.tool_routing._DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS
-    server.codex_bridge.tool_routing._DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS = 10
+    import server.codex_bridge.tool_routing as _tool_routing_mod
+    monkeypatch.setattr(_tool_routing_mod, "_DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS", 10)
     from server.codex_bridge.config import _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
     call_count = _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY + 1
     try:
@@ -1599,7 +1624,6 @@ def test_live_run_guardrail_requires_apply_after_initial_read_only_calls() -> No
                 }
             )
     finally:
-        server.codex_bridge.tool_routing._DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS = original_streak_limit
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 
     for i in range(_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY):

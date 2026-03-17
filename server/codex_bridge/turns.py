@@ -241,6 +241,7 @@ class TurnsMixin:
             if conv_id not in self._conversation_histories:
                 self._conversation_histories[conv_id] = []
             self._conversation_histories[conv_id].append(turn_summary)
+            self._conversation_histories[conv_id] = self._conversation_histories[conv_id][-10:]
 
             duration_ms = int((time.monotonic() - started_at) * 1000)
             logger.info(
