@@ -124,6 +124,7 @@ class RequestStateMixin:
                     "message": "No active request found for that requestId.",
                     "lastToolName": None,
                     "progressVersion": 0,
+                    "requiresRenderCallback": False,
                 }
 
             if (
@@ -142,6 +143,7 @@ class RequestStateMixin:
                     "message": "No active request matched the provided session identifiers.",
                     "lastToolName": None,
                     "progressVersion": 0,
+                    "requiresRenderCallback": False,
                 }
 
             context: TurnContext | None = None
@@ -163,6 +165,7 @@ class RequestStateMixin:
                 "message": active_request.message,
                 "lastToolName": active_request.last_tool_name,
                 "progressVersion": active_request.progress_version,
+                "requiresRenderCallback": context.requires_render_callback if context else False,
             }
 
     def _is_cancelled(self, active_request: ActiveRequestState) -> bool:
@@ -236,3 +239,30 @@ class RequestStateMixin:
                         active_request.last_tool_name = last_tool_name
                     active_request.progress_version += 1
                     return
+
+    def provide_render_callback(
+        self,
+        *,
+        image_session_id: str,
+        turn_id: str,
+        image_bytes: bytes,
+    ) -> bool:
+        context: TurnContext | None = None
+        with self._state_lock:
+            for active_request in self._active_requests.values():
+                if (
+                    active_request.image_session_id == image_session_id
+                    and active_request.client_turn_id == turn_id
+                    and active_request.thread_id
+                    and active_request.codex_turn_id
+                ):
+                    context = self._turn_contexts.get(
+                        (active_request.thread_id, active_request.codex_turn_id)
+                    )
+                    break
+
+        if context is not None:
+            context.rendered_preview_bytes = image_bytes
+            context.render_event.set()
+            return True
+        return False
