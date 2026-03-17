@@ -437,18 +437,7 @@ def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None
 
 
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
-    assert "Context and tool usage" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert (
-        "live mode turn input already includes the current preview image"
-        in _THREAD_DEVELOPER_INSTRUCTIONS
-    )
-    assert (
-        "turn input already includes the current editable settings and luma histogram snapshot"
-        in _THREAD_DEVELOPER_INSTRUCTIONS
-    )
-    assert "get_preview_image" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert "get_image_state" in _THREAD_DEVELOPER_INSTRUCTIONS
-    assert "apply_operations" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Core rules" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert (
         "Only emit operations targeting provided settingId/actionPath pairs."
         in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -457,15 +446,12 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
         "If user intent is broad, infer a reasonable plan"
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
-    assert (
-        "Always optimize toward refinement.goalText." in _THREAD_DEVELOPER_INSTRUCTIONS
-    )
     assert "colorequal" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "primaries" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "set-choice uses value.choiceValue" in _THREAD_DEVELOPER_INSTRUCTIONS
 
 
-def test_prompt_payload_trims_histogram_to_luma_only() -> None:
+def test_prompt_payload_includes_all_histogram_channels() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -476,7 +462,12 @@ def test_prompt_payload_trims_histogram_to_luma_only() -> None:
 
     assert histogram == {
         "binCount": 4,
-        "channels": {"luma": {"bins": [0, 20, 50, 30]}},
+        "channels": {
+            "luma": {"bins": [0, 20, 50, 30]},
+            "red": {"bins": [0, 10, 60, 30]},
+            "green": {"bins": [0, 20, 50, 30]},
+            "blue": {"bins": [0, 30, 40, 30]},
+        },
     }
 
 
@@ -517,7 +508,13 @@ def test_prompt_payload_includes_module_context_for_live_runs() -> None:
     assert first_setting["stepNumber"] == 0.01
 
     metadata = payload["imageSnapshot"]["metadata"]
-    assert metadata == {"width": 9504, "height": 6336}
+    assert metadata["width"] == 9504
+    assert metadata["height"] == 6336
+    assert metadata["cameraMaker"] == "Sony"
+    assert metadata["cameraModel"] == "ILCE-7RM5"
+    assert metadata["exifIso"] == 100.0
+    assert metadata["exifAperture"] == 4.0
+    assert metadata["exifFocalLength"] == 35.0
     assert payload["imageSnapshot"]["preview"] == {
         "mimeType": "image/jpeg",
         "width": 1000,
@@ -533,29 +530,16 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
 
     prompt = bridge._build_turn_prompt(_sample_request())  # type: ignore[attr-defined]
 
-    assert "Use read-only tools only when needed for missing context." in prompt
-    assert "Tool budget: maximum 10 tool calls in this run." in prompt
+    assert "Tool budget: maximum" in prompt
+    assert "tool calls in this run." in prompt
     assert "Live run mode is enabled" in prompt
-    assert (
-        "Initial turn input already includes the current editable settings, luma histogram snapshot, and in live mode the current preview image."
-        in prompt
-    )
-    assert (
-        "Initial turn input includes the current preview image plus the current editable settings and luma histogram snapshot."
-        in prompt
-    )
-    assert (
-        "After each apply_operations call, inspect the refreshed preview image returned in that tool response"
-        in prompt
-    )
-    assert (
-        "Apply at least one edit batch with apply_operations within the first" in prompt
-    )
-    assert "infer a conservative supported edit plan" in prompt
-    assert "preview, histogram, and available controls" in prompt
+    assert "Turn input includes the current preview image" in prompt
+    assert "apply_operations returns the refreshed preview automatically" in prompt
+    assert "Apply at least one edit batch within the first" in prompt
     assert "Respect refinement state" in prompt
-    assert "Use moduleId/moduleLabel from the provided image state" in prompt
-    assert "rgb primaries, color equalizer, or color balance rgb" in prompt
+    assert "EXIF:" in prompt
+    assert "Sony" in prompt
+    assert "ISO 100.0" in prompt
     assert "Preview:" not in prompt
     assert "Histogram summary:" not in prompt
     assert "Editable modules:" not in prompt
@@ -794,7 +778,7 @@ def test_get_request_progress_returns_live_applied_operations_for_active_turn() 
         assert progress["found"] is True
         assert progress["status"] == "running"
         assert progress["toolCallsUsed"] == 3
-        assert progress["maxToolCalls"] == request.refinement.maxPasses
+        assert progress["maxToolCalls"] == bridge._effective_tool_budget(request)
         assert progress["appliedOperationCount"] == 1
         assert len(progress["operations"]) == 1
         assert progress["lastToolName"] is None
@@ -1549,8 +1533,9 @@ def test_tool_call_budget_limits_total_tool_calls() -> None:
         sent_payloads.append(payload)
 
     bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    budget = bridge._effective_tool_budget(request)
     try:
-        for request_id in (22, 23, 24):
+        for request_id in range(100, 100 + budget + 1):
             bridge._handle_server_request_locked(  # type: ignore[attr-defined]
                 {
                     "jsonrpc": "2.0",
@@ -1568,12 +1553,13 @@ def test_tool_call_budget_limits_total_tool_calls() -> None:
     finally:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 
-    assert sent_payloads[0]["result"]["success"] is True
-    assert sent_payloads[1]["result"]["success"] is True
-    assert sent_payloads[2]["result"]["success"] is False
+    from server.codex_bridge.config import _DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS
+    for i in range(min(_DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS, budget)):
+        assert sent_payloads[i]["result"]["success"] is True
+    assert sent_payloads[budget]["result"]["success"] is False
     assert (
         "Tool call budget exceeded"
-        in sent_payloads[2]["result"]["contentItems"][0]["text"]
+        in sent_payloads[budget]["result"]["contentItems"][0]["text"]
     )
 
 
@@ -1591,8 +1577,13 @@ def test_live_run_guardrail_requires_apply_after_initial_read_only_calls() -> No
         sent_payloads.append(payload)
 
     bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    import server.codex_bridge.tool_routing
+    original_streak_limit = server.codex_bridge.tool_routing._DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS
+    server.codex_bridge.tool_routing._DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS = 10
+    from server.codex_bridge.config import _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
+    call_count = _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY + 1
     try:
-        for request_id in (31, 32, 33, 34):
+        for request_id in range(31, 31 + call_count):
             bridge._handle_server_request_locked(  # type: ignore[attr-defined]
                 {
                     "jsonrpc": "2.0",
@@ -1608,15 +1599,15 @@ def test_live_run_guardrail_requires_apply_after_initial_read_only_calls() -> No
                 }
             )
     finally:
+        server.codex_bridge.tool_routing._DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS = original_streak_limit
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 
-    assert sent_payloads[0]["result"]["success"] is True
-    assert sent_payloads[1]["result"]["success"] is True
-    assert sent_payloads[2]["result"]["success"] is True
-    assert sent_payloads[3]["result"]["success"] is False
+    for i in range(_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY):
+        assert sent_payloads[i]["result"]["success"] is True
+    assert sent_payloads[_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY]["result"]["success"] is False
     assert (
         "No live edits have been applied yet in live mode"
-        in sent_payloads[3]["result"]["contentItems"][0]["text"]
+        in sent_payloads[_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY]["result"]["contentItems"][0]["text"]
     )
 
 

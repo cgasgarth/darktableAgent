@@ -230,6 +230,18 @@ class TurnsMixin:
                 message="Codex plan completed",
             )
 
+            op_count = len(plan.operations)
+            summary_text = plan.assistantText or ""
+            if len(summary_text) > 200:
+                summary_text = summary_text[:200] + "..."
+            turn_summary = (
+                f"Turn {turn_index}: {op_count} operations. {summary_text}"
+            )
+            conv_id = active_request.conversation_id
+            if conv_id not in self._conversation_histories:
+                self._conversation_histories[conv_id] = []
+            self._conversation_histories[conv_id].append(turn_summary)
+
             duration_ms = int((time.monotonic() - started_at) * 1000)
             logger.info(
                 "codex_turn_completed",
