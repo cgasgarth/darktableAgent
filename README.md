@@ -31,18 +31,19 @@ In live mode, the backend can stage multiple edit batches, refresh state and pre
 
 Prerequisites:
 
-- Linux
+- macOS or Linux
 - `python3` 3.14+
 - `uv`
 - `codex` CLI installed and authenticated
-- darktable build dependencies for your distribution
-- local CLI tools used by the build and test scripts: `ninja`, `curl`, GNU `timeout`
-- optional: `xvfb-run` for headless smoke tests
+- macOS: Homebrew
+- Linux: darktable build dependencies for your distribution
+- local CLI tools used by the build and test scripts: `ninja`, `cmake`, `curl`
+- optional: `xvfb-run` for headless smoke tests (Linux)
 
-Install Python dependencies:
+Install all dependencies (Homebrew packages on macOS, Python packages on all platforms):
 
 ```bash
-uv sync --extra dev
+npm run bootstrap
 ```
 
 Build darktable:

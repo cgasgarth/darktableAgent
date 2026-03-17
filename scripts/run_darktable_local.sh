@@ -40,7 +40,7 @@ cmd=(
   --configdir "$CONFIG_DIR"
   --cachedir "$CACHE_DIR"
   --library "$DARKTABLE_LIBRARY_FILE"
-  "${args[@]}"
+  ${args[@]+"${args[@]}"}
 )
 
 if [[ "$FOREGROUND" == "1" ]]; then
