@@ -136,10 +136,12 @@ class OperationsMixin:
 
     def _collect_preview_adjustments(
         self, context: TurnContext
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float, float]:
         brightness_ev = 0.0
         contrast_delta = 0.0
         saturation_delta = 0.0
+        warmth_delta = 0.0
+        tint_delta = 0.0
 
         for setting_id, setting in context.setting_by_id.items():
             if setting.get("kind") != "set-float":
@@ -187,7 +189,21 @@ class OperationsMixin:
             ):
                 saturation_delta += 0.7 * delta
 
-        return brightness_ev, contrast_delta, saturation_delta
+            if normalized_path == "iop/temperature/temperature":
+                warmth_delta += delta * 0.0001
+            elif normalized_path == "iop/temperature/tint":
+                tint_delta += delta * 0.001
+
+            if "colorbalancergb/" in normalized_path:
+                leaf = normalized_path.rsplit("/", 1)[-1]
+                if leaf in ("global chroma", "global saturation"):
+                    saturation_delta += 0.5 * delta
+                elif "shadows" in leaf and ("lift" in leaf or "factor" in leaf):
+                    brightness_ev += 0.15 * delta
+                elif "highlights" in leaf and ("gain" in leaf or "factor" in leaf):
+                    brightness_ev += 0.15 * delta
+
+        return brightness_ev, contrast_delta, saturation_delta, warmth_delta, tint_delta
 
     def _render_applied_preview(self, context: TurnContext) -> tuple[str, bytes] | None:
         if Image is None or ImageEnhance is None:
@@ -198,7 +214,7 @@ class OperationsMixin:
         except Exception:
             return None
 
-        brightness_ev, contrast_delta, saturation_delta = (
+        brightness_ev, contrast_delta, saturation_delta, warmth_delta, tint_delta = (
             self._collect_preview_adjustments(context)
         )
         brightness_factor = self._clamp(2.0**brightness_ev, 0.1, 6.0)
@@ -211,6 +227,19 @@ class OperationsMixin:
             image = ImageEnhance.Contrast(image).enhance(contrast_factor)
         if abs(saturation_factor - 1.0) > 1e-3:
             image = ImageEnhance.Color(image).enhance(saturation_factor)
+
+        if abs(warmth_delta) > 1e-4 or abs(tint_delta) > 1e-4:
+            r, g, b = image.split()
+            r_factor = self._clamp(1.0 + warmth_delta, 0.7, 1.5)
+            b_factor = self._clamp(1.0 - warmth_delta, 0.7, 1.5)
+            g_factor = self._clamp(1.0 - tint_delta, 0.7, 1.5)
+            r_lut = [min(255, int(i * r_factor)) for i in range(256)]
+            g_lut = [min(255, int(i * g_factor)) for i in range(256)]
+            b_lut = [min(255, int(i * b_factor)) for i in range(256)]
+            r = r.point(r_lut)
+            g = g.point(g_lut)
+            b = b.point(b_lut)
+            image = Image.merge("RGB", (r, g, b))
 
         output = io.BytesIO()
         base_mime = context.base_preview_mime_type.lower()

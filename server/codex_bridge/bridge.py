@@ -48,6 +48,7 @@ class CodexAppServerBridge(
         self._next_request_id = 1
         self._conversation_threads: dict[str, str] = {}
         self._conversation_turn_counts: dict[str, int] = {}
+        self._conversation_histories: dict[str, list[str]] = {}
         self._active_requests = {}
         self._cancelled_requests = {}
         self._turn_contexts = {}
