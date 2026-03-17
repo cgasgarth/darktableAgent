@@ -89,7 +89,9 @@ class PromptingMixin:
                             base_float_setting_numbers[setting_id] = float(
                                 current_number
                             )
-        max_tool_calls = self._effective_tool_budget(request)
+        max_tool_calls = (
+            request.refinement.maxPasses if request.refinement.enabled else 1
+        )
         with self._state_lock:
             self._turn_contexts[(thread_id, turn_id)] = TurnContext(
                 base_request=request,
@@ -166,43 +168,31 @@ class PromptingMixin:
         )
 
     @staticmethod
-    def _rebin(source_bins: list[int], target_count: int) -> list[int]:
-        source_count = len(source_bins)
-        if target_count >= source_count:
-            return list(source_bins)
-        rebinned: list[int] = []
-        for index in range(target_count):
-            start = (index * source_count) // target_count
-            end = ((index + 1) * source_count) // target_count
-            if end <= start:
-                end = min(source_count, start + 1)
-            rebinned.append(sum(source_bins[start:end]))
-        return rebinned
-
-    @classmethod
-    def _trim_histogram_payload(cls, request: RequestEnvelope) -> dict[str, Any] | None:
+    def _trim_histogram_payload(request: RequestEnvelope) -> dict[str, Any] | None:
         histogram = request.imageSnapshot.histogram
         if histogram is None:
             return None
 
-        trimmed_channels: dict[str, dict[str, list[int]]] = {}
-        for channel_name in ("luma", "red", "green", "blue"):
-            channel = histogram.channels.get(channel_name)
-            if channel is None or not channel.bins:
-                continue
-            target_count = max(1, min(_DEFAULT_HISTOGRAM_BINS, len(channel.bins)))
-            trimmed_channels[channel_name] = {
-                "bins": cls._rebin(channel.bins, target_count)
-            }
-
-        if not trimmed_channels:
+        luma = histogram.channels.get("luma")
+        if luma is None or not luma.bins:
             return None
 
-        first_channel = next(iter(trimmed_channels.values()))
-        return {
-            "binCount": len(first_channel["bins"]),
-            "channels": trimmed_channels,
-        }
+        source_bins = luma.bins
+        source_count = len(source_bins)
+        target_count = max(1, min(_DEFAULT_HISTOGRAM_BINS, source_count))
+
+        if target_count == source_count:
+            rebinned = list(source_bins)
+        else:
+            rebinned: list[int] = []
+            for index in range(target_count):
+                start = (index * source_count) // target_count
+                end = ((index + 1) * source_count) // target_count
+                if end <= start:
+                    end = min(source_count, start + 1)
+                rebinned.append(sum(source_bins[start:end]))
+
+        return {"binCount": target_count, "channels": {"luma": {"bins": rebinned}}}
 
     def _build_prompt_payload(self, request: RequestEnvelope) -> dict[str, Any]:
         compact_settings: list[dict[str, Any]] = []
@@ -236,25 +226,10 @@ class PromptingMixin:
             compact_settings.append(compact_setting)
 
         metadata = request.imageSnapshot.metadata
-        metadata_payload: dict[str, Any] = {
-            "width": metadata.width,
-            "height": metadata.height,
-        }
-        for exif_field in (
-            "cameraMaker",
-            "cameraModel",
-            "exifExposureSeconds",
-            "exifAperture",
-            "exifIso",
-            "exifFocalLength",
-        ):
-            value = getattr(metadata, exif_field, None)
-            if value is not None:
-                metadata_payload[exif_field] = value
         return {
             "imageSnapshot": {
                 "imageRevisionId": request.imageSnapshot.imageRevisionId,
-                "metadata": metadata_payload,
+                "metadata": {"width": metadata.width, "height": metadata.height},
                 "editableSettings": compact_settings,
                 "histogram": self._trim_histogram_payload(request),
                 "preview": (
@@ -276,26 +251,12 @@ class PromptingMixin:
         *,
         preview_data_url: str | None = None,
     ) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-
-        conv_id = request.session.conversationId
-        history = getattr(self, "_conversation_histories", {}).get(conv_id)
-        if history:
-            history_text = "Prior turns in this conversation:\n" + "\n".join(
-                history[-5:]
-            )
-            items.append(
-                {"type": "text", "text": history_text, "text_elements": []}
-            )
-
-        items.append(
+        items: list[dict[str, Any]] = [
             {
                 "type": "text",
                 "text": self._build_turn_prompt(request),
                 "text_elements": [],
-            }
-        )
-        items.append(
+            },
             {
                 "type": "text",
                 "text": "Current image state JSON:\n"
@@ -303,8 +264,8 @@ class PromptingMixin:
                     self._build_prompt_payload(request), separators=(",", ":")
                 ),
                 "text_elements": [],
-            }
-        )
+            },
+        ]
         if request.refinement.enabled:
             if preview_data_url is None:
                 preview_data_url = self._preview_data_url(request)
@@ -313,59 +274,35 @@ class PromptingMixin:
 
     def _build_turn_prompt(self, request: RequestEnvelope) -> str:
         live_run_enabled = request.refinement.enabled
-        max_tool_calls = self._effective_tool_budget(request)
-        meta = request.imageSnapshot.metadata
-
-        exif_parts: list[str] = []
-        if getattr(meta, "cameraMaker", None):
-            exif_parts.append(f"{meta.cameraMaker} {getattr(meta, 'cameraModel', '')}".strip())
-        if getattr(meta, "exifIso", None) is not None:
-            exif_parts.append(f"ISO {meta.exifIso}")
-        if getattr(meta, "exifAperture", None) is not None:
-            exif_parts.append(f"f/{meta.exifAperture}")
-        if getattr(meta, "exifFocalLength", None) is not None:
-            exif_parts.append(f"{meta.exifFocalLength}mm")
-        if getattr(meta, "exifExposureSeconds", None) is not None:
-            if meta.exifExposureSeconds >= 1:
-                exif_parts.append(f"{meta.exifExposureSeconds}s")
-            else:
-                exif_parts.append(f"1/{int(1/meta.exifExposureSeconds)}s")
-        exif_line = f"EXIF: {', '.join(exif_parts)}\n" if exif_parts else ""
-
-        if live_run_enabled:
-            mode_block = (
-                "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
-                "Turn input includes the current preview image, editable settings, and histogram.\n"
-                "After each apply_operations call, inspect the refreshed preview and re-check get_image_state when you need refreshed exact state.\n"
-                f"Apply at least one edit batch within the first {_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY + 2} tool calls.\n"
-                "When satisfied, return final JSON with continueRefining=false and usually empty operations.\n"
-                "In multi-turn mode the final JSON should summarize the run; continueRefining must be false.\n"
-            )
-        else:
-            mode_block = "Single-turn mode: do not call apply_operations; return operations directly in final JSON.\n"
-
+        max_tool_calls = request.refinement.maxPasses if live_run_enabled else 1
+        live_run_line = (
+            "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
+            "Initial turn input includes the current preview image plus the current editable settings and luma histogram snapshot.\n"
+            "After each apply_operations call, inspect the refreshed preview image returned in that tool response and re-check get_image_state when you need refreshed exact state before the next adjustment.\n"
+            f"Apply at least one edit batch with apply_operations within the first {_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY} tool calls.\n"
+            "When satisfied, return final JSON with continueRefining=false and usually empty operations.\n"
+            if live_run_enabled
+            else "Single-turn mode: do not call apply_operations; return operations directly in final JSON.\n"
+        )
         return (
             "Plan the next darktable response for this request.\n\n"
             f"Goal: {request.refinement.goalText}\n"
             f"Latest user message: {request.message.text}\n"
             f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}\n"
             f"Tool budget: maximum {max_tool_calls} tool calls in this run.\n"
-            f"Image: {request.uiContext.imageName or 'unknown'} ({meta.width}x{meta.height})\n"
-            f"{exif_line}"
+            f"Image: {request.uiContext.imageName or 'unknown'} ({request.imageSnapshot.metadata.width}x{request.imageSnapshot.metadata.height})\n"
             "\n"
-            "Tool usage:\n"
-            "- Turn input already includes editable settings, histogram, and (in live mode) preview image.\n"
-            "- Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.\n"
-            "- apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.\n"
-            "- Always optimize toward refinement.goalText.\n"
-            f"{mode_block}"
-            "\n"
-            "Respect refinement state: treat passIndex/maxPasses as budget, set continueRefining=false once safe gains are exhausted.\n"
+            "Use read-only tools only when needed for missing context.\n"
+            "Initial turn input already includes the current editable settings, luma histogram snapshot, and in live mode the current preview image.\n"
+            "Use get_image_state mainly after apply_operations when you need refreshed exact state; the refreshed preview image is returned directly by successful apply_operations calls, so use get_preview_image only for extra visual checks between edit batches.\n"
+            "Use only the tool-provided editable settings and image state.\n"
+            f"{live_run_line}"
+            "Use moduleId/moduleLabel from the provided image state to group related controls.\n"
+            "If the user asks for a broad or aesthetic edit direction, infer a conservative supported edit plan from preview, histogram, and available controls instead of asking for more specificity.\n"
+            "When advanced color modules like rgb primaries, color equalizer, or color balance rgb are present, prefer their supported controls for nuanced color shaping instead of flattening everything into exposure changes.\n"
+            "White-balance controls (`iop/temperature/*`) are available when present. Respect their bounds, supported modes, and exact target IDs.\n"
+            "When batching multiple white-balance edits, apply preset-like controls before finetune/temperature/tint/channel multipliers.\n"
+            "Prefer several small coherent operations over refusing a request that can be partially satisfied with the available controls.\n"
+            "Respect refinement state: use refinement.goalText as the target look, treat passIndex/maxPasses as the remaining budget, and set continueRefining=false once additional safe gains are exhausted.\n"
             "Return only the JSON object required by the output schema."
         )
-
-    @staticmethod
-    def _effective_tool_budget(request: RequestEnvelope) -> int:
-        if not request.refinement.enabled:
-            return 1
-        return max(request.refinement.maxPasses * 3, 15)

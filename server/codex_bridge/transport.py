@@ -63,8 +63,6 @@ class TransportMixin:
         self._next_request_id = 1
         self._conversation_threads.clear()
         self._conversation_turn_counts.clear()
-        if hasattr(self, "_conversation_histories"):
-            self._conversation_histories.clear()
         self._turn_contexts.clear()
 
     def _reset_process_locked(self) -> None:
@@ -82,8 +80,6 @@ class TransportMixin:
         self._next_request_id = 1
         self._conversation_threads.clear()
         self._conversation_turn_counts.clear()
-        if hasattr(self, "_conversation_histories"):
-            self._conversation_histories.clear()
         self._turn_contexts.clear()
 
     def _send_request_locked(
