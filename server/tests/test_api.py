@@ -315,6 +315,7 @@ class StubBridge:
                 "message": "No active request found for that requestId.",
                 "lastToolName": None,
                 "progressVersion": 0,
+                "requiresRenderCallback": False,
             }
 
         index = min(self.progress_index, len(self.progress_events) - 1)
@@ -341,6 +342,14 @@ class StubBridge:
                 "reason": reason,
             }
         )
+        return True
+
+    def provide_render_callback(
+        self, image_session_id: str, turn_id: str, image_bytes: bytes
+    ) -> bool:
+        # This is a mock implementation. In a real scenario, this would interact
+        # with the actual bridge to provide the callback.
+        # For testing, we just return True to indicate it was handled.
         return True
 
 
@@ -843,6 +852,7 @@ async def test_chat_stream_emits_progress_events(
                 "message": "Handled tool get_preview_image (1/10); 0 live edits",
                 "lastToolName": "get_preview_image",
                 "progressVersion": 1,
+                "requiresRenderCallback": False,
             },
             {
                 "found": True,
@@ -854,6 +864,7 @@ async def test_chat_stream_emits_progress_events(
                 "message": "Handled tool apply_operations (2/10); 1 live edits",
                 "lastToolName": "apply_operations",
                 "progressVersion": 2,
+                "requiresRenderCallback": False,
             },
         ],
         plan_delay_seconds=0.6,
@@ -980,3 +991,65 @@ async def test_chat_rejects_setting_capability_mismatch(
     body = response.json()
     assert body["status"] == "error"
     assert "unknown capabilityId" in body["error"]["message"]
+
+
+@pytest.mark.anyio
+async def test_chat_render_callback_unblocks_tool_call(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge()
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    received_base64 = []
+
+    def _provide_render_callback(
+        *,
+        image_session_id: str,
+        turn_id: str,
+        image_bytes: bytes,
+    ) -> bool:
+        received_base64.append(image_bytes)
+        return True
+
+    bridge.provide_render_callback = _provide_render_callback  # type: ignore[method-assign]
+
+    response = await api_client.post(
+        "/v1/chat/render",
+        headers={
+            "X-Darktable-Image-Session-Id": "img-12",
+            "X-Darktable-Turn-Id": "turn-1",
+        },
+        content=b"mock_jpeg_bytes",
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert body == "OK"
+    assert received_base64 == [b"mock_jpeg_bytes"]
+
+
+@pytest.mark.anyio
+async def test_chat_render_callback_returns_unhandled_for_missing_session(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bridge = StubBridge()
+    monkeypatch.setattr("server.app.get_codex_bridge", lambda: bridge)
+
+    def _provide_render_callback_false(**_: object) -> bool:
+        return False
+
+    bridge.provide_render_callback = _provide_render_callback_false  # type: ignore[method-assign]
+
+    response = await api_client.post(
+        "/v1/chat/render",
+        headers={
+            "X-Darktable-Image-Session-Id": "img-999",
+            "X-Darktable-Turn-Id": "turn-999",
+        },
+        content=b"mock_jpeg_bytes",
+    )
+
+    assert response.status_code == 404
+    body = response.text
+    assert body == "Context not found"
+

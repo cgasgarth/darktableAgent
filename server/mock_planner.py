@@ -144,4 +144,17 @@ class MockPlannerBridge:
             "operations": [],
             "lastToolName": None,
             "progressVersion": 0,
+            "requiresRenderCallback": False,
         }
+
+    def provide_render_callback(
+        self,
+        *,
+        image_session_id: str,
+        turn_id: str,
+        image_bytes: bytes,
+    ) -> bool:
+        del image_session_id
+        del turn_id
+        del image_bytes
+        return False
