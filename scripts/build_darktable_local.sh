@@ -10,7 +10,7 @@ BUILD_DIR="${BUILD_DIR:-$DARKTABLE_DIR/build-5.4.1}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-$DARKTABLE_DIR/.install-5.4.1}"
 BUILD_TYPE="${BUILD_TYPE:-RelWithDebInfo}"
 BUILD_GENERATOR="${BUILD_GENERATOR:-Ninja}"
-JOBS="${JOBS:-$(nproc)}"
+JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)}"
 
 exec "$DARKTABLE_DIR/build.sh" \
   --build-generator "$BUILD_GENERATOR" \
