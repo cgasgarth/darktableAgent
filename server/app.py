@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from server.bridge_types import PlannerBridge, PlannerTurnResult, RequestProgressPayload
@@ -336,7 +336,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
         bridge = get_codex_bridge()
         plan_task = asyncio.create_task(asyncio.to_thread(bridge.plan, request))
         last_progress_signature: (
-            tuple[int, bool, str, int, int, int, int, str, str | None] | None
+            tuple[int, bool, str, int, int, int, int, str, str | None, bool] | None
         ) = None
         last_progress_payload: RequestProgressPayload | None = None
 
@@ -364,6 +364,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                 len(progress_payload["operations"]),
                 progress_payload["message"],
                 progress_payload["lastToolName"],
+                progress_payload["requiresRenderCallback"],
             )
             if progress_signature != last_progress_signature:
                 last_progress_signature = progress_signature
@@ -377,6 +378,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                     "message": progress_payload["message"],
                     "lastToolName": progress_payload["lastToolName"],
                     "progressVersion": progress_payload["progressVersion"],
+                    "requiresRenderCallback": progress_payload["requiresRenderCallback"],
                 }
                 yield _encode_sse("progress", progress_payload)
 
@@ -399,6 +401,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                     "message": last_progress_payload["message"],
                     "lastToolName": last_progress_payload["lastToolName"],
                     "progressVersion": last_progress_payload["progressVersion"],
+                    "requiresRenderCallback": False,
                 }
                 if last_progress_payload is not None
                 else {
@@ -415,6 +418,7 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                     "message": "Waiting for Codex turn output",
                     "lastToolName": None,
                     "progressVersion": 0,
+                    "requiresRenderCallback": False,
                 }
             )
             completion_progress["found"] = True
@@ -468,3 +472,26 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/v1/chat/render")
+async def chat_render(request: Request) -> Response:
+    image_session_id = request.headers.get("X-Darktable-Image-Session-Id")
+    turn_id = request.headers.get("X-Darktable-Turn-Id")
+    if not image_session_id or not turn_id:
+        return Response(status_code=400, content="Missing tracking headers")
+
+    payload_bytes = await request.body()
+    if not payload_bytes:
+        return Response(status_code=400, content="Empty body")
+
+    bridge = get_codex_bridge()
+    success = await asyncio.to_thread(
+        bridge.provide_render_callback,
+        image_session_id=image_session_id,
+        turn_id=turn_id,
+        image_bytes=payload_bytes,
+    )
+    if success:
+        return Response(status_code=200, content="OK")
+    return Response(status_code=404, content="Context not found")

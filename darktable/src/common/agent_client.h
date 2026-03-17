@@ -49,6 +49,7 @@ typedef struct dt_agent_client_progress_t
   guint tool_calls_used;
   guint tool_calls_max;
   guint applied_operation_count;
+  gboolean requires_render_callback;
   dt_agent_chat_response_t response;
 } dt_agent_client_progress_t;
 

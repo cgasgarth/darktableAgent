@@ -134,6 +134,7 @@ typedef struct dt_agent_chat_session_t
   gboolean last_continue_refining;
   gboolean last_refinement_enabled;
   gboolean last_fast_mode_enabled;
+  gboolean pending_mid_turn_render;
 } dt_agent_chat_session_t;
 static struct dt_agent_chat_session_t *_agent_chat_lookup_session(dt_develop_t *dev,
                                                                   dt_imgid_t image_id);
@@ -1531,6 +1532,19 @@ static void _darkroom_ui_pipe_finish_signal_callback(gpointer instance,
                                                      gpointer data)
 {
   dt_control_queue_redraw_center();
+
+  // Handle mid-turn renders for the agent
+  dt_develop_t *dev = darktable.develop;
+  if(dev && dev->preview_pipe && dev->preview_pipe->status == DT_DEV_PIXELPIPE_VALID)
+  {
+    dt_agent_chat_session_t *session
+      = _agent_chat_lookup_session(dev, dev->agent_chat.current_image_id);
+    if(session && session->pending_mid_turn_render)
+    {
+      _agent_chat_encode_and_post_preview(dev, session, dev->agent_chat.active_request_id);
+      session->pending_mid_turn_render = FALSE;
+    }
+  }
 }
 
 static void _darkroom_ui_preview2_pipe_finish_signal_callback(gpointer instance,
@@ -1647,6 +1661,134 @@ static gchar *_agent_chat_dup_env(const char *name)
 {
   const char *value = g_getenv(name);
   return value && value[0] != '\0' ? g_strdup(value) : NULL;
+}
+
+typedef struct dt_agent_chat_render_delivery_t
+{
+  gchar *image_session_id;
+  gchar *turn_id;
+  guchar *jpeg_bytes;
+  gsize jpeg_len;
+  gchar *endpoint;
+} dt_agent_chat_render_delivery_t;
+
+static void _render_delivery_free(dt_agent_chat_render_delivery_t *delivery)
+{
+  if(!delivery)
+    return;
+  g_free(delivery->image_session_id);
+  g_free(delivery->turn_id);
+  g_free(delivery->jpeg_bytes);
+  g_free(delivery->endpoint);
+  g_free(delivery);
+}
+
+static gpointer _render_post_thread(gpointer user_data)
+{
+  dt_agent_chat_render_delivery_t *delivery = user_data;
+
+  if(!delivery->jpeg_bytes || delivery->jpeg_len == 0)
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent-chat] render delivery has no image data");
+    _render_delivery_free(delivery);
+    return NULL;
+  }
+
+  g_autofree gchar *render_endpoint = g_str_has_suffix(delivery->endpoint, "/")
+                                        ? g_strconcat(delivery->endpoint, "render", NULL)
+                                        : g_strconcat(delivery->endpoint, "/render", NULL);
+
+  CURL *curl = curl_easy_init();
+  if(!curl)
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent-chat] failed to initialize render request client");
+    _render_delivery_free(delivery);
+    return NULL;
+  }
+
+  g_autofree gchar *session_header
+    = g_strdup_printf("X-Darktable-Image-Session-Id: %s",
+                      delivery->image_session_id ? delivery->image_session_id : "");
+  g_autofree gchar *turn_header
+    = g_strdup_printf("X-Darktable-Turn-Id: %s",
+                      delivery->turn_id ? delivery->turn_id : "");
+
+  struct curl_slist *headers = NULL;
+  headers = curl_slist_append(headers, "Content-Type: image/jpeg");
+  headers = curl_slist_append(headers, session_header);
+  headers = curl_slist_append(headers, turn_header);
+
+  dt_curl_init(curl, FALSE);
+  curl_easy_setopt(curl, CURLOPT_URL, render_endpoint);
+  curl_easy_setopt(curl, CURLOPT_POST, 1L);
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, delivery->jpeg_bytes);
+  curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)delivery->jpeg_len);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
+
+  const CURLcode curl_result = curl_easy_perform(curl);
+  long http_status = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+
+  if(curl_result != CURLE_OK)
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent-chat] mid-turn render request failed: curl=%d endpoint=%s",
+             curl_result, render_endpoint);
+  }
+  else
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent-chat] mid-turn render request complete: http=%ld endpoint=%s",
+             http_status, render_endpoint);
+  }
+
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+  _render_delivery_free(delivery);
+  return NULL;
+}
+
+static void _agent_chat_encode_and_post_preview(dt_develop_t *dev, dt_agent_chat_session_t *session, const char *turn_id)
+{
+  if(!dev || !session || !turn_id || !dev->preview_pipe || dev->preview_pipe->status != DT_DEV_PIXELPIPE_VALID)
+    return;
+
+  dt_agent_image_state_t state;
+  dt_agent_image_state_init(&state);
+
+  GError *error = NULL;
+  if(dt_agent_image_state_collect_from_dev(dev, &state, &error))
+  {
+    if(state.preview.available && state.preview.base64_data)
+    {
+      gsize decoded_len = 0;
+      guchar *decoded = g_base64_decode(state.preview.base64_data, &decoded_len);
+      if(decoded && decoded_len > 0)
+      {
+        dt_agent_chat_render_delivery_t *delivery = g_new0(dt_agent_chat_render_delivery_t, 1);
+        delivery->image_session_id = g_strdup(session->image_session_id);
+        delivery->turn_id = g_strdup(turn_id);
+        delivery->jpeg_bytes = decoded;
+        delivery->jpeg_len = decoded_len;
+        delivery->endpoint = dt_agent_client_dup_endpoint();
+
+        g_thread_unref(g_thread_new("agent-chat-render", _render_post_thread, delivery));
+      }
+      else
+      {
+        g_free(decoded);
+        dt_print(DT_DEBUG_CONTROL, "[agent-chat] failed to decode preview base64 for render callback");
+      }
+    }
+  }
+  else
+  {
+    dt_print(DT_DEBUG_CONTROL, "[agent-chat] failed to collect render snapshot: %s",
+             error && error->message ? error->message : "unknown error");
+    g_clear_error(&error);
+  }
+
+  dt_agent_image_state_clear(&state);
 }
 
 static gchar *_agent_chat_dup_env_pair(const char *primary, const char *fallback)
@@ -2890,6 +3032,12 @@ static void _agent_chat_progress_finished(const dt_agent_client_progress_t *prog
 
       dev->agent_chat.active_request_live_applied_count = live_edit_count;
       dt_agent_execution_report_clear(&live_report);
+
+      if(progress->requires_render_callback)
+      {
+        session->pending_mid_turn_render = TRUE;
+        dt_print(DT_DEBUG_CONTROL, "[agent-chat] armed mid-turn render callback");
+      }
     }
 
     if(_agent_chat_darkroom_is_visible())
