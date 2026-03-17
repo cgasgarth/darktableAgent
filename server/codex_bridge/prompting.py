@@ -325,7 +325,7 @@ class PromptingMixin:
             exif_parts.append(f"f/{meta.exifAperture}")
         if getattr(meta, "exifFocalLength", None) is not None:
             exif_parts.append(f"{meta.exifFocalLength}mm")
-        if getattr(meta, "exifExposureSeconds", None) is not None:
+        if getattr(meta, "exifExposureSeconds", None) is not None and meta.exifExposureSeconds > 0:
             if meta.exifExposureSeconds >= 1:
                 exif_parts.append(f"{meta.exifExposureSeconds}s")
             else:

@@ -15,8 +15,6 @@ _CLIENT_INFO = {
 _DEFAULT_COMMAND = [
     "codex",
     "app-server",
-    "-c",
-    "mcp_servers.chrome-devtools.enabled=false",
     "--listen",
     "stdio://",
 ]
