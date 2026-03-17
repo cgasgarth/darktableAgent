@@ -198,31 +198,6 @@ class ToolRoutingMixin:
                 }
             },
         )
-
-        requires_render = getattr(context, "requires_render_callback", False)
-        if requires_render:
-            logger.info("waiting_for_mid_turn_render", extra={"structured": {"threadId": thread_id, "turnId": turn_id}})
-            context.render_event.wait(timeout=15.0)
-
-            with self._state_lock:
-                context.requires_render_callback = False
-                if context.rendered_preview_bytes:
-                    context.preview_mime_type = "image/jpeg"
-                    context.preview_data_url = self._build_data_url(
-                        "image/jpeg",
-                        context.rendered_preview_bytes,
-                        revision_token=str(len(context.applied_operations))
-                    )
-                    if response.get("success"):
-                        response.setdefault("contentItems", []).append(
-                            {
-                                "type": "inputImage",
-                                "imageUrl": context.preview_data_url,
-                            }
-                        )
-                else:
-                    logger.warning("mid_turn_render_timeout", extra={"structured": {"threadId": thread_id, "turnId": turn_id}})
-
         return response
 
     @staticmethod

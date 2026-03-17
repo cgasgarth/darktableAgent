@@ -12,7 +12,11 @@ from shared.protocol import AgentPlan
 from .config import _TOOL_APPLY_OPERATIONS, _WHITE_BALANCE_ACTION_PATH_PREFIXES, logger
 from .models import TurnContext
 
-
+try:
+    from PIL import Image, ImageEnhance
+except Exception:  # pragma: no cover
+    Image = None
+    ImageEnhance = None
 
 
 class OperationsMixin:
@@ -101,9 +105,6 @@ class OperationsMixin:
                 f"{context.base_image_revision_id}:tool-{len(context.applied_operations)}"
             )
         self._refresh_preview_after_operations(context)
-        context.requires_render_callback = True
-        context.render_event.clear()
-        context.rendered_preview_bytes = None
         self._log_white_balance_tool_call(
             context,
             ordered_batch,
@@ -121,7 +122,11 @@ class OperationsMixin:
                         f"{len(context.applied_operations)} total live edits applied. "
                         "Refreshed preview image included below."
                     ),
-                }
+                },
+                {
+                    "type": "inputImage",
+                    "imageUrl": context.preview_data_url,
+                },
             ],
         }
 
@@ -129,8 +134,139 @@ class OperationsMixin:
     def _clamp(value: float, minimum: float, maximum: float) -> float:
         return max(minimum, min(maximum, value))
 
+    def _collect_preview_adjustments(
+        self, context: TurnContext
+    ) -> tuple[float, float, float, float, float]:
+        brightness_ev = 0.0
+        contrast_delta = 0.0
+        saturation_delta = 0.0
+        warmth_delta = 0.0
+        tint_delta = 0.0
+
+        for setting_id, setting in context.setting_by_id.items():
+            if setting.get("kind") != "set-float":
+                continue
+            current_number = setting.get("currentNumber")
+            if not isinstance(current_number, (int, float)):
+                continue
+            base_number = context.base_float_setting_numbers.get(
+                setting_id, float(current_number)
+            )
+            delta = float(current_number) - float(base_number)
+            if abs(delta) < 1e-6:
+                continue
+
+            action_path = setting.get("actionPath")
+            if not isinstance(action_path, str):
+                continue
+            normalized_path = action_path.lower()
+
+            if normalized_path == "iop/exposure/exposure":
+                brightness_ev += delta
+                continue
+            if "black level" in normalized_path or normalized_path.endswith("/black"):
+                brightness_ev += 0.35 * delta
+            if "toneequal/" in normalized_path and any(
+                token in normalized_path
+                for token in (
+                    "whites",
+                    "highlights",
+                    "mid",
+                    "shadows",
+                    "blacks",
+                    "brightness",
+                )
+            ):
+                brightness_ev += 0.25 * delta
+            if any(
+                token in normalized_path
+                for token in ("contrast", "brilliance", "clarity")
+            ):
+                contrast_delta += 0.6 * delta
+            if any(
+                token in normalized_path
+                for token in ("saturation", "sat_", "chroma", "vibrance")
+            ):
+                saturation_delta += 0.7 * delta
+
+            if normalized_path == "iop/temperature/temperature":
+                warmth_delta += delta * 0.0001
+            elif normalized_path == "iop/temperature/tint":
+                tint_delta += delta * 0.001
+
+            if "colorbalancergb/" in normalized_path:
+                leaf = normalized_path.rsplit("/", 1)[-1]
+                if leaf in ("global chroma", "global saturation"):
+                    saturation_delta += 0.5 * delta
+                elif "shadows" in leaf and ("lift" in leaf or "factor" in leaf):
+                    brightness_ev += 0.15 * delta
+                elif "highlights" in leaf and ("gain" in leaf or "factor" in leaf):
+                    brightness_ev += 0.15 * delta
+
+        return brightness_ev, contrast_delta, saturation_delta, warmth_delta, tint_delta
+
+    def _render_applied_preview(self, context: TurnContext) -> tuple[str, bytes] | None:
+        if Image is None or ImageEnhance is None:
+            return None
+        try:
+            with Image.open(io.BytesIO(context.base_preview_bytes)) as source_image:
+                image = source_image.convert("RGB")
+        except Exception:
+            return None
+
+        brightness_ev, contrast_delta, saturation_delta, warmth_delta, tint_delta = (
+            self._collect_preview_adjustments(context)
+        )
+        brightness_factor = self._clamp(2.0**brightness_ev, 0.1, 6.0)
+        contrast_factor = self._clamp(1.0 + contrast_delta, 0.2, 3.0)
+        saturation_factor = self._clamp(1.0 + saturation_delta, 0.0, 3.0)
+
+        if abs(brightness_factor - 1.0) > 1e-3:
+            image = ImageEnhance.Brightness(image).enhance(brightness_factor)
+        if abs(contrast_factor - 1.0) > 1e-3:
+            image = ImageEnhance.Contrast(image).enhance(contrast_factor)
+        if abs(saturation_factor - 1.0) > 1e-3:
+            image = ImageEnhance.Color(image).enhance(saturation_factor)
+
+        if abs(warmth_delta) > 1e-4 or abs(tint_delta) > 1e-4:
+            r, g, b = image.split()
+            r_factor = self._clamp(1.0 + warmth_delta, 0.7, 1.5)
+            b_factor = self._clamp(1.0 - warmth_delta, 0.7, 1.5)
+            g_factor = self._clamp(1.0 - tint_delta, 0.7, 1.5)
+            r_lut = [min(255, int(i * r_factor)) for i in range(256)]
+            g_lut = [min(255, int(i * g_factor)) for i in range(256)]
+            b_lut = [min(255, int(i * b_factor)) for i in range(256)]
+            r = r.point(r_lut)
+            g = g.point(g_lut)
+            b = b.point(b_lut)
+            image = Image.merge("RGB", (r, g, b))
+
+        output = io.BytesIO()
+        base_mime = context.base_preview_mime_type.lower()
+        if "png" in base_mime:
+            image.save(output, format="PNG")
+            return "image/png", output.getvalue()
+
+        image.save(output, format="JPEG", quality=85, optimize=True)
+        return "image/jpeg", output.getvalue()
+
     def _refresh_preview_after_operations(self, context: TurnContext) -> None:
-        pass
+        applied_count = len(context.applied_operations)
+        rendered = self._render_applied_preview(context)
+        if rendered is not None:
+            context.preview_mime_type, rendered_bytes = rendered
+            context.preview_data_url = self._build_data_url(
+                context.preview_mime_type,
+                rendered_bytes,
+                revision_token=str(applied_count),
+            )
+            return
+
+        context.preview_data_url = self._build_data_url(
+            context.preview_mime_type,
+            context.base_preview_bytes,
+            revision_token=str(applied_count),
+        )
 
     def _normalize_tool_operation(
         self,

@@ -667,11 +667,6 @@ static gboolean _parse_progress_payload(const dt_agent_client_request_t *request
      && g_type_is_a(json_node_get_value_type(applied_count_node), G_TYPE_INT64))
     progress->applied_operation_count = (guint)MAX(0, json_node_get_int(applied_count_node));
 
-  JsonNode *render_cb_node = json_object_get_member(object, "requiresRenderCallback");
-  if(render_cb_node && JSON_NODE_HOLDS_VALUE(render_cb_node)
-     && g_type_is_a(json_node_get_value_type(render_cb_node), G_TYPE_BOOLEAN))
-    progress->requires_render_callback = json_node_get_boolean(render_cb_node);
-
   JsonNode *operations_node = json_object_get_member(object, "operations");
   if(operations_node && !JSON_NODE_HOLDS_ARRAY(operations_node))
   {

@@ -68,9 +68,6 @@ class TurnContext:
     consecutive_read_only_tool_calls: int = 0
     applied_operations: list[dict[str, Any]] = field(default_factory=list)
     next_operation_sequence: int = 1
-    render_event: threading.Event = field(default_factory=threading.Event)
-    rendered_preview_bytes: bytes | None = None
-    requires_render_callback: bool = False
 
 
 class TurnRunState(TypedDict):

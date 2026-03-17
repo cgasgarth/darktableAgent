@@ -733,13 +733,15 @@ def test_get_request_progress_returns_not_found_for_unknown_request() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
+
     progress = bridge.get_request_progress(
-        request_id="req-999",
+        request_id="missing-request",
         app_session_id="app-1",
-        image_session_id="img-12",
+        image_session_id="img-1",
         conversation_id="conv-1",
-        turn_id="turn-999",
+        turn_id="turn-1",
     )
+
     assert progress == {
         "found": False,
         "status": "not_found",
@@ -750,7 +752,6 @@ def test_get_request_progress_returns_not_found_for_unknown_request() -> None:
         "message": "No active request found for that requestId.",
         "lastToolName": None,
         "progressVersion": 0,
-        "requiresRenderCallback": False,
     }
 
 
@@ -968,9 +969,7 @@ def test_handle_server_request_routes_image_state_tool_call_to_dynamic_result() 
     assert '"base64Data":null' in state_payload
 
 
-def test_apply_operations_tool_updates_state_and_stages_operations(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_apply_operations_tool_updates_state_and_stages_operations() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -1001,14 +1000,6 @@ def test_apply_operations_tool_updates_state_and_stages_operations(
         preview_before = sent_payloads[0]["result"]["contentItems"][0]["imageUrl"]
         sent_payloads.clear()
 
-        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
-        
-        def _mock_wait(timeout=None):
-            context.rendered_preview_bytes = b"fake-preview-stage-1"
-            return True
-            
-        monkeypatch.setattr(context.render_event, "wait", _mock_wait)
-        
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
                 "jsonrpc": "2.0",
@@ -1046,7 +1037,7 @@ def test_apply_operations_tool_updates_state_and_stages_operations(
         assert result["contentItems"][1]["type"] == "inputImage"
         auto_preview = result["contentItems"][1]["imageUrl"]
         assert auto_preview != preview_before
-        assert auto_preview.endswith("x-darktable-stage=1;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTE=")
+        assert "x-darktable-stage=1" in auto_preview
 
         sent_payloads.clear()
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
@@ -1065,7 +1056,7 @@ def test_apply_operations_tool_updates_state_and_stages_operations(
         )
         preview_after = sent_payloads[0]["result"]["contentItems"][0]["imageUrl"]
         assert preview_after != preview_before
-        assert preview_after.endswith("x-darktable-stage=1;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTE=")
+        assert "x-darktable-stage=1" in preview_after
 
         sent_payloads.clear()
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
@@ -1112,12 +1103,6 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
     try:
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
-        
-        def _mock_wait(timeout=None):
-            context.rendered_preview_bytes = b"fake-preview-stage-3"
-            return True
-            
-        monkeypatch.setattr(context.render_event, "wait", _mock_wait)
 
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
@@ -1184,7 +1169,7 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
             == "image-12-history-1:tool-3"
         )
         assert context.preview_data_url.endswith(
-            "x-darktable-stage=3;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTM="
+            "x-darktable-stage=3;base64,ZmFrZS1wcmV2aWV3"
         )
         assert [
             operation["target"]["actionPath"]
@@ -1202,7 +1187,7 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
     assert "Applied 3 operations" in result["contentItems"][0]["text"]
     assert result["contentItems"][1]["type"] == "inputImage"
     assert result["contentItems"][1]["imageUrl"].endswith(
-        "x-darktable-stage=3;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTM="
+        "x-darktable-stage=3;base64,ZmFrZS1wcmV2aWV3"
     )
 
     assert white_balance_logs
@@ -1219,9 +1204,7 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
     ]
 
 
-def test_apply_operations_tool_resolves_unknown_setting_id_by_unique_action_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> (
+def test_apply_operations_tool_resolves_unknown_setting_id_by_unique_action_path() -> (
     None
 ):
     bridge = CodexAppServerBridge(
@@ -1239,7 +1222,6 @@ def test_apply_operations_tool_resolves_unknown_setting_id_by_unique_action_path
     try:
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
-        monkeypatch.setattr(context.render_event, "wait", lambda timeout=None: True)
 
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
@@ -1304,7 +1286,6 @@ def test_apply_operations_tool_failed_batch_logs_only_attempted_white_balance_pa
     try:
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
-        monkeypatch.setattr(context.render_event, "wait", lambda timeout=None: True)
 
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
@@ -1371,9 +1352,7 @@ def test_apply_operations_tool_failed_batch_logs_only_attempted_white_balance_pa
     assert structured["appliedWhiteBalanceActionPaths"] == []
 
 
-def test_apply_operations_tool_rejects_white_balance_actionpath_settingid_mismatch_without_state_change(
-    monkeypatch: pytest.MonkeyPatch,
-) -> (
+def test_apply_operations_tool_rejects_white_balance_actionpath_settingid_mismatch_without_state_change() -> (
     None
 ):
     bridge = CodexAppServerBridge(
@@ -1391,7 +1370,6 @@ def test_apply_operations_tool_rejects_white_balance_actionpath_settingid_mismat
     try:
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
-        monkeypatch.setattr(context.render_event, "wait", lambda timeout=None: True)
 
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
@@ -1437,9 +1415,7 @@ def test_apply_operations_tool_rejects_white_balance_actionpath_settingid_mismat
     assert "actionPath mismatch" in result["contentItems"][0]["text"]
 
 
-def test_apply_operations_tool_rejects_white_balance_choice_id_mismatch_without_state_change(
-    monkeypatch: pytest.MonkeyPatch,
-) -> (
+def test_apply_operations_tool_rejects_white_balance_choice_id_mismatch_without_state_change() -> (
     None
 ):
     bridge = CodexAppServerBridge(
@@ -1457,7 +1433,6 @@ def test_apply_operations_tool_rejects_white_balance_choice_id_mismatch_without_
     try:
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
-        monkeypatch.setattr(context.render_event, "wait", lambda timeout=None: True)
 
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
@@ -1511,9 +1486,7 @@ def test_apply_operations_tool_rejects_white_balance_choice_id_mismatch_without_
     assert "choiceId mismatch" in result["contentItems"][0]["text"]
 
 
-def test_apply_operations_tool_rejected_for_single_turn_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_apply_operations_tool_rejected_for_single_turn_mode() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -1531,10 +1504,6 @@ def test_apply_operations_tool_rejected_for_single_turn_mode(
 
     bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
     try:
-        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
-        if context:
-            monkeypatch.setattr(context.render_event, "wait", lambda timeout=None: True)
-            
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
                 "jsonrpc": "2.0",
