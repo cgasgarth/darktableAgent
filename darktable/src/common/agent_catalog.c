@@ -443,7 +443,9 @@ static dt_draw_curve_t *_colorzones_curve(const dt_iop_module_t *module,
   dt_introspection_field_t *curve_num_nodes_field = _find_field_by_name(module, "curve_num_nodes");
   dt_introspection_field_t *curve_type_field = _find_field_by_name(module, "curve_type");
   dt_introspection_field_t *select_by_field = _find_field_by_name(module, "channel");
-  if(!curve_field || !curve_num_nodes_field || !curve_type_field || !select_by_field)
+  dt_introspection_field_t *splines_version_field = _find_field_by_name(module, "splines_version");
+  if(!curve_field || !curve_num_nodes_field || !curve_type_field || !select_by_field
+     || !splines_version_field)
     return NULL;
 
   dt_introspection_field_t *channel_curve_field = NULL;
@@ -465,19 +467,23 @@ static dt_draw_curve_t *_colorzones_curve(const dt_iop_module_t *module,
   gpointer type_data = _field_data(module, curve_type_field, use_defaults);
   int *curve_type = dt_introspection_access_array(curve_type_field, type_data, channel_index, &type_field);
   int *select_by = _field_data(module, select_by_field, use_defaults);
-  if(!curve_type || !select_by)
+  int *splines_version = _field_data(module, splines_version_field, use_defaults);
+  if(!curve_type || !select_by || !splines_version)
     return NULL;
 
   dt_draw_curve_t *draw_curve = dt_draw_curve_new(0.0f, 1.0f, *curve_type);
   if(!draw_curve)
     return NULL;
 
-  if(*select_by == 2)
+  if(*splines_version == 0)
   {
-    dt_draw_curve_add_point(draw_curve, curve[*nodes - 2].x - 1.0f, curve[*nodes - 2].y);
+    const gboolean periodic = *select_by == 2;
+    dt_draw_curve_add_point(draw_curve, curve[*nodes - 2].x - 1.0f,
+                            periodic ? curve[*nodes - 2].y : curve[0].y);
     for(int k = 0; k < *nodes; k++)
       dt_draw_curve_add_point(draw_curve, curve[k].x, curve[k].y);
-    dt_draw_curve_add_point(draw_curve, curve[1].x + 1.0f, curve[1].y);
+    dt_draw_curve_add_point(draw_curve, curve[1].x + 1.0f,
+                            periodic ? curve[1].y : curve[*nodes - 1].y);
   }
   else
   {
