@@ -899,15 +899,13 @@ gboolean dt_agent_catalog_collect_descriptors(const dt_develop_t *dev,
       dt_agent_action_descriptor_t *descriptor = _descriptor_for_widget(module, referral);
       _add_descriptor_unique(descriptors, seen_setting_ids, descriptor);
 
-      g_autoptr(GPtrArray) custom_descriptors
-        = g_ptr_array_new_with_free_func(dt_agent_action_descriptor_free);
+      g_autoptr(GPtrArray) custom_descriptors = g_ptr_array_new();
       _collect_rgblevels_descriptors(module, referral, custom_descriptors);
       _collect_colorzones_descriptors(module, referral, custom_descriptors);
       while(custom_descriptors->len > 0)
       {
-        dt_agent_action_descriptor_t *custom = g_ptr_array_index(custom_descriptors,
-                                                                 custom_descriptors->len - 1);
-        g_ptr_array_remove_index_fast(custom_descriptors, custom_descriptors->len - 1);
+        dt_agent_action_descriptor_t *custom
+          = g_ptr_array_remove_index_fast(custom_descriptors, custom_descriptors->len - 1);
         _add_descriptor_unique(descriptors, seen_setting_ids, custom);
       }
     }
