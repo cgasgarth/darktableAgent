@@ -23,8 +23,11 @@
 #include "common/introspection.h"
 #include "develop/develop.h"
 #include "develop/imageop.h"
+#include "gui/accelerators.h"
+#include "gui/draw.h"
 
 #include <glib/gi18n.h>
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
@@ -32,6 +35,38 @@ typedef enum dt_agent_catalog_error_t
 {
   DT_AGENT_CATALOG_ERROR_INVALID = 1,
 } dt_agent_catalog_error_t;
+
+typedef struct dt_agent_colorzones_node_t
+{
+  float x;
+  float y;
+} dt_agent_colorzones_node_t;
+
+enum
+{
+  DT_AGENT_RGBLEVELS_CHANNELS = 3,
+  DT_AGENT_RGBLEVELS_HANDLES = 3,
+  DT_AGENT_COLORZONES_CHANNELS = 3,
+  DT_AGENT_COLORZONES_BANDS = 8,
+};
+
+static const char *const _rgblevels_channel_ids[DT_AGENT_RGBLEVELS_CHANNELS]
+  = { "red", "green", "blue" };
+static const char *const _rgblevels_channel_labels[DT_AGENT_RGBLEVELS_CHANNELS]
+  = { "R", "G", "B" };
+static const char *const _rgblevels_handle_ids[DT_AGENT_RGBLEVELS_HANDLES]
+  = { "black", "gray", "white" };
+static const char *const _rgblevels_handle_labels[DT_AGENT_RGBLEVELS_HANDLES]
+  = { "black", "gray", "white" };
+
+static const char *const _colorzones_channel_ids[DT_AGENT_COLORZONES_CHANNELS]
+  = { "lightness", "chroma", "hue" };
+static const char *const _colorzones_channel_labels[DT_AGENT_COLORZONES_CHANNELS]
+  = { "lightness", "chroma", "hue" };
+static const char *const _colorzones_band_ids[DT_AGENT_COLORZONES_BANDS]
+  = { "red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta" };
+static const char *const _colorzones_band_labels[DT_AGENT_COLORZONES_BANDS]
+  = { "red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta" };
 
 static GQuark _agent_catalog_error_quark(void)
 {
@@ -92,6 +127,18 @@ static gchar *_build_setting_id(const char *action_path, const dt_iop_module_t *
   return g_strdup_printf("setting.%s.instance.%d", sanitized, module ? module->multi_priority : 0);
 }
 
+static gchar *_build_setting_id_with_suffix(const char *action_path,
+                                            const dt_iop_module_t *module,
+                                            const char *suffix)
+{
+  g_autofree gchar *setting_id = _build_setting_id(action_path, module);
+  if(!suffix || !suffix[0])
+    return g_steal_pointer(&setting_id);
+
+  g_autofree gchar *sanitized = _sanitize_id_segment(suffix);
+  return g_strdup_printf("%s.%s", setting_id, sanitized);
+}
+
 static gchar *_build_capability_id(const char *setting_id)
 {
   g_autofree gchar *sanitized = _sanitize_id_segment(setting_id);
@@ -115,29 +162,63 @@ static gchar *_build_module_label(const dt_iop_module_t *module)
   return g_strdup((module && module->op[0]) ? module->op : "unknown");
 }
 
-static dt_introspection_field_t *_find_field_for_widget(const dt_iop_module_t *module,
-                                                        GtkWidget *widget)
+static dt_introspection_field_t *_find_field_by_name(const dt_iop_module_t *module,
+                                                     const char *field_name)
 {
-  if(!module || !widget || !module->have_introspection || !module->so
+  if(!module || !field_name || !field_name[0] || !module->have_introspection || !module->so
      || !module->so->get_introspection_linear)
-    return NULL;
-
-  gpointer field = dt_bauhaus_widget_get_field(widget);
-  if(!field || !module->params)
-    return NULL;
-
-  const ptrdiff_t offset = (const guint8 *)field - (const guint8 *)module->params;
-  if(offset < 0 || offset >= module->params_size)
     return NULL;
 
   for(dt_introspection_field_t *iter = module->so->get_introspection_linear();
       iter && iter->header.type != DT_INTROSPECTION_TYPE_NONE;
       iter++)
   {
-    if((ptrdiff_t)iter->header.offset == offset)
+    if(g_strcmp0(iter->header.field_name, field_name) == 0)
       return iter;
   }
 
+  return NULL;
+}
+
+static gpointer _field_data(const dt_iop_module_t *module,
+                            const dt_introspection_field_t *field,
+                            const gboolean use_defaults)
+{
+  if(!module || !field)
+    return NULL;
+
+  guint8 *base = use_defaults ? (guint8 *)module->default_params : (guint8 *)module->params;
+  if(!base)
+    return NULL;
+
+  return base + field->header.offset;
+}
+
+static dt_introspection_field_t *_find_field_for_widget(const dt_iop_module_t *module,
+                                                        GtkWidget *widget,
+                                                        const dt_action_target_t *referral)
+{
+  if(!module || !widget || !module->have_introspection || !module->so
+     || !module->so->get_introspection_linear)
+    return NULL;
+
+  gpointer field = dt_bauhaus_widget_get_field(widget);
+  if(field && module->params)
+  {
+    const ptrdiff_t offset = (const guint8 *)field - (const guint8 *)module->params;
+    if(offset >= 0 && offset < module->params_size)
+    {
+      for(dt_introspection_field_t *iter = module->so->get_introspection_linear();
+          iter && iter->header.type != DT_INTROSPECTION_TYPE_NONE;
+          iter++)
+      {
+        if((ptrdiff_t)iter->header.offset == offset)
+          return iter;
+      }
+    }
+  }
+
+  (void)referral;
   return NULL;
 }
 
@@ -256,6 +337,338 @@ static gboolean _initialize_float_descriptor(dt_agent_action_descriptor_t *descr
   return TRUE;
 }
 
+static dt_agent_action_descriptor_t *_new_float_descriptor(dt_iop_module_t *module,
+                                                           GtkWidget *widget,
+                                                           const char *action_path,
+                                                           const char *setting_suffix,
+                                                           const char *label,
+                                                           const double min_number,
+                                                           const double max_number,
+                                                           const double default_number,
+                                                           const double step_number)
+{
+  dt_agent_action_descriptor_t *descriptor = g_new0(dt_agent_action_descriptor_t, 1);
+  descriptor->module_id = _build_module_id(module);
+  descriptor->module_label = _build_module_label(module);
+  descriptor->setting_id = _build_setting_id_with_suffix(action_path, module, setting_suffix);
+  descriptor->capability_id = _build_capability_id(descriptor->setting_id);
+  descriptor->label = g_strdup(label);
+  descriptor->kind_name = g_strdup(dt_agent_operation_kind_to_string(DT_AGENT_OPERATION_SET_FLOAT));
+  descriptor->target_type = g_strdup("darktable-action");
+  descriptor->action_path = g_strdup(action_path);
+  descriptor->operation_kind = DT_AGENT_OPERATION_SET_FLOAT;
+  descriptor->supported_modes = DT_AGENT_VALUE_MODE_FLAG_SET | DT_AGENT_VALUE_MODE_FLAG_DELTA;
+  descriptor->binding = DT_AGENT_DESCRIPTOR_BINDING_WIDGET;
+  descriptor->module = module;
+  descriptor->widget = widget;
+  descriptor->has_number_range = TRUE;
+  descriptor->min_number = min_number;
+  descriptor->max_number = max_number;
+  descriptor->default_number = default_number;
+  descriptor->step_number = step_number;
+  return descriptor;
+}
+
+static float *_rgblevels_value_pointer(const dt_iop_module_t *module,
+                                       const gboolean use_defaults,
+                                       const gint channel,
+                                       const gint handle)
+{
+  dt_introspection_field_t *levels_field = _find_field_by_name(module, "levels");
+  if(!levels_field || levels_field->header.type != DT_INTROSPECTION_TYPE_ARRAY)
+    return NULL;
+
+  gpointer levels = _field_data(module, levels_field, use_defaults);
+  dt_introspection_field_t *row_field = NULL;
+  gpointer row = dt_introspection_access_array(levels_field, levels, channel, &row_field);
+  if(!row || !row_field || row_field->header.type != DT_INTROSPECTION_TYPE_ARRAY)
+    return NULL;
+
+  dt_introspection_field_t *value_field = NULL;
+  gpointer value = dt_introspection_access_array(row_field, row, handle, &value_field);
+  if(!value || !value_field || value_field->header.type != DT_INTROSPECTION_TYPE_FLOAT)
+    return NULL;
+
+  return value;
+}
+
+static gboolean _read_rgblevels_number(const dt_agent_action_descriptor_t *descriptor,
+                                       double *out_number)
+{
+  if(!descriptor || !descriptor->module || !out_number)
+    return FALSE;
+
+  float *value = _rgblevels_value_pointer(descriptor->module, FALSE,
+                                          descriptor->channel_index,
+                                          descriptor->element_index);
+  if(!value)
+    return FALSE;
+
+  *out_number = *value;
+  return TRUE;
+}
+
+static gboolean _write_rgblevels_number(const dt_agent_action_descriptor_t *descriptor,
+                                        const double requested_number,
+                                        double *out_applied_number)
+{
+  if(!descriptor || !descriptor->module)
+    return FALSE;
+
+  if(DT_ACTION_IS_INVALID(dt_action_process("iop/rgblevels/channel",
+                                            descriptor->module->multi_priority,
+                                            _rgblevels_channel_ids[descriptor->channel_index],
+                                            "activate",
+                                            1.0f)))
+    return FALSE;
+
+  const float applied = dt_action_process(descriptor->action_path,
+                                          descriptor->module->multi_priority,
+                                          descriptor->element_name,
+                                          "set",
+                                          requested_number);
+  if(DT_ACTION_IS_INVALID(applied))
+    return FALSE;
+
+  if(out_applied_number)
+    *out_applied_number = applied;
+  return TRUE;
+}
+
+static dt_draw_curve_t *_colorzones_curve(const dt_iop_module_t *module,
+                                          const gboolean use_defaults,
+                                          const gint channel_index)
+{
+  dt_introspection_field_t *curve_field = _find_field_by_name(module, "curve");
+  dt_introspection_field_t *curve_num_nodes_field = _find_field_by_name(module, "curve_num_nodes");
+  dt_introspection_field_t *curve_type_field = _find_field_by_name(module, "curve_type");
+  dt_introspection_field_t *select_by_field = _find_field_by_name(module, "channel");
+  dt_introspection_field_t *splines_version_field = _find_field_by_name(module, "splines_version");
+  if(!curve_field || !curve_num_nodes_field || !curve_type_field || !select_by_field
+     || !splines_version_field)
+    return NULL;
+
+  dt_introspection_field_t *channel_curve_field = NULL;
+  gpointer curve_data = _field_data(module, curve_field, use_defaults);
+  dt_agent_colorzones_node_t *curve = dt_introspection_access_array(curve_field,
+                                                                    curve_data,
+                                                                    channel_index,
+                                                                    &channel_curve_field);
+  if(!curve)
+    return NULL;
+
+  dt_introspection_field_t *nodes_field = NULL;
+  gpointer nodes_data = _field_data(module, curve_num_nodes_field, use_defaults);
+  int *nodes = dt_introspection_access_array(curve_num_nodes_field, nodes_data, channel_index, &nodes_field);
+  if(!nodes || *nodes < 2)
+    return NULL;
+
+  dt_introspection_field_t *type_field = NULL;
+  gpointer type_data = _field_data(module, curve_type_field, use_defaults);
+  int *curve_type = dt_introspection_access_array(curve_type_field, type_data, channel_index, &type_field);
+  int *select_by = _field_data(module, select_by_field, use_defaults);
+  int *splines_version = _field_data(module, splines_version_field, use_defaults);
+  if(!curve_type || !select_by || !splines_version)
+    return NULL;
+
+  dt_draw_curve_t *draw_curve = dt_draw_curve_new(0.0f, 1.0f, *curve_type);
+  if(!draw_curve)
+    return NULL;
+
+  if(*splines_version == 0)
+  {
+    const gboolean periodic = *select_by == 2;
+    dt_draw_curve_add_point(draw_curve, curve[*nodes - 2].x - 1.0f,
+                            periodic ? curve[*nodes - 2].y : curve[0].y);
+    for(int k = 0; k < *nodes; k++)
+      dt_draw_curve_add_point(draw_curve, curve[k].x, curve[k].y);
+    dt_draw_curve_add_point(draw_curve, curve[1].x + 1.0f,
+                            periodic ? curve[1].y : curve[*nodes - 1].y);
+  }
+  else
+  {
+    for(int k = 0; k < *nodes; k++)
+      dt_draw_curve_add_point(draw_curve, curve[k].x, curve[k].y);
+  }
+
+  return draw_curve;
+}
+
+static gboolean _colorzones_current_value(const dt_iop_module_t *module,
+                                          const gboolean use_defaults,
+                                          const gint channel_index,
+                                          const gint band_index,
+                                          double *out_number)
+{
+  if(!module || !out_number)
+    return FALSE;
+
+  dt_introspection_field_t *curve_field = _find_field_by_name(module, "curve");
+  dt_introspection_field_t *curve_num_nodes_field = _find_field_by_name(module, "curve_num_nodes");
+  if(!curve_field || !curve_num_nodes_field)
+    return FALSE;
+
+  dt_introspection_field_t *channel_curve_field = NULL;
+  gpointer curve_data = _field_data(module, curve_field, use_defaults);
+  dt_agent_colorzones_node_t *curve = dt_introspection_access_array(curve_field,
+                                                                    curve_data,
+                                                                    channel_index,
+                                                                    &channel_curve_field);
+  dt_introspection_field_t *nodes_field = NULL;
+  gpointer nodes_data = _field_data(module, curve_num_nodes_field, use_defaults);
+  int *nodes = dt_introspection_access_array(curve_num_nodes_field, nodes_data, channel_index, &nodes_field);
+  if(!curve || !nodes || *nodes < 2)
+    return FALSE;
+
+  const float x = (float)band_index / DT_AGENT_COLORZONES_BANDS;
+  for(int node_index = 0; node_index < *nodes; node_index++)
+  {
+    if(fabsf(curve[node_index].x - x) <= (1.0f / 16.0f))
+    {
+      *out_number = curve[node_index].y * 2.0 - 1.0;
+      return TRUE;
+    }
+  }
+
+  dt_draw_curve_t *draw_curve = _colorzones_curve(module, use_defaults, channel_index);
+  if(!draw_curve)
+    return FALSE;
+
+  *out_number = dt_draw_curve_calc_value(draw_curve, x) * 2.0 - 1.0;
+  dt_draw_curve_destroy(draw_curve);
+  return TRUE;
+}
+
+static gboolean _read_colorzones_number(const dt_agent_action_descriptor_t *descriptor,
+                                        double *out_number)
+{
+  if(!descriptor || !descriptor->module || !out_number)
+    return FALSE;
+
+  return _colorzones_current_value(descriptor->module,
+                                   FALSE,
+                                   descriptor->channel_index,
+                                   descriptor->element_index,
+                                   out_number);
+}
+
+static gboolean _write_colorzones_number(const dt_agent_action_descriptor_t *descriptor,
+                                         const double requested_number,
+                                         double *out_applied_number)
+{
+  if(!descriptor || !descriptor->module)
+    return FALSE;
+
+  const float y = CLAMP((float)((requested_number + 1.0) * 0.5), 0.0f, 1.0f);
+
+  if(DT_ACTION_IS_INVALID(dt_action_process("iop/colorzones/channel",
+                                            descriptor->module->multi_priority,
+                                            _colorzones_channel_ids[descriptor->channel_index],
+                                            "activate",
+                                            1.0f)))
+    return FALSE;
+
+  const float applied = dt_action_process(descriptor->action_path,
+                                          descriptor->module->multi_priority,
+                                          descriptor->element_name,
+                                          "set",
+                                          y);
+  if(DT_ACTION_IS_INVALID(applied))
+    return FALSE;
+
+  if(out_applied_number)
+    *out_applied_number = (applied - DT_VALUE_PATTERN_PLUS_MINUS) * 2.0 - 1.0;
+  return TRUE;
+}
+
+static void _collect_rgblevels_descriptors(dt_iop_module_t *module,
+                                           dt_action_target_t *referral,
+                                           GPtrArray *descriptors)
+{
+  if(!module || !referral || !referral->action || g_strcmp0(module->op, "rgblevels") != 0
+     || g_strcmp0(referral->action->id, "levels") != 0)
+    return;
+
+  g_autofree gchar *action_path = _action_full_id(referral->action);
+  if(!dt_agent_catalog_is_action_path_allowed(action_path))
+    return;
+
+  for(int channel = 0; channel < DT_AGENT_RGBLEVELS_CHANNELS; channel++)
+    for(int handle = 0; handle < DT_AGENT_RGBLEVELS_HANDLES; handle++)
+    {
+      float *default_value = _rgblevels_value_pointer(module, TRUE, channel, handle);
+      if(!default_value)
+        continue;
+
+      g_autofree gchar *setting_suffix = g_strdup_printf("%s.%s",
+                                                         _rgblevels_channel_ids[channel],
+                                                         _rgblevels_handle_ids[handle]);
+      g_autofree gchar *label = g_strdup_printf("%s %s",
+                                                _rgblevels_channel_labels[channel],
+                                                _rgblevels_handle_labels[handle]);
+      dt_agent_action_descriptor_t *descriptor = _new_float_descriptor(module,
+                                                                       GTK_IS_WIDGET(referral->target)
+                                                                         ? GTK_WIDGET(referral->target)
+                                                                         : NULL,
+                                                                       action_path,
+                                                                       setting_suffix,
+                                                                       label,
+                                                                       0.0,
+                                                                       1.0,
+                                                                       *default_value,
+                                                                       0.001);
+      descriptor->binding = DT_AGENT_DESCRIPTOR_BINDING_RGBLEVELS_HANDLE;
+      descriptor->element_name = g_strdup(_rgblevels_handle_ids[handle]);
+      descriptor->channel_index = channel;
+      descriptor->element_index = handle;
+      g_ptr_array_add(descriptors, descriptor);
+    }
+}
+
+static void _collect_colorzones_descriptors(dt_iop_module_t *module,
+                                            dt_action_target_t *referral,
+                                            GPtrArray *descriptors)
+{
+  if(!module || !referral || !referral->action || g_strcmp0(module->op, "colorzones") != 0
+     || g_strcmp0(referral->action->id, "graph") != 0)
+    return;
+
+  g_autofree gchar *action_path = _action_full_id(referral->action);
+  if(!dt_agent_catalog_is_action_path_allowed(action_path))
+    return;
+
+  for(int channel = 0; channel < DT_AGENT_COLORZONES_CHANNELS; channel++)
+    for(int band = 0; band < DT_AGENT_COLORZONES_BANDS; band++)
+    {
+      double default_number = 0.0;
+      if(!_colorzones_current_value(module, TRUE, channel, band, &default_number))
+        continue;
+
+      g_autofree gchar *setting_suffix = g_strdup_printf("%s.%s",
+                                                         _colorzones_channel_ids[channel],
+                                                         _colorzones_band_ids[band]);
+      g_autofree gchar *label = g_strdup_printf("%s %s",
+                                                _colorzones_channel_labels[channel],
+                                                _colorzones_band_labels[band]);
+      dt_agent_action_descriptor_t *descriptor = _new_float_descriptor(module,
+                                                                       GTK_IS_WIDGET(referral->target)
+                                                                         ? GTK_WIDGET(referral->target)
+                                                                         : NULL,
+                                                                       action_path,
+                                                                       setting_suffix,
+                                                                       label,
+                                                                       -1.0,
+                                                                       1.0,
+                                                                       default_number,
+                                                                       0.01);
+      descriptor->binding = DT_AGENT_DESCRIPTOR_BINDING_COLORZONES_BAND;
+      descriptor->element_name = g_strdup(_colorzones_band_ids[band]);
+      descriptor->channel_index = channel;
+      descriptor->element_index = band;
+      g_ptr_array_add(descriptors, descriptor);
+    }
+}
+
 static dt_agent_action_descriptor_t *_descriptor_for_widget(dt_iop_module_t *module,
                                                             dt_action_target_t *referral)
 {
@@ -265,7 +678,7 @@ static dt_agent_action_descriptor_t *_descriptor_for_widget(dt_iop_module_t *mod
     return NULL;
 
   GtkWidget *widget = GTK_WIDGET(referral->target);
-  dt_introspection_field_t *field = _find_field_for_widget(module, widget);
+  dt_introspection_field_t *field = _find_field_for_widget(module, widget, referral);
   if(!field)
     return NULL;
 
@@ -295,6 +708,8 @@ static dt_agent_action_descriptor_t *_descriptor_for_widget(dt_iop_module_t *mod
   descriptor->target_type = g_strdup("darktable-action");
   descriptor->action_path = g_strdup(action_path);
   descriptor->operation_kind = operation_kind;
+  descriptor->binding = DT_AGENT_DESCRIPTOR_BINDING_WIDGET;
+  descriptor->module = module;
   descriptor->widget = widget;
 
   switch(operation_kind)
@@ -405,6 +820,7 @@ void dt_agent_action_descriptor_free(gpointer data)
   g_free(descriptor->kind_name);
   g_free(descriptor->target_type);
   g_free(descriptor->action_path);
+  g_free(descriptor->element_name);
   if(descriptor->choices)
     g_ptr_array_unref(descriptor->choices);
   g_free(descriptor);
@@ -427,7 +843,12 @@ dt_agent_action_descriptor_t *dt_agent_action_descriptor_copy(
   dest->action_path = g_strdup(src->action_path);
   dest->operation_kind = src->operation_kind;
   dest->supported_modes = src->supported_modes;
+  dest->binding = src->binding;
+  dest->module = src->module;
   dest->widget = src->widget;
+  dest->element_name = g_strdup(src->element_name);
+  dest->channel_index = src->channel_index;
+  dest->element_index = src->element_index;
   dest->has_number_range = src->has_number_range;
   dest->min_number = src->min_number;
   dest->max_number = src->max_number;
@@ -477,6 +898,16 @@ gboolean dt_agent_catalog_collect_descriptors(const dt_develop_t *dev,
       dt_action_target_t *referral = widget_iter->data;
       dt_agent_action_descriptor_t *descriptor = _descriptor_for_widget(module, referral);
       _add_descriptor_unique(descriptors, seen_setting_ids, descriptor);
+
+      g_autoptr(GPtrArray) custom_descriptors = g_ptr_array_new();
+      _collect_rgblevels_descriptors(module, referral, custom_descriptors);
+      _collect_colorzones_descriptors(module, referral, custom_descriptors);
+      while(custom_descriptors->len > 0)
+      {
+        dt_agent_action_descriptor_t *custom
+          = g_ptr_array_remove_index_fast(custom_descriptors, custom_descriptors->len - 1);
+        _add_descriptor_unique(descriptors, seen_setting_ids, custom);
+      }
     }
   }
 
@@ -547,16 +978,31 @@ gboolean dt_agent_catalog_read_current_number(const dt_agent_action_descriptor_t
                                               double *out_number,
                                               GError **error)
 {
-  if(!descriptor || !descriptor->widget || descriptor->operation_kind != DT_AGENT_OPERATION_SET_FLOAT
-     || !out_number)
+  if(!descriptor || descriptor->operation_kind != DT_AGENT_OPERATION_SET_FLOAT || !out_number)
   {
     g_set_error(error, _agent_catalog_error_quark(), DT_AGENT_CATALOG_ERROR_INVALID,
                 "%s", _("agent action descriptor is incomplete"));
     return FALSE;
   }
 
-  *out_number = dt_bauhaus_slider_get(descriptor->widget);
-  return TRUE;
+  switch(descriptor->binding)
+  {
+    case DT_AGENT_DESCRIPTOR_BINDING_WIDGET:
+      if(!descriptor->widget)
+        break;
+      *out_number = dt_bauhaus_slider_get(descriptor->widget);
+      return TRUE;
+    case DT_AGENT_DESCRIPTOR_BINDING_RGBLEVELS_HANDLE:
+      return _read_rgblevels_number(descriptor, out_number);
+    case DT_AGENT_DESCRIPTOR_BINDING_COLORZONES_BAND:
+      return _read_colorzones_number(descriptor, out_number);
+    default:
+      break;
+  }
+
+  g_set_error(error, _agent_catalog_error_quark(), DT_AGENT_CATALOG_ERROR_INVALID,
+              "%s", _("agent action descriptor is incomplete"));
+  return FALSE;
 }
 
 gboolean dt_agent_catalog_read_current_choice(const dt_agent_action_descriptor_t *descriptor,
@@ -615,7 +1061,7 @@ gboolean dt_agent_catalog_write_number(const dt_agent_action_descriptor_t *descr
                                        double *out_applied_number,
                                        GError **error)
 {
-  if(!descriptor || !descriptor->widget || descriptor->operation_kind != DT_AGENT_OPERATION_SET_FLOAT)
+  if(!descriptor || descriptor->operation_kind != DT_AGENT_OPERATION_SET_FLOAT)
   {
     g_set_error(error, _agent_catalog_error_quark(), DT_AGENT_CATALOG_ERROR_INVALID,
                 "%s", _("agent action descriptor is incomplete"));
@@ -623,12 +1069,26 @@ gboolean dt_agent_catalog_write_number(const dt_agent_action_descriptor_t *descr
   }
 
   const double clamped_number = dt_agent_catalog_clamp_number(descriptor, requested_number);
-  dt_bauhaus_slider_set(descriptor->widget, clamped_number);
+  switch(descriptor->binding)
+  {
+    case DT_AGENT_DESCRIPTOR_BINDING_WIDGET:
+      if(!descriptor->widget)
+        break;
+      dt_bauhaus_slider_set(descriptor->widget, clamped_number);
+      if(out_applied_number)
+        *out_applied_number = dt_bauhaus_slider_get(descriptor->widget);
+      return TRUE;
+    case DT_AGENT_DESCRIPTOR_BINDING_RGBLEVELS_HANDLE:
+      return _write_rgblevels_number(descriptor, clamped_number, out_applied_number);
+    case DT_AGENT_DESCRIPTOR_BINDING_COLORZONES_BAND:
+      return _write_colorzones_number(descriptor, clamped_number, out_applied_number);
+    default:
+      break;
+  }
 
-  if(out_applied_number)
-    *out_applied_number = dt_bauhaus_slider_get(descriptor->widget);
-
-  return TRUE;
+  g_set_error(error, _agent_catalog_error_quark(), DT_AGENT_CATALOG_ERROR_INVALID,
+              "%s", _("agent action descriptor is incomplete"));
+  return FALSE;
 }
 
 gboolean dt_agent_catalog_write_choice(const dt_agent_action_descriptor_t *descriptor,

@@ -998,6 +998,11 @@ static float _action_process(gpointer target,
       const float interval = 0.02; // Distance moved for each scroll event
       const float new_position = p->levels[g->channel][element] + interval * move_size;
       _rgblevels_move_handle(self, element, new_position, p->levels[g->channel], g->drag_start_percentage);
+      break;
+    case DT_ACTION_EFFECT_SET:
+      g->drag_start_percentage = (p->levels[g->channel][1] - p->levels[g->channel][0]) / (p->levels[g->channel][2] - p->levels[g->channel][0]);
+      _rgblevels_move_handle(self, element, move_size, p->levels[g->channel], g->drag_start_percentage);
+      break;
     default:
       dt_print(DT_DEBUG_ALWAYS,
                "[_action_process_tabs] unknown shortcut effect (%d) for levels", effect);

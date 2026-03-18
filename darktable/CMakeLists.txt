@@ -36,6 +36,7 @@ IF(DEFINED DT_FORCE_CXX_COMPILER)
 endif()
 
 include(DefineOptions.cmake)
+include(CTest)
 
 # Include GNUInstallDirs, which sets sensible defaults for install directories.
 # See https://cmake.org/cmake/help/v3.0/module/GNUInstallDirs.html for further information.
@@ -450,10 +451,14 @@ if(NOT SOURCE_PACKAGE AND NOT (CMAKE_VERSION VERSION_LESS 3.3) AND DEFINED ENV{_
 endif()
 
 if(BUILD_TESTING)
-  find_package(cmocka 1.1.0 CONFIG REQUIRED)
-  include(AddCMockaTest)
-  include(AddCMockaMockTest)
-  include_directories(${CMOCKA_INCLUDE_DIR} include)
+  find_package(cmocka 1.1.0 CONFIG QUIET)
+  if(cmocka_FOUND)
+    include(AddCMockaTest)
+    include(AddCMockaMockTest)
+    include_directories(${CMOCKA_INCLUDE_DIR} include)
+  else()
+    message(STATUS "cmocka not found; cmocka-based unit tests will be skipped")
+  endif()
 endif(BUILD_TESTING)
 
 # we need some specific functions:

@@ -2537,7 +2537,19 @@ static float _action_process_zones(gpointer target,
       if(!close_enough)
         node = _add_node(curve, &p->curve_num_nodes[ch], x, return_value);
 
+      if(node < 0)
+        return DT_ACTION_NOT_VALID;
       _move_point_internal(self, target, node, 0.f, move_size / 100, GDK_MODIFIER_MASK);
+      return_value = curve[node].y;
+      break;
+    case DT_ACTION_EFFECT_SET:
+      if(!close_enough)
+        node = _add_node(curve, &p->curve_num_nodes[ch], x, return_value);
+
+      if(node < 0)
+        return DT_ACTION_NOT_VALID;
+      _move_point_internal(self, target, node, 0.f, CLAMP(move_size, 0.f, 1.f) - curve[node].y,
+                           GDK_MODIFIER_MASK);
       return_value = curve[node].y;
       break;
     default:

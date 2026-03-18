@@ -28,6 +28,15 @@ G_BEGIN_DECLS
 #define DT_AGENT_VALUE_MODE_FLAG_SET (1u << 0)
 #define DT_AGENT_VALUE_MODE_FLAG_DELTA (1u << 1)
 
+struct dt_iop_module_t;
+
+typedef enum dt_agent_descriptor_binding_t
+{
+  DT_AGENT_DESCRIPTOR_BINDING_WIDGET = 0,
+  DT_AGENT_DESCRIPTOR_BINDING_RGBLEVELS_HANDLE,
+  DT_AGENT_DESCRIPTOR_BINDING_COLORZONES_BAND,
+} dt_agent_descriptor_binding_t;
+
 typedef struct dt_agent_action_descriptor_t
 {
   gchar *module_id;
@@ -40,7 +49,12 @@ typedef struct dt_agent_action_descriptor_t
   gchar *action_path;
   dt_agent_operation_kind_t operation_kind;
   guint supported_modes;
+  dt_agent_descriptor_binding_t binding;
+  struct dt_iop_module_t *module;
   GtkWidget *widget;
+  gchar *element_name;
+  gint channel_index;
+  gint element_index;
   gboolean has_number_range;
   double min_number;
   double max_number;
