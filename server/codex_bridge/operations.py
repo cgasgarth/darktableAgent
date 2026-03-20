@@ -13,8 +13,6 @@ from .config import _TOOL_APPLY_OPERATIONS, _WHITE_BALANCE_ACTION_PATH_PREFIXES,
 from .models import TurnContext
 
 
-
-
 class OperationsMixin:
     def _apply_operations_tool_call(
         self,
@@ -95,6 +93,7 @@ class OperationsMixin:
             context.applied_operations.append(operation)
 
         context.next_operation_sequence += len(applied_batch)
+        context.last_applied_batch = list(applied_batch)
         image_snapshot = context.state_payload.get("imageSnapshot")
         if isinstance(image_snapshot, dict):
             image_snapshot["imageRevisionId"] = (

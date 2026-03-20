@@ -57,6 +57,7 @@ class TurnContext:
     preview_data_url: str
     base_preview_mime_type: str
     base_preview_bytes: bytes
+    current_preview_bytes: bytes
     preview_mime_type: str
     base_image_revision_id: str
     state_payload: dict[str, Any]
@@ -71,6 +72,9 @@ class TurnContext:
     render_event: threading.Event = field(default_factory=threading.Event)
     rendered_preview_bytes: bytes | None = None
     requires_render_callback: bool = False
+    last_applied_batch: list[dict[str, Any]] = field(default_factory=list)
+    last_verifier_status: str | None = None
+    last_verifier_summary: str | None = None
 
 
 class TurnRunState(TypedDict):

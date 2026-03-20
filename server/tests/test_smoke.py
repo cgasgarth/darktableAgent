@@ -1,5 +1,6 @@
 import base64
-import threading
+import io
+import json
 
 import pytest
 
@@ -10,6 +11,11 @@ from server.codex_app_server import (
     _TOOL_GET_PREVIEW_IMAGE,
 )
 from shared.protocol import RequestEnvelope
+
+try:
+    from PIL import Image
+except Exception:  # pragma: no cover
+    Image = None
 
 
 def _sample_request(*, live_run: bool = True) -> RequestEnvelope:
@@ -121,6 +127,17 @@ def _init_bridge_with_context(
     return bridge, sent
 
 
+def _jpeg_bytes(
+    color: tuple[int, int, int], *, size: tuple[int, int] = (24, 24)
+) -> bytes:
+    if Image is None:
+        pytest.skip("Pillow is required for verifier smoke tests")
+    image = Image.new("RGB", size, color)
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
 def _apply_exposure_tool_call(
     bridge: CodexAppServerBridge,
     *,
@@ -174,7 +191,7 @@ def test_mid_turn_render_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
     result = sent[0]["result"]
     assert result["success"] is True
-    assert len(result["contentItems"]) == 2
+    assert len(result["contentItems"]) == 3
     assert result["contentItems"][0]["type"] == "inputText"
     assert "Applied 1 operations" in result["contentItems"][0]["text"]
     assert result["contentItems"][1]["type"] == "inputImage"
@@ -182,6 +199,8 @@ def test_mid_turn_render_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "x-darktable-stage=1" in preview_url
     encoded_rendered = base64.b64encode(rendered_jpeg).decode()
     assert preview_url.endswith(f";base64,{encoded_rendered}")
+    assert result["contentItems"][2]["type"] == "inputText"
+    assert "Verifier summary JSON" in result["contentItems"][2]["text"]
 
     assert context.preview_data_url == preview_url
     assert context.rendered_preview_bytes is None
@@ -333,3 +352,50 @@ def test_sequential_applies_update_preview_each_time(
     preview_2 = sent[0]["result"]["contentItems"][1]["imageUrl"]
     assert "x-darktable-stage=2" in preview_2
     assert preview_1 != preview_2
+
+
+def test_live_verifier_flags_highlight_regression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _sample_request(live_run=True)
+    assert request.imageSnapshot.preview is not None
+    request.imageSnapshot.preview.base64Data = base64.b64encode(
+        _jpeg_bytes((32, 32, 32))
+    ).decode()
+    bridge, sent = _init_bridge_with_context(request)
+    context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+    assert context is not None
+
+    def _mock_wait(timeout=None):
+        context.rendered_preview_bytes = _jpeg_bytes((255, 255, 255))
+        return True
+
+    monkeypatch.setattr(context.render_event, "wait", _mock_wait)
+    _apply_exposure_tool_call(bridge, delta=1.0)
+
+    verifier_text = sent[0]["result"]["contentItems"][2]["text"]
+    payload = json.loads(verifier_text.split("\n", 1)[1])
+    assert payload["status"] == "fail"
+    assert payload["checks"][0]["name"] == "highlight-clipping"
+
+
+def test_live_verifier_passes_safe_edit(monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _sample_request(live_run=True)
+    assert request.imageSnapshot.preview is not None
+    request.imageSnapshot.preview.base64Data = base64.b64encode(
+        _jpeg_bytes((80, 80, 80))
+    ).decode()
+    bridge, sent = _init_bridge_with_context(request)
+    context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+    assert context is not None
+
+    def _mock_wait(timeout=None):
+        context.rendered_preview_bytes = _jpeg_bytes((100, 100, 100))
+        return True
+
+    monkeypatch.setattr(context.render_event, "wait", _mock_wait)
+    _apply_exposure_tool_call(bridge, delta=0.2)
+
+    verifier_text = sent[0]["result"]["contentItems"][2]["text"]
+    payload = json.loads(verifier_text.split("\n", 1)[1])
+    assert payload["status"] == "pass"

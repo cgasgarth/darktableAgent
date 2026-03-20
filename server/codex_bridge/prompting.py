@@ -96,6 +96,7 @@ class PromptingMixin:
                 preview_data_url=preview_data_url,
                 base_preview_mime_type=preview_mime_type,
                 base_preview_bytes=preview_bytes,
+                current_preview_bytes=preview_bytes,
                 preview_mime_type=preview_mime_type,
                 base_image_revision_id=request.imageSnapshot.imageRevisionId,
                 state_payload=state_payload,
@@ -284,9 +285,7 @@ class PromptingMixin:
             history_text = "Prior turns in this conversation:\n" + "\n".join(
                 history[-5:]
             )
-            items.append(
-                {"type": "text", "text": history_text, "text_elements": []}
-            )
+            items.append({"type": "text", "text": history_text, "text_elements": []})
 
         items.append(
             {
@@ -318,18 +317,23 @@ class PromptingMixin:
 
         exif_parts: list[str] = []
         if getattr(meta, "cameraMaker", None):
-            exif_parts.append(f"{meta.cameraMaker} {getattr(meta, 'cameraModel', '')}".strip())
+            exif_parts.append(
+                f"{meta.cameraMaker} {getattr(meta, 'cameraModel', '')}".strip()
+            )
         if getattr(meta, "exifIso", None) is not None:
             exif_parts.append(f"ISO {meta.exifIso}")
         if getattr(meta, "exifAperture", None) is not None:
             exif_parts.append(f"f/{meta.exifAperture}")
         if getattr(meta, "exifFocalLength", None) is not None:
             exif_parts.append(f"{meta.exifFocalLength}mm")
-        if getattr(meta, "exifExposureSeconds", None) is not None and meta.exifExposureSeconds > 0:
+        if (
+            getattr(meta, "exifExposureSeconds", None) is not None
+            and meta.exifExposureSeconds > 0
+        ):
             if meta.exifExposureSeconds >= 1:
                 exif_parts.append(f"{meta.exifExposureSeconds}s")
             else:
-                exif_parts.append(f"1/{int(1/meta.exifExposureSeconds)}s")
+                exif_parts.append(f"1/{int(1 / meta.exifExposureSeconds)}s")
         exif_line = f"EXIF: {', '.join(exif_parts)}\n" if exif_parts else ""
 
         if live_run_enabled:
@@ -357,6 +361,8 @@ class PromptingMixin:
             "- Turn input already includes editable settings, histogram, and (in live mode) preview image.\n"
             "- Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.\n"
             "- apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.\n"
+            "- In live mode, apply_operations also returns a verifier summary JSON block; if verifier status is fail, keep refining before finalizing.\n"
+            "- Before finalizing, consider whether additional provided controls would materially improve tone, color, detail, crop, or noise; do not stop at basic exposure/contrast edits when stronger supported tools are available.\n"
             "- Always optimize toward refinement.goalText.\n"
             "- To crop, set the 'crop' or 'clipping' module's normalized [0.0, 1.0] parameters: cx=left edge, cy=top edge, cw=right edge, ch=bottom edge. No crop = cx=0, cy=0, cw=1, ch=1. Example: bottom-right quadrant = cx=0.5, cy=0.5, cw=1.0, ch=1.0.\n"
             f"{mode_block}"
