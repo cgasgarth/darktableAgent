@@ -18,6 +18,7 @@ from .request_state import RequestStateMixin
 from .tool_routing import ToolRoutingMixin
 from .transport import TransportMixin
 from .turns import TurnsMixin
+from .verifier import VerifierMixin
 
 
 class CodexAppServerBridge(
@@ -25,6 +26,7 @@ class CodexAppServerBridge(
     ToolRoutingMixin,
     OperationsMixin,
     PromptingMixin,
+    VerifierMixin,
     TransportMixin,
     RequestStateMixin,
 ):
@@ -37,7 +39,9 @@ class CodexAppServerBridge(
     ) -> None:
         command_env = os.environ.get("DARKTABLE_AGENT_CODEX_APP_SERVER_CMD")
         self._command = (
-            shlex.split(command_env) if command_env else list(command or _DEFAULT_COMMAND)
+            shlex.split(command_env)
+            if command_env
+            else list(command or _DEFAULT_COMMAND)
         )
         self._cwd = str((cwd or _REPO_ROOT).resolve())
         self._timeout_seconds = timeout_seconds
@@ -69,7 +73,9 @@ class CodexAppServerBridge(
                 self._raise_if_cancelled_locked(active_request)
                 self._ensure_initialized_locked(deadline)
                 self._raise_if_cancelled_locked(active_request)
-                thread_reused = request.session.conversationId in self._conversation_threads
+                thread_reused = (
+                    request.session.conversationId in self._conversation_threads
+                )
                 self._set_active_request_status_locked(
                     request.requestId,
                     status="starting-thread",

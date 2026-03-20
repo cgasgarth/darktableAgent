@@ -201,7 +201,10 @@ class ToolRoutingMixin:
 
         requires_render = getattr(context, "requires_render_callback", False)
         if requires_render:
-            logger.info("waiting_for_mid_turn_render", extra={"structured": {"threadId": thread_id, "turnId": turn_id}})
+            logger.info(
+                "waiting_for_mid_turn_render",
+                extra={"structured": {"threadId": thread_id, "turnId": turn_id}},
+            )
             render_arrived = context.render_event.wait(timeout=15.0)
 
             with self._state_lock:
@@ -211,6 +214,7 @@ class ToolRoutingMixin:
 
             if render_arrived and rendered_bytes:
                 context.preview_mime_type = "image/jpeg"
+                context.current_preview_bytes = rendered_bytes
                 context.preview_data_url = self._build_data_url(
                     "image/jpeg",
                     rendered_bytes,
@@ -223,8 +227,19 @@ class ToolRoutingMixin:
                             "imageUrl": context.preview_data_url,
                         }
                     )
+                    if tool_name == _TOOL_APPLY_OPERATIONS:
+                        verifier_result = self._build_live_verifier_feedback(context)
+                        response.setdefault("contentItems", []).append(
+                            {
+                                "type": "inputText",
+                                "text": self._verifier_feedback_text(verifier_result),
+                            }
+                        )
             else:
-                logger.warning("mid_turn_render_timeout", extra={"structured": {"threadId": thread_id, "turnId": turn_id}})
+                logger.warning(
+                    "mid_turn_render_timeout",
+                    extra={"structured": {"threadId": thread_id, "turnId": turn_id}},
+                )
                 if response.get("success"):
                     response.setdefault("contentItems", []).append(
                         {
