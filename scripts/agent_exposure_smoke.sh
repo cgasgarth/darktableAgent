@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd -P)
+PLATFORM=$(uname -s)
 ASSET_PATH="${ASSET_PATH:-$REPO_ROOT/assets/_DSC8809.ARW}"
 HOST="${HOST:-${DARKTABLE_AGENT_SERVER_HOST:-127.0.0.1}}"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_ROOT/.venv/bin/python}"
@@ -130,7 +131,7 @@ if ! curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
 fi
 
 launcher=("$SCRIPT_DIR/run_darktable_local.sh" --foreground --disable-opencl "$ASSET_PATH")
-if [[ -z "${DISPLAY:-}" ]]; then
+if [[ "$PLATFORM" == "Linux" && -z "${DISPLAY:-}" ]]; then
   if command -v xvfb-run >/dev/null 2>&1; then
     launcher=(xvfb-run -a "${launcher[@]}")
   else
