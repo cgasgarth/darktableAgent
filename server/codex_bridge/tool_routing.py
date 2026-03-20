@@ -38,7 +38,7 @@ class ToolRoutingMixin:
         return [
             {
                 "name": _TOOL_GET_IMAGE_STATE,
-                "description": "Get current image state for planning: editable settings and trimmed histogram.",
+                "description": "Get current image state for planning: editable settings, trimmed histogram, and compact analysis signals.",
                 "inputSchema": empty_object_schema,
             },
             {

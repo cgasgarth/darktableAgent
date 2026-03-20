@@ -1,4 +1,5 @@
 import base64
+import io
 import time
 
 import pytest
@@ -17,6 +18,12 @@ from server.codex_app_server import (
     TurnRunState,
 )
 from shared.protocol import AgentPlan, RequestEnvelope
+
+try:
+    from PIL import Image, ImageDraw
+except Exception:  # pragma: no cover
+    Image = None
+    ImageDraw = None
 
 
 def _sample_request() -> RequestEnvelope:
@@ -157,7 +164,24 @@ def _sample_request() -> RequestEnvelope:
                         "stepNumber": 0.001,
                     },
                 ],
-                "history": [],
+                "history": [
+                    {
+                        "num": 0,
+                        "module": "exposure",
+                        "enabled": True,
+                        "multiPriority": 0,
+                        "instanceName": "exposure",
+                        "iopOrder": 20,
+                    },
+                    {
+                        "num": 1,
+                        "module": "colorequal",
+                        "enabled": True,
+                        "multiPriority": 0,
+                        "instanceName": "color equalizer",
+                        "iopOrder": 65,
+                    },
+                ],
                 "preview": {
                     "previewId": "preview-1",
                     "mimeType": "image/jpeg",
@@ -177,6 +201,18 @@ def _sample_request() -> RequestEnvelope:
             },
         }
     )
+
+
+def _region_preview_bytes() -> bytes:
+    if Image is None or ImageDraw is None:
+        pytest.skip("Pillow is required for region summary tests")
+    image = Image.new("RGB", (120, 90), (180, 170, 160))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 119, 28), fill=(70, 130, 220))
+    draw.rectangle((35, 28, 85, 78), fill=(210, 165, 130))
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    return buffer.getvalue()
 
 
 def _sample_request_with_white_balance_controls() -> RequestEnvelope:
@@ -477,6 +513,31 @@ def test_prompt_payload_includes_all_histogram_channels() -> None:
             "blue": {"bins": [0, 30, 40, 30]},
         },
     }
+    analysis = payload["imageSnapshot"]["analysisSignals"]
+    assert analysis["activeModuleCount"] == 2
+    assert analysis["activeModulesInOrder"][0]["moduleId"] == "exposure"
+    assert analysis["activeModulesInOrder"][1]["moduleId"] == "colorequal"
+    assert analysis["tonal"]["highlightClipEstimate"] == pytest.approx(0.3)
+    assert analysis["quality"]["noiseRisk"] == "low"
+    assert analysis["quality"]["sharpnessEstimate"] == "unknown"
+
+
+def test_prompt_payload_derives_region_summaries_when_preview_is_decodable() -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request()
+    assert request.imageSnapshot.preview is not None
+    request.imageSnapshot.preview.base64Data = base64.b64encode(
+        _region_preview_bytes()
+    ).decode()
+
+    payload = bridge._build_prompt_payload(request)  # type: ignore[attr-defined]
+
+    analysis = payload["imageSnapshot"]["analysisSignals"]
+    region_kinds = {region["kind"] for region in analysis["regionSummaries"]}
+    assert "sky-candidate" in region_kinds
+    assert "skin-candidate" in region_kinds
 
 
 def test_prompt_payload_rebins_histogram_when_luma_bin_count_exceeds_limit() -> None:
@@ -542,6 +603,7 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "tool calls in this run." in prompt
     assert "Live run mode is enabled" in prompt
     assert "Turn input includes the current preview image" in prompt
+    assert "compact analysis signals" in prompt
     assert "apply_operations returns the refreshed preview automatically" in prompt
     assert "do not stop at basic exposure/contrast edits" in prompt
     assert "Apply at least one edit batch within the first" in prompt
@@ -575,6 +637,7 @@ def test_turn_input_in_live_mode_includes_prompt_state_and_initial_preview_image
     assert items[0]["type"] == "text"
     assert items[1]["type"] == "text"
     assert str(items[1]["text"]).startswith("Current image state JSON:\n")
+    assert '"analysisSignals"' in str(items[1]["text"])
     assert '"editableSettings"' in str(items[1]["text"])
     assert '"histogram"' in str(items[1]["text"])
     assert items[2]["type"] == "image"

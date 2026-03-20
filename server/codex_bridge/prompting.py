@@ -11,6 +11,7 @@ from shared.protocol import AgentPlan, RequestEnvelope
 
 from .config import _DEFAULT_HISTOGRAM_BINS, _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
 from .errors import CodexAppServerError
+from .image_signals import build_image_analysis_signals
 from .models import TurnContext
 
 try:
@@ -252,12 +253,18 @@ class PromptingMixin:
             value = getattr(metadata, exif_field, None)
             if value is not None:
                 metadata_payload[exif_field] = value
+        analysis_signals = request.imageSnapshot.analysisSignals
         return {
             "imageSnapshot": {
                 "imageRevisionId": request.imageSnapshot.imageRevisionId,
                 "metadata": metadata_payload,
                 "editableSettings": compact_settings,
                 "histogram": self._trim_histogram_payload(request),
+                "analysisSignals": (
+                    analysis_signals.model_dump(mode="json")
+                    if analysis_signals is not None
+                    else build_image_analysis_signals(request)
+                ),
                 "preview": (
                     {
                         "mimeType": request.imageSnapshot.preview.mimeType,
@@ -358,7 +365,7 @@ class PromptingMixin:
             f"{exif_line}"
             "\n"
             "Tool usage:\n"
-            "- Turn input already includes editable settings, histogram, and (in live mode) preview image.\n"
+            "- Turn input already includes editable settings, histogram, compact analysis signals, and (in live mode) the preview image.\n"
             "- Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.\n"
             "- apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.\n"
             "- In live mode, apply_operations also returns a verifier summary JSON block; if verifier status is fail, keep refining before finalizing.\n"
