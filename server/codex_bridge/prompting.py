@@ -362,6 +362,7 @@ class PromptingMixin:
             "- Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.\n"
             "- apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.\n"
             "- In live mode, apply_operations also returns a verifier summary JSON block; if verifier status is fail, keep refining before finalizing.\n"
+            "- Before finalizing, consider whether additional provided controls would materially improve tone, color, detail, crop, or noise; do not stop at basic exposure/contrast edits when stronger supported tools are available.\n"
             "- Always optimize toward refinement.goalText.\n"
             "- To crop, set the 'crop' or 'clipping' module's normalized [0.0, 1.0] parameters: cx=left edge, cy=top edge, cw=right edge, ch=bottom edge. No crop = cx=0, cy=0, cw=1, ch=1. Example: bottom-right quadrant = cx=0.5, cy=0.5, cw=1.0, ch=1.0.\n"
             f"{mode_block}"

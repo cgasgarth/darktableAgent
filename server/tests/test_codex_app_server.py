@@ -14,6 +14,7 @@ from server.codex_app_server import (
     _TOOL_GET_IMAGE_STATE,
     _TOOL_GET_PREVIEW_IMAGE,
     _THREAD_DEVELOPER_INSTRUCTIONS,
+    TurnRunState,
 )
 from shared.protocol import AgentPlan, RequestEnvelope
 
@@ -361,13 +362,17 @@ def test_task_complete_marks_turn_complete() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
-    turn_state = {
+    turn_state: TurnRunState = {
         "thread_id": "thread-1",
         "turn_id": "turn-1",
         "chunks": [],
         "final_message": None,
         "turn_error": None,
         "completed": False,
+        "token_usage_last": None,
+        "token_usage_total": None,
+        "last_activity_at": time.time(),
+        "last_activity_method": None,
     }
 
     bridge._handle_message_locked(  # type: ignore[attr-defined]
@@ -436,12 +441,17 @@ def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None
 
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Core rules" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "expert RAW photo editor" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert (
         "Only emit operations targeting provided settingId/actionPath pairs."
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
     assert (
         "If user intent is broad, infer a reasonable plan"
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
+    assert (
+        "Consider the full set of provided tools and modules"
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
     assert "colorequal" in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -533,6 +543,7 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Live run mode is enabled" in prompt
     assert "Turn input includes the current preview image" in prompt
     assert "apply_operations returns the refreshed preview automatically" in prompt
+    assert "do not stop at basic exposure/contrast edits" in prompt
     assert "Apply at least one edit batch within the first" in prompt
     assert "Respect refinement state" in prompt
     assert "EXIF:" in prompt
@@ -1002,13 +1013,14 @@ def test_apply_operations_tool_updates_state_and_stages_operations(
         sent_payloads.clear()
 
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
-        
+        assert context is not None
+
         def _mock_wait(timeout=None):
             context.rendered_preview_bytes = b"fake-preview-stage-1"
             return True
-            
+
         monkeypatch.setattr(context.render_event, "wait", _mock_wait)
-        
+
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
                 "jsonrpc": "2.0",
@@ -1046,7 +1058,9 @@ def test_apply_operations_tool_updates_state_and_stages_operations(
         assert result["contentItems"][1]["type"] == "inputImage"
         auto_preview = result["contentItems"][1]["imageUrl"]
         assert auto_preview != preview_before
-        assert auto_preview.endswith("x-darktable-stage=1;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTE=")
+        assert auto_preview.endswith(
+            "x-darktable-stage=1;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTE="
+        )
 
         sent_payloads.clear()
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
@@ -1065,7 +1079,9 @@ def test_apply_operations_tool_updates_state_and_stages_operations(
         )
         preview_after = sent_payloads[0]["result"]["contentItems"][0]["imageUrl"]
         assert preview_after != preview_before
-        assert preview_after.endswith("x-darktable-stage=1;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTE=")
+        assert preview_after.endswith(
+            "x-darktable-stage=1;base64,ZmFrZS1wcmV2aWV3LXN0YWdlLTE="
+        )
 
         sent_payloads.clear()
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
@@ -1112,11 +1128,11 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
     try:
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         assert context is not None
-        
+
         def _mock_wait(timeout=None):
             context.rendered_preview_bytes = b"fake-preview-stage-3"
             return True
-            
+
         monkeypatch.setattr(context.render_event, "wait", _mock_wait)
 
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
@@ -1221,9 +1237,7 @@ def test_apply_operations_tool_applies_white_balance_batch_in_stable_order(
 
 def test_apply_operations_tool_resolves_unknown_setting_id_by_unique_action_path(
     monkeypatch: pytest.MonkeyPatch,
-) -> (
-    None
-):
+) -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -1373,9 +1387,7 @@ def test_apply_operations_tool_failed_batch_logs_only_attempted_white_balance_pa
 
 def test_apply_operations_tool_rejects_white_balance_actionpath_settingid_mismatch_without_state_change(
     monkeypatch: pytest.MonkeyPatch,
-) -> (
-    None
-):
+) -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -1439,9 +1451,7 @@ def test_apply_operations_tool_rejects_white_balance_actionpath_settingid_mismat
 
 def test_apply_operations_tool_rejects_white_balance_choice_id_mismatch_without_state_change(
     monkeypatch: pytest.MonkeyPatch,
-) -> (
-    None
-):
+) -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
@@ -1534,7 +1544,7 @@ def test_apply_operations_tool_rejected_for_single_turn_mode(
         context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
         if context:
             monkeypatch.setattr(context.render_event, "wait", lambda timeout=None: True)
-            
+
         bridge._handle_server_request_locked(  # type: ignore[attr-defined]
             {
                 "jsonrpc": "2.0",
@@ -1607,6 +1617,7 @@ def test_tool_call_budget_limits_total_tool_calls() -> None:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 
     from server.codex_bridge.config import _DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS
+
     for i in range(min(_DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS, budget)):
         assert sent_payloads[i]["result"]["success"] is True
     assert sent_payloads[budget]["result"]["success"] is False
@@ -1633,8 +1644,12 @@ def test_live_run_guardrail_requires_apply_after_initial_read_only_calls(
 
     bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
     import server.codex_bridge.tool_routing as _tool_routing_mod
-    monkeypatch.setattr(_tool_routing_mod, "_DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS", 10)
+
+    monkeypatch.setattr(
+        _tool_routing_mod, "_DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS", 10
+    )
     from server.codex_bridge.config import _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
+
     call_count = _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY + 1
     try:
         for request_id in range(31, 31 + call_count):
@@ -1657,10 +1672,15 @@ def test_live_run_guardrail_requires_apply_after_initial_read_only_calls(
 
     for i in range(_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY):
         assert sent_payloads[i]["result"]["success"] is True
-    assert sent_payloads[_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY]["result"]["success"] is False
+    assert (
+        sent_payloads[_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY]["result"]["success"]
+        is False
+    )
     assert (
         "No live edits have been applied yet in live mode"
-        in sent_payloads[_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY]["result"]["contentItems"][0]["text"]
+        in sent_payloads[_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY]["result"][
+            "contentItems"
+        ][0]["text"]
     )
 
 
@@ -1852,7 +1872,7 @@ def test_token_usage_notification_updates_turn_state() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
-    turn_state = {
+    turn_state: TurnRunState = {
         "thread_id": "thread-1",
         "turn_id": "turn-1",
         "chunks": [],
@@ -1861,6 +1881,8 @@ def test_token_usage_notification_updates_turn_state() -> None:
         "completed": False,
         "token_usage_last": None,
         "token_usage_total": None,
+        "last_activity_at": time.time(),
+        "last_activity_method": None,
     }
 
     bridge._handle_message_locked(  # type: ignore[attr-defined]
@@ -1890,6 +1912,8 @@ def test_token_usage_notification_updates_turn_state() -> None:
         turn_state,
     )
 
+    assert turn_state["token_usage_last"] is not None
+    assert turn_state["token_usage_total"] is not None
     assert turn_state["token_usage_last"]["inputTokens"] == 200
     assert turn_state["token_usage_total"]["totalTokens"] == 275
 
@@ -1898,7 +1922,7 @@ def test_token_usage_notification_ignores_other_turns() -> None:
     bridge = CodexAppServerBridge(
         command=["codex", "app-server", "--listen", "stdio://"]
     )
-    turn_state = {
+    turn_state: TurnRunState = {
         "thread_id": "thread-1",
         "turn_id": "turn-1",
         "chunks": [],
@@ -1907,6 +1931,8 @@ def test_token_usage_notification_ignores_other_turns() -> None:
         "completed": False,
         "token_usage_last": None,
         "token_usage_total": None,
+        "last_activity_at": time.time(),
+        "last_activity_method": None,
     }
 
     bridge._handle_message_locked(  # type: ignore[attr-defined]
