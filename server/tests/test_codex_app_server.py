@@ -605,6 +605,7 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Turn input includes the current preview image" in prompt
     assert "compact analysis signals" in prompt
     assert "apply_operations returns the refreshed preview automatically" in prompt
+    assert "Do not introduce new operations in the final JSON" in prompt
     assert "do not stop at basic exposure/contrast edits" in prompt
     assert "Apply at least one edit batch within the first" in prompt
     assert "Respect refinement state" in prompt
@@ -1852,6 +1853,68 @@ def test_finalize_plan_with_live_context_merges_applied_operations() -> None:
                     "assistantText": "done",
                     "continueRefining": True,
                     "operations": [],
+                }
+            ),
+            context,
+        )
+        assert plan.continueRefining is False
+        assert len(plan.operations) == 1
+        assert plan.operations[0].operationId == "applied-1"
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+
+def test_finalize_plan_with_live_context_drops_unapplied_tail_operations() -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    try:
+        context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert context is not None
+        context.applied_operations.append(
+            {
+                "operationId": "applied-1",
+                "sequence": 1,
+                "kind": "set-float",
+                "target": {
+                    "type": "darktable-action",
+                    "actionPath": "iop/exposure/exposure",
+                    "settingId": "setting.exposure.primary",
+                },
+                "value": {"mode": "delta", "number": 0.5},
+                "reason": None,
+                "constraints": {
+                    "onOutOfRange": "clamp",
+                    "onRevisionMismatch": "fail",
+                },
+            }
+        )
+        plan = bridge._finalize_plan_with_live_context(  # type: ignore[attr-defined]
+            AgentPlan.model_validate(
+                {
+                    "assistantText": "done",
+                    "continueRefining": False,
+                    "operations": [
+                        {
+                            "operationId": "bad-tail",
+                            "sequence": 1,
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/colorbalancergb/contrast",
+                                "settingId": "setting.iop.colorbalancergb.global.contrast.instance.0",
+                            },
+                            "value": {"mode": "delta", "number": 0.2},
+                            "reason": None,
+                            "constraints": {
+                                "onOutOfRange": "clamp",
+                                "onRevisionMismatch": "fail",
+                            },
+                        }
+                    ],
                 }
             ),
             context,

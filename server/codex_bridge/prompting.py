@@ -13,6 +13,7 @@ from .config import _DEFAULT_HISTOGRAM_BINS, _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APP
 from .errors import CodexAppServerError
 from .image_signals import build_image_analysis_signals
 from .models import TurnContext
+from .prompt_templates import render_prompt_template
 
 try:
     from PIL import Image, ImageEnhance
@@ -123,11 +124,14 @@ class PromptingMixin:
         if context is None:
             return plan
 
-        merged_operations = [
-            operation.model_dump(mode="json") for operation in plan.operations
-        ]
-        if context.applied_operations:
-            merged_operations = list(context.applied_operations) + merged_operations
+        if context.live_run_enabled and context.applied_operations:
+            merged_operations = list(context.applied_operations)
+        else:
+            merged_operations = [
+                operation.model_dump(mode="json") for operation in plan.operations
+            ]
+            if context.applied_operations:
+                merged_operations = list(context.applied_operations) + merged_operations
 
         if not merged_operations:
             return AgentPlan.model_validate(
@@ -343,6 +347,7 @@ class PromptingMixin:
                 exif_parts.append(f"1/{int(1 / meta.exifExposureSeconds)}s")
         exif_line = f"EXIF: {', '.join(exif_parts)}\n" if exif_parts else ""
 
+        exif_block = f"{exif_line.strip()}\n" if exif_line else ""
         if live_run_enabled:
             mode_block = (
                 "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
@@ -355,27 +360,19 @@ class PromptingMixin:
         else:
             mode_block = "Single-turn mode: do not call apply_operations; return operations directly in final JSON.\n"
 
-        return (
-            "Plan the next darktable response for this request.\n\n"
-            f"Goal: {request.refinement.goalText}\n"
-            f"Latest user message: {request.message.text}\n"
-            f"Refinement: mode={request.refinement.mode}, pass={request.refinement.passIndex}/{request.refinement.maxPasses}\n"
-            f"Tool budget: maximum {max_tool_calls} tool calls in this run.\n"
-            f"Image: {request.uiContext.imageName or 'unknown'} ({meta.width}x{meta.height})\n"
-            f"{exif_line}"
-            "\n"
-            "Tool usage:\n"
-            "- Turn input already includes editable settings, histogram, compact analysis signals, and (in live mode) the preview image.\n"
-            "- Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.\n"
-            "- apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.\n"
-            "- In live mode, apply_operations also returns a verifier summary JSON block; if verifier status is fail, keep refining before finalizing.\n"
-            "- Before finalizing, consider whether additional provided controls would materially improve tone, color, detail, crop, or noise; do not stop at basic exposure/contrast edits when stronger supported tools are available.\n"
-            "- Always optimize toward refinement.goalText.\n"
-            "- To crop, set the 'crop' or 'clipping' module's normalized [0.0, 1.0] parameters: cx=left edge, cy=top edge, cw=right edge, ch=bottom edge. No crop = cx=0, cy=0, cw=1, ch=1. Example: bottom-right quadrant = cx=0.5, cy=0.5, cw=1.0, ch=1.0.\n"
-            f"{mode_block}"
-            "\n"
-            "Respect refinement state: treat passIndex/maxPasses as budget, set continueRefining=false once safe gains are exhausted.\n"
-            "Return only the JSON object required by the output schema."
+        return render_prompt_template(
+            "turn_prompt.txt",
+            goal_text=request.refinement.goalText,
+            latest_user_message=request.message.text,
+            refinement_mode=request.refinement.mode,
+            pass_index=request.refinement.passIndex,
+            max_passes=request.refinement.maxPasses,
+            max_tool_calls=max_tool_calls,
+            image_name=request.uiContext.imageName or "unknown",
+            width=meta.width,
+            height=meta.height,
+            exif_block=exif_block,
+            mode_block=mode_block,
         )
 
     @staticmethod
