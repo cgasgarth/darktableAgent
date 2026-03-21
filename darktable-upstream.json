@@ -1,0 +1,37 @@
+{
+  "repository": "https://github.com/darktable-org/darktable.git",
+  "trackedTag": "release-5.4.1",
+  "compareRoot": "darktable",
+  "ignoreGlobs": [
+    ".git",
+    ".git/**",
+    ".github/**",
+    ".githooks/**",
+    ".gitattributes",
+    ".gitignore",
+    ".gitmodules",
+    ".gitpod.Dockerfile",
+    ".gitpod.yml",
+    ".install-*/**",
+    "build-*/**",
+    "packaging/**/.gitignore",
+    "src/external/**",
+    "src/tests/integration/**",
+    "tools/noise/.gitignore",
+    "src/version_gen.c"
+  ],
+  "expectedModifiedFiles": [
+    "CMakeLists.txt",
+    "src/CMakeLists.txt",
+    "src/develop/develop.h",
+    "src/iop/colorzones.c",
+    "src/iop/rgblevels.c",
+    "src/tests/CMakeLists.txt",
+    "src/views/darkroom.c"
+  ],
+  "expectedExtraGlobs": [
+    "src/common/agent_*.c",
+    "src/common/agent_*.h",
+    "src/tests/agent_catalog.c"
+  ]
+}

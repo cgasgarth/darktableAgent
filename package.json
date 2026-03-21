@@ -5,6 +5,7 @@
     "bootstrap": "./scripts/install.sh",
     "build:serve": "npm run darktable:build-and-start && npm run server:start",
     "darktable:build": "./scripts/build_darktable_local.sh",
+    "darktable:upstream-status": "python3 ./scripts/darktable_upstream.py status",
     "darktable:start": "./scripts/run_darktable_local.sh",
     "darktable:build-and-start": "npm run darktable:build && npm run darktable:start",
     "server:start": "./scripts/run_server.sh",
