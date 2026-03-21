@@ -351,6 +351,7 @@ class PromptingMixin:
         if live_run_enabled:
             mode_block = (
                 "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
+                "Inside each apply_operations call, operations are auto-applied one at a time with a fresh render after each step.\n"
                 "Turn input includes the current preview image, editable settings, and histogram.\n"
                 "After each apply_operations call, inspect the refreshed preview and re-check get_image_state when you need refreshed exact state.\n"
                 f"Apply at least one edit batch within the first {_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY + 2} tool calls.\n"

@@ -73,6 +73,7 @@ class TurnContext:
     rendered_preview_bytes: bytes | None = None
     requires_render_callback: bool = False
     last_applied_batch: list[dict[str, Any]] = field(default_factory=list)
+    last_applied_summary: str | None = None
     last_verifier_status: str | None = None
     last_verifier_summary: str | None = None
 

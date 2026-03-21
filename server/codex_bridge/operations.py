@@ -3,7 +3,6 @@ from __future__ import annotations
 # pyright: reportAttributeAccessIssue=false
 
 import copy
-import io
 import json
 from typing import Any
 
@@ -18,6 +17,9 @@ class OperationsMixin:
         self,
         context: TurnContext,
         arguments: dict[str, Any],
+        *,
+        thread_id: str | None = None,
+        turn_id: str | None = None,
     ) -> dict[str, Any]:
         if not context.live_run_enabled:
             return self._tool_error_response(
@@ -74,12 +76,14 @@ class OperationsMixin:
                     error=apply_error,
                 )
                 return self._tool_error_response(apply_error)
-
         applied_batch: list[dict[str, Any]] = []
-        for operation in ordered_batch:
-            apply_error, _ = self._apply_operation_to_settings(
-                context.setting_by_id, operation
-            )
+        step_summaries: list[str] = []
+        latest_preview_url: str | None = None
+        latest_verifier_result: dict[str, Any] | None = None
+        render_warnings: list[str] = []
+
+        for step_index, operation in enumerate(ordered_batch, start=1):
+            apply_error = self._apply_live_operation_step(context, operation)
             if apply_error:
                 self._log_white_balance_tool_call(
                     context,
@@ -89,11 +93,81 @@ class OperationsMixin:
                     error=apply_error,
                 )
                 return self._tool_error_response(apply_error)
-            applied_batch.append(operation)
-            context.applied_operations.append(operation)
 
-        context.next_operation_sequence += len(applied_batch)
-        context.last_applied_batch = list(applied_batch)
+            applied_batch.append(operation)
+            step_summary = self._summarize_live_operation(context, operation)
+            step_summaries.append(step_summary)
+            context.last_applied_summary = step_summary
+
+            if thread_id and turn_id:
+                self._set_active_request_status_for_turn_locked(
+                    thread_id,
+                    turn_id,
+                    status="running",
+                    message=(
+                        f"Applied live edit step {step_index}/{len(ordered_batch)}: "
+                        f"{step_summary}"
+                    ),
+                    last_tool_name=_TOOL_APPLY_OPERATIONS,
+                )
+
+            preview_url, verifier_result, warning = self._wait_for_live_render(context)
+            if preview_url is not None:
+                latest_preview_url = preview_url
+            if verifier_result is not None:
+                latest_verifier_result = verifier_result
+            if warning is not None:
+                render_warnings.append(warning)
+        self._log_white_balance_tool_call(
+            context,
+            ordered_batch,
+            applied_batch,
+            success=True,
+        )
+
+        content_items: list[dict[str, Any]] = [
+            {
+                "type": "inputText",
+                "text": (
+                    f"Applied {len(applied_batch)} operations stepwise in this call; "
+                    f"{len(context.applied_operations)} total live edits applied. "
+                    f"Steps: {'; '.join(step_summaries)}. "
+                    "Refreshed preview image included below."
+                ),
+            }
+        ]
+        if latest_preview_url is not None:
+            content_items.append(
+                {
+                    "type": "inputImage",
+                    "imageUrl": latest_preview_url,
+                }
+            )
+        for warning in render_warnings:
+            content_items.append({"type": "inputText", "text": warning})
+        if latest_verifier_result is not None:
+            content_items.append(
+                {
+                    "type": "inputText",
+                    "text": self._verifier_feedback_text(latest_verifier_result),
+                }
+            )
+        return {"success": True, "contentItems": content_items}
+
+    def _apply_live_operation_step(
+        self,
+        context: TurnContext,
+        operation: dict[str, Any],
+    ) -> str | None:
+        apply_error, _ = self._apply_operation_to_settings(
+            context.setting_by_id, operation
+        )
+        if apply_error:
+            return apply_error
+
+        context.applied_operations.append(operation)
+        context.next_operation_sequence += 1
+        context.last_applied_batch = [operation]
         image_snapshot = context.state_payload.get("imageSnapshot")
         if isinstance(image_snapshot, dict):
             image_snapshot["imageRevisionId"] = (
@@ -103,26 +177,88 @@ class OperationsMixin:
         context.requires_render_callback = True
         context.render_event.clear()
         context.rendered_preview_bytes = None
-        self._log_white_balance_tool_call(
-            context,
-            ordered_batch,
-            applied_batch,
-            success=True,
-        )
+        return None
 
-        return {
-            "success": True,
-            "contentItems": [
-                {
-                    "type": "inputText",
-                    "text": (
-                        f"Applied {len(applied_batch)} operations in this call; "
-                        f"{len(context.applied_operations)} total live edits applied. "
-                        "Refreshed preview image included below."
-                    ),
+    def _wait_for_live_render(
+        self, context: TurnContext
+    ) -> tuple[str | None, dict[str, Any] | None, str | None]:
+        logger.info(
+            "waiting_for_mid_turn_render",
+            extra={
+                "structured": {
+                    "threadId": context.base_request.session.conversationId,
+                    "turnId": context.base_request.session.turnId,
                 }
-            ],
-        }
+            },
+        )
+        render_arrived = context.render_event.wait(timeout=15.0)
+        context.requires_render_callback = False
+        rendered_bytes = context.rendered_preview_bytes
+        context.rendered_preview_bytes = None
+
+        if render_arrived and rendered_bytes:
+            context.preview_mime_type = "image/jpeg"
+            context.current_preview_bytes = rendered_bytes
+            context.preview_data_url = self._build_data_url(
+                "image/jpeg",
+                rendered_bytes,
+                revision_token=str(len(context.applied_operations)),
+            )
+            verifier_result = self._build_live_verifier_feedback(context)
+            return context.preview_data_url, verifier_result, None
+
+        warning = "Warning: mid-turn render timed out. The preview image may be stale."
+        logger.warning(
+            "mid_turn_render_timeout",
+            extra={
+                "structured": {
+                    "conversationId": context.base_request.session.conversationId,
+                    "turnId": context.base_request.session.turnId,
+                }
+            },
+        )
+        return None, None, warning
+
+    def _summarize_live_operation(
+        self,
+        context: TurnContext,
+        operation: dict[str, Any],
+    ) -> str:
+        target = operation.get("target")
+        target_dict = target if isinstance(target, dict) else {}
+        action_path = str(target_dict.get("actionPath") or "unknown")
+        setting_id = str(target_dict.get("settingId") or "")
+        setting = context.setting_by_id.get(setting_id, {})
+        module_label = str(setting.get("moduleLabel") or "")
+        control_label = str(setting.get("label") or action_path.rsplit("/", 1)[-1])
+        label = " / ".join(part for part in (module_label, control_label) if part)
+        if not label:
+            label = action_path
+
+        value = operation.get("value")
+        if not isinstance(value, dict):
+            return label
+
+        kind = operation.get("kind")
+        if kind == "set-float":
+            number = value.get("number")
+            mode = value.get("mode")
+            if isinstance(number, (int, float)):
+                if mode == "delta":
+                    return f"{label} {float(number):+0.3f}"
+                return f"{label} = {float(number):0.3f}"
+        if kind == "set-choice":
+            choice_id = value.get("choiceId")
+            choice_value = value.get("choiceValue")
+            if isinstance(choice_id, str) and choice_id:
+                return f"{label} -> {choice_id}"
+            if isinstance(choice_value, int):
+                return f"{label} -> choice {choice_value}"
+        if kind == "set-bool":
+            bool_value = value.get("boolValue")
+            if isinstance(bool_value, bool):
+                return f"{label} -> {'on' if bool_value else 'off'}"
+        return label
 
     @staticmethod
     def _clamp(value: float, minimum: float, maximum: float) -> float:
