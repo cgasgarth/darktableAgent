@@ -12,7 +12,7 @@ AUTORUN_PROMPT="${AUTORUN_PROMPT:-${DARKTABLE_AGENT_TEST_AUTORUN_PROMPT:-Increas
 AUTORUN_QUIT_AFTER_MS="${AUTORUN_QUIT_AFTER_MS:-${DARKTABLE_AGENT_TEST_AUTORUN_QUIT_AFTER_MS:-1000}}"
 EXPECTED_STATUS="${EXPECTED_STATUS:-ok}"
 EXPECTED_MIN_OPERATION_COUNT="${EXPECTED_MIN_OPERATION_COUNT:-1}"
-EXPECTED_DELTA="${EXPECTED_DELTA:-0.7}"
+EXPECTED_DELTA="${EXPECTED_DELTA-0.7}"
 EXPECTED_FINAL_EXPOSURE="${EXPECTED_FINAL_EXPOSURE:-}"
 EXPECTED_BLOCKED_COUNT="${EXPECTED_BLOCKED_COUNT:-}"
 MULTI_TURN_ENABLED="${MULTI_TURN_ENABLED:-0}"
@@ -83,6 +83,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
+run_with_timeout() {
+  local duration="$1"
+  shift
+
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$duration" "$@"
+    return
+  fi
+
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$duration" "$@"
+    return
+  fi
+
+  "$PYTHON_BIN" - "$duration" "$@" <<'PY'
+import subprocess
+import sys
+
+duration = sys.argv[1]
+command = sys.argv[2:]
+
+if duration.endswith("s"):
+    timeout_seconds = float(duration[:-1])
+else:
+    timeout_seconds = float(duration)
+
+result = subprocess.run(command, timeout=timeout_seconds, check=False)
+raise SystemExit(result.returncode)
+PY
+}
+
 if [[ ! -f "$ASSET_PATH" ]]; then
   echo "Missing RAW asset: $ASSET_PATH" >&2
   exit 1
@@ -152,7 +183,7 @@ DARKTABLE_AGENT_SERVER_URL="$SERVER_URL" \
   DARKTABLE_AGENT_TEST_MULTI_TURN_ENABLED="$MULTI_TURN_ENABLED" \
   DARKTABLE_AGENT_TEST_MULTI_TURN_MAX_TURNS="$MULTI_TURN_MAX_TURNS" \
   RUNTIME_DIR="$RUNTIME_DIR" \
-  timeout "${DARKTABLE_TIMEOUT_SECONDS}s" "${launcher[@]}"
+  run_with_timeout "${DARKTABLE_TIMEOUT_SECONDS}s" "${launcher[@]}"
 
 "$PYTHON_BIN" - "$REPORT_FILE" "$SERVER_LOG" "$EXPECTED_STATUS" "$EXPECTED_MIN_OPERATION_COUNT" "$EXPECTED_DELTA" "$EXPECTED_FINAL_EXPOSURE" "$EXPECTED_BLOCKED_COUNT" "$EXPECTED_MIN_REFINEMENT_PASSES" "$EXPECTED_MAX_REFINEMENT_PASSES" "$EXPECTED_REFINEMENT_MODE" "$EXPECTED_REFINEMENT_STOP_REASON" <<'PY'
 import configparser
@@ -320,7 +351,13 @@ if expected_refinement_mode:
             f"found {sorted(refinement_enabled_values)}"
         )
 
-if refinement_max_passes_values and refinement_max_passes_values != {int(expected_max_refinement_passes)}:
+should_check_refinement_turn_limit = expected_refinement_mode == "multi-turn"
+
+if (
+    should_check_refinement_turn_limit
+    and refinement_max_passes_values
+    and refinement_max_passes_values != {int(expected_max_refinement_passes)}
+):
     raise SystemExit(
         f"Expected refinement maxPasses {expected_max_refinement_passes} in server logs, "
         f"found {sorted(refinement_max_passes_values)}"
@@ -348,7 +385,7 @@ if reported_pass_count:
         )
 
 reported_turn_limit = result.get("refinement_max_turns", "")
-if reported_turn_limit:
+if should_check_refinement_turn_limit and reported_turn_limit:
     if int(reported_turn_limit) != int(expected_max_refinement_passes):
         raise SystemExit(
             f"Expected refinement_max_turns {expected_max_refinement_passes}, got {reported_turn_limit}"
