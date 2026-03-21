@@ -21,6 +21,7 @@ CONFIG_PATH = REPO_ROOT / "darktable-upstream.json"
 @dataclass(frozen=True)
 class UpstreamConfig:
     repository: str
+    original_base_tag: str
     tracked_tag: str
     compare_root: Path
     ignore_globs: tuple[str, ...]
@@ -51,6 +52,7 @@ def load_config() -> UpstreamConfig:
     payload = json.loads(CONFIG_PATH.read_text())
     return UpstreamConfig(
         repository=str(payload["repository"]),
+        original_base_tag=str(payload["originalBaseTag"]),
         tracked_tag=str(payload["trackedTag"]),
         compare_root=REPO_ROOT / str(payload["compareRoot"]),
         ignore_globs=tuple(str(value) for value in payload.get("ignoreGlobs", [])),
@@ -184,7 +186,8 @@ def compare_against_upstream(config: UpstreamConfig, tag: str) -> CompareReport:
 
 
 def print_text_report(config: UpstreamConfig, report: CompareReport) -> None:
-    print(f"Tracked upstream tag: {config.tracked_tag}")
+    print(f"Original base tag: {config.original_base_tag}")
+    print(f"Tracked current-match tag: {config.tracked_tag}")
     print(f"Compared tag: {report.tag}")
     print(f"Modified upstream files: {len(report.modified_files)}")
     print(f"Missing upstream files: {len(report.missing_files)}")
@@ -226,6 +229,7 @@ def print_text_report(config: UpstreamConfig, report: CompareReport) -> None:
 
 def print_json_report(config: UpstreamConfig, report: CompareReport) -> None:
     payload = {
+        "originalBaseTag": config.original_base_tag,
         "trackedTag": config.tracked_tag,
         "comparedTag": report.tag,
         "modifiedFiles": list(report.modified_files),
