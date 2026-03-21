@@ -5,13 +5,17 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  server-checks:
+  unit-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -22,11 +26,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -46,10 +45,64 @@ jobs:
       - name: Run Python type checks
         run: uvx pyright server shared
 
+  darktable-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Enable apt source repositories
+        run: |
+          sudo python3 - <<'PY'
+          from pathlib import Path
+
+          sources = [Path('/etc/apt/sources.list')]
+          sources.extend(sorted(Path('/etc/apt/sources.list.d').glob('*.sources')))
+
+          for path in sources:
+              if not path.exists():
+                  continue
+              text = path.read_text()
+              original = text
+              if path.suffix == '.sources':
+                  text = text.replace('Types: deb\n', 'Types: deb deb-src\n')
+              else:
+                  lines = []
+                  for line in text.splitlines():
+                      if line.startswith('# deb-src '):
+                          lines.append(line[2:])
+                      else:
+                          lines.append(line)
+                  text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+              if text != original:
+                  path.write_text(text)
+          PY
+
+      - name: Install Linux build and headless test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get build-dep -y darktable
+          sudo apt-get install -y cmake curl ninja-build xvfb
+
+      - name: Build darktable
+        run: ./scripts/build_darktable_local.sh
+
+      - name: Package darktable install
+        run: tar -C darktable -cf "${RUNNER_TEMP}/darktable-install.tar" .install-5.4.1
+
+      - name: Upload darktable install artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: darktable-install
+          path: ${{ runner.temp }}/darktable-install.tar
+          retention-days: 7
+          compression-level: 0
+
   mock-e2e:
     runs-on: ubuntu-latest
-    needs: server-checks
-    timeout-minutes: 90
+    needs: darktable-build
+    timeout-minutes: 45
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -94,18 +147,30 @@ jobs:
                   path.write_text(text)
           PY
 
-      - name: Install Linux build and headless test dependencies
+      - name: Install Linux runtime and headless test dependencies
         run: |
           sudo apt-get update
           sudo apt-get build-dep -y darktable
-          sudo apt-get install -y cmake curl ninja-build xvfb
+          sudo apt-get install -y curl xvfb
 
       - name: Install Python dependencies
         run: uv sync --extra dev
 
+      - name: Download darktable install artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: darktable-install
+          path: ${{ runner.temp }}/darktable-install
+
+      - name: Extract darktable install artifact
+        run: |
+          mkdir -p "${RUNNER_TEMP}/darktable-install-root"
+          tar -C "${RUNNER_TEMP}/darktable-install-root" -xf "${RUNNER_TEMP}/darktable-install/darktable-install.tar"
+
       - name: Run single-turn mock smoke test
         env:
           CLEAN_RUNTIME: '1'
+          INSTALL_PREFIX: ${{ runner.temp }}/darktable-install-root/.install-5.4.1
           KEEP_ARTIFACTS: '1'
           REPORT_FILE: ${{ runner.temp }}/single-turn-report.ini
           RUNTIME_DIR: ${{ runner.temp }}/darktable-runtime-single
@@ -116,6 +181,7 @@ jobs:
       - name: Run multi-turn mock smoke test
         env:
           CLEAN_RUNTIME: '1'
+          INSTALL_PREFIX: ${{ runner.temp }}/darktable-install-root/.install-5.4.1
           KEEP_ARTIFACTS: '1'
           REPORT_FILE: ${{ runner.temp }}/multi-turn-report.ini
           RUNTIME_DIR: ${{ runner.temp }}/darktable-runtime-multi
@@ -129,6 +195,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: mock-e2e-artifacts
+          retention-days: 7
           path: |
             ${{ runner.temp }}/single-turn-report.ini
             ${{ runner.temp }}/single-turn-server.log
