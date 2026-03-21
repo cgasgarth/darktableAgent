@@ -605,6 +605,7 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Turn input includes the current preview image" in prompt
     assert "compact analysis signals" in prompt
     assert "apply_operations returns the refreshed preview automatically" in prompt
+    assert "operations are auto-applied one at a time" in prompt
     assert "Do not introduce new operations in the final JSON" in prompt
     assert "do not stop at basic exposure/contrast edits" in prompt
     assert "Apply at least one edit batch within the first" in prompt

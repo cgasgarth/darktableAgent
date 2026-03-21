@@ -354,6 +354,74 @@ def test_sequential_applies_update_preview_each_time(
     assert preview_1 != preview_2
 
 
+def test_batched_apply_renders_after_each_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _sample_request(live_run=True)
+    bridge, sent = _init_bridge_with_context(request)
+    context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+    assert context is not None
+
+    render_payloads = [b"rendered-step-1", b"rendered-step-2"]
+    wait_calls: list[float | None] = []
+
+    def _mock_wait(timeout=None):
+        wait_calls.append(timeout)
+        context.rendered_preview_bytes = render_payloads[len(wait_calls) - 1]
+        return True
+
+    monkeypatch.setattr(context.render_event, "wait", _mock_wait)
+
+    bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+        {
+            "jsonrpc": "2.0",
+            "id": 77,
+            "method": "item/tool/call",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "callId": "call-batch-stepwise",
+                "tool": _TOOL_APPLY_OPERATIONS,
+                "arguments": {
+                    "operations": [
+                        {
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/exposure/exposure",
+                                "settingId": "setting.exposure.primary",
+                            },
+                            "value": {"mode": "delta", "number": 0.2},
+                        },
+                        {
+                            "kind": "set-float",
+                            "target": {
+                                "type": "darktable-action",
+                                "actionPath": "iop/exposure/exposure",
+                                "settingId": "setting.exposure.primary",
+                            },
+                            "value": {"mode": "delta", "number": 0.1},
+                        },
+                    ]
+                },
+            },
+        }
+    )
+
+    result = sent[0]["result"]
+    assert result["success"] is True
+    assert len(wait_calls) == 2
+    assert "Applied 2 operations stepwise" in result["contentItems"][0]["text"]
+    assert result["contentItems"][1]["type"] == "inputImage"
+    assert "x-darktable-stage=2" in result["contentItems"][1]["imageUrl"]
+    encoded_rendered = base64.b64encode(render_payloads[-1]).decode()
+    assert result["contentItems"][1]["imageUrl"].endswith(f";base64,{encoded_rendered}")
+    assert len(context.applied_operations) == 2
+    assert context.setting_by_id["setting.exposure.primary"][
+        "currentNumber"
+    ] == pytest.approx(0.3)
+
+
 def test_live_verifier_flags_highlight_regression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

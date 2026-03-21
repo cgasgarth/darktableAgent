@@ -48,7 +48,7 @@ class ToolRoutingMixin:
             },
             {
                 "name": _TOOL_APPLY_OPERATIONS,
-                "description": "Apply one or more darktable operations in the live run and update image state for follow-up tool calls.",
+                "description": "Apply darktable operations in the live run. Operations are auto-applied one at a time with a fresh render after each step so the user can see every change.",
                 "inputSchema": apply_operations_schema,
             },
         ]
@@ -125,38 +125,46 @@ class ToolRoutingMixin:
             guardrail_error = self._register_tool_call_progress_locked(
                 context, tool_name
             )
-            if guardrail_error is not None:
-                response = self._tool_error_response(guardrail_error)
-            elif tool_name == _TOOL_GET_PREVIEW_IMAGE:
-                response = {
-                    "success": True,
-                    "contentItems": [
-                        {"type": "inputImage", "imageUrl": context.preview_data_url}
-                    ],
-                }
-            elif tool_name == _TOOL_GET_IMAGE_STATE:
-                response = {
-                    "success": True,
-                    "contentItems": [
-                        {
-                            "type": "inputText",
-                            "text": json.dumps(
-                                context.state_payload, separators=(",", ":")
-                            ),
-                        }
-                    ],
-                }
-            elif tool_name == _TOOL_APPLY_OPERATIONS:
-                response = self._apply_operations_tool_call(context, arguments)
-            else:
-                response = self._tool_error_response(
-                    f"Unsupported tool '{tool_name}'. Supported tools: {_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_APPLY_OPERATIONS}."
-                )
 
+        if guardrail_error is not None:
+            response = self._tool_error_response(guardrail_error)
+        elif tool_name == _TOOL_GET_PREVIEW_IMAGE:
+            response = {
+                "success": True,
+                "contentItems": [
+                    {"type": "inputImage", "imageUrl": context.preview_data_url}
+                ],
+            }
+        elif tool_name == _TOOL_GET_IMAGE_STATE:
+            response = {
+                "success": True,
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": json.dumps(
+                            context.state_payload, separators=(",", ":")
+                        ),
+                    }
+                ],
+            }
+        elif tool_name == _TOOL_APPLY_OPERATIONS:
+            response = self._apply_operations_tool_call(
+                context,
+                arguments,
+                thread_id=thread_id,
+                turn_id=turn_id,
+            )
+        else:
+            response = self._tool_error_response(
+                f"Unsupported tool '{tool_name}'. Supported tools: {_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_APPLY_OPERATIONS}."
+            )
+
+        with self._state_lock:
             tool_calls_used = context.tool_calls_used
             max_tool_calls = context.max_tool_calls
             applied_operation_count = len(context.applied_operations)
             read_only_streak = context.consecutive_read_only_tool_calls
+            last_applied_summary = context.last_applied_summary
             tool_error = None
             if not response["success"]:
                 content_items = response.get("contentItems")
@@ -175,6 +183,11 @@ class ToolRoutingMixin:
             status="running",
             message=(
                 f"Handled tool {tool_name} ({tool_calls_used}/{max_tool_calls}); {applied_operation_count} live edits"
+                + (
+                    f". Latest step: {last_applied_summary}"
+                    if tool_name == _TOOL_APPLY_OPERATIONS and last_applied_summary
+                    else ""
+                )
                 if response["success"]
                 else f"Tool {tool_name} failed ({tool_calls_used}/{max_tool_calls}): {tool_error or 'No details provided'}"
             ),
@@ -199,7 +212,10 @@ class ToolRoutingMixin:
             },
         )
 
-        requires_render = getattr(context, "requires_render_callback", False)
+        requires_render = (
+            getattr(context, "requires_render_callback", False)
+            and tool_name != _TOOL_APPLY_OPERATIONS
+        )
         if requires_render:
             logger.info(
                 "waiting_for_mid_turn_render",
