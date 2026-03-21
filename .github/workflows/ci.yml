@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  server-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Build backend package
+        run: uv build
+
+      - name: Run pre-commit checks
+        run: uvx pre-commit run --all-files
+
+      - name: Run Python tests
+        run: uv run pytest server/tests
+
+      - name: Run Python type checks
+        run: uvx pyright server shared
+
+  mock-e2e:
+    runs-on: ubuntu-latest
+    needs: server-checks
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Enable apt source repositories
+        run: |
+          sudo python3 - <<'PY'
+          from pathlib import Path
+
+          sources = [Path('/etc/apt/sources.list')]
+          sources.extend(sorted(Path('/etc/apt/sources.list.d').glob('*.sources')))
+
+          for path in sources:
+              if not path.exists():
+                  continue
+              text = path.read_text()
+              original = text
+              if path.suffix == '.sources':
+                  text = text.replace('Types: deb\n', 'Types: deb deb-src\n')
+              else:
+                  lines = []
+                  for line in text.splitlines():
+                      if line.startswith('# deb-src '):
+                          lines.append(line[2:])
+                      else:
+                          lines.append(line)
+                  text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
+              if text != original:
+                  path.write_text(text)
+          PY
+
+      - name: Install Linux build and headless test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get build-dep -y darktable
+          sudo apt-get install -y cmake curl ninja-build xvfb
+
+      - name: Install Python dependencies
+        run: uv sync --extra dev
+
+      - name: Run single-turn mock smoke test
+        env:
+          CLEAN_RUNTIME: '1'
+          KEEP_ARTIFACTS: '1'
+          REPORT_FILE: ${{ runner.temp }}/single-turn-report.ini
+          RUNTIME_DIR: ${{ runner.temp }}/darktable-runtime-single
+          SERVER_LOG: ${{ runner.temp }}/single-turn-server.log
+          SKIP_SERVER_TESTS: '1'
+        run: npm run agent:smoke
+
+      - name: Run multi-turn mock smoke test
+        env:
+          CLEAN_RUNTIME: '1'
+          KEEP_ARTIFACTS: '1'
+          REPORT_FILE: ${{ runner.temp }}/multi-turn-report.ini
+          RUNTIME_DIR: ${{ runner.temp }}/darktable-runtime-multi
+          SERVER_LOG: ${{ runner.temp }}/multi-turn-server.log
+          SKIP_BUILD: '1'
+          SKIP_SERVER_TESTS: '1'
+        run: npm run agent:smoke:multi-turn
+
+      - name: Upload mock smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mock-e2e-artifacts
+          path: |
+            ${{ runner.temp }}/single-turn-report.ini
+            ${{ runner.temp }}/single-turn-server.log
+            ${{ runner.temp }}/multi-turn-report.ini
+            ${{ runner.temp }}/multi-turn-server.log

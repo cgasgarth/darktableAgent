@@ -93,8 +93,16 @@ Run the deterministic smoke test:
 npm run agent:smoke
 ```
 
+Run the deterministic multi-turn smoke test:
+
+```bash
+npm run agent:smoke:multi-turn
+```
+
 On Linux, the smoke script can run headlessly with `xvfb-run`.
 On macOS, run it from a logged-in desktop session so darktable can open normally.
+
+GitHub Actions runs both deterministic single-turn and multi-turn smoke paths against the mock planner backend, so CI exercises the built server and darktable integration without requiring a live GPT/Codex call.
 
 ## Protocol
 

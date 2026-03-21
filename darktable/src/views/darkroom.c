@@ -156,6 +156,15 @@ static void _agent_chat_cancel_active_request(dt_develop_t *dev,
                                               const char *stop_reason);
 static void _agent_chat_progress_finished(const dt_agent_client_progress_t *progress,
                                           gpointer user_data);
+static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
+                                            const char *prompt,
+                                            const char *goal_text,
+                                            const gboolean autorun,
+                                            const gboolean append_user_message,
+                                            const gboolean fast_mode_enabled,
+                                            const dt_agent_refinement_mode_t refinement_mode,
+                                            const guint refinement_pass_index,
+                                            const guint refinement_max_passes);
 static gboolean _agent_chat_apply_operation_range(const GPtrArray *operations,
                                                   const guint start_index,
                                                   dt_agent_execution_report_t *execution_report,
@@ -3137,6 +3146,44 @@ static gboolean _agent_chat_handle_response(dt_develop_t *dev,
   return TRUE;
 }
 
+static gboolean _agent_chat_should_continue_refinement(
+  const dt_agent_client_result_t *result,
+  const dt_agent_chat_submission_t *submission)
+{
+  return result && submission && result->has_response && submission->refinement_enabled
+      && g_strcmp0(result->response.status, "ok") == 0
+      && result->response.refinement_mode == DT_AGENT_REFINEMENT_MODE_MULTI
+      && result->response.refinement_continue
+      && result->response.refinement_pass_index < result->response.refinement_max_passes;
+}
+
+static gboolean _agent_chat_continue_refinement(dt_develop_t *dev,
+                                                const dt_agent_client_result_t *result,
+                                                const dt_agent_chat_submission_t *submission)
+{
+  if(!_agent_chat_should_continue_refinement(result, submission))
+    return FALSE;
+
+  const guint next_pass_index = result->response.refinement_pass_index + 1u;
+  const guint refinement_max_passes
+    = MAX(submission->refinement_max_passes, result->response.refinement_max_passes);
+  g_autofree gchar *status_message
+    = g_strdup_printf(_("Continuing refinement pass %u/%u"),
+                      next_pass_index,
+                      refinement_max_passes);
+  _agent_chat_append_message(dev, _("system"), status_message);
+
+  return _agent_chat_submit_internal(dev,
+                                     submission->prompt_text,
+                                     submission->goal_text,
+                                     submission->autorun,
+                                     FALSE,
+                                     submission->fast_mode_enabled,
+                                     DT_AGENT_REFINEMENT_MODE_MULTI,
+                                     next_pass_index,
+                                     refinement_max_passes);
+}
+
 static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
                                          gpointer user_data)
 {
@@ -3332,6 +3379,11 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     const gboolean handled = _agent_chat_handle_response(dev, &result->response,
                                                          &execution_report, &response_error,
                                                          live_applied_before_finish);
+    if(handled && _agent_chat_continue_refinement(dev, result, submission))
+    {
+      dt_agent_execution_report_clear(&execution_report);
+      return;
+    }
     const char *status = handled ? "ok"
                                  : (g_strcmp0(result->response.status, "error") == 0
                                       ? "server_error"
