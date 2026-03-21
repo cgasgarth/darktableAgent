@@ -99,3 +99,13 @@ On macOS, run it from a logged-in desktop session so darktable can open normally
 ## Protocol
 
 Protocol details are documented in `docs/protocol-v1.md`.
+
+## Upstream darktable tracking
+
+Upstream tracking details are documented in `docs/upstream-darktable.md`.
+
+Check the vendored darktable tree against the tracked upstream release with:
+
+```bash
+npm run darktable:upstream-status
+```

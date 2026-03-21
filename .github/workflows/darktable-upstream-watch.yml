@@ -1,0 +1,70 @@
+name: Watch darktable upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 14 * * 1'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-upstream-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare tracked tag to upstream latest release
+        id: compare
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          import urllib.request
+          from pathlib import Path
+
+          config = json.loads(Path("darktable-upstream.json").read_text())
+          current_tag = config["trackedTag"]
+          api_url = "https://api.github.com/repos/darktable-org/darktable/releases/latest"
+          request = urllib.request.Request(
+              api_url,
+              headers={"Accept": "application/vnd.github+json"},
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              latest = json.load(response)["tag_name"]
+
+          print(f"current_tag={current_tag}")
+          print(f"latest_tag={latest}")
+          print(f"has_update={'true' if latest != current_tag else 'false'}")
+          PY
+
+      - name: Open or update upstream sync issue
+        if: steps.compare.outputs.has_update == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_TAG: ${{ steps.compare.outputs.current_tag }}
+          LATEST_TAG: ${{ steps.compare.outputs.latest_tag }}
+        run: |
+          title="Sync darktable upstream to ${LATEST_TAG}"
+          body=$(cat <<EOF
+          darktable upstream has published a newer release.
+
+          - Current tracked tag: `${CURRENT_TAG}`
+          - Latest upstream tag: `${LATEST_TAG}`
+
+          Suggested next steps:
+
+          1. Create a sync branch from `main`
+          2. Run `python3 scripts/darktable_upstream.py status --tag ${LATEST_TAG}`
+          3. Update the vendored `darktable/` tree
+          4. Refresh `darktable-upstream.json` after the sync lands
+
+          Reference: `docs/upstream-darktable.md`
+          EOF
+          )
+          existing=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --title "$title" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
