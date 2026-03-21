@@ -1,5 +1,6 @@
 {
   "repository": "https://github.com/darktable-org/darktable.git",
+  "originalBaseTag": "release-5.4.0",
   "trackedTag": "release-5.4.1",
   "compareRoot": "darktable",
   "ignoreGlobs": [

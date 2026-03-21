@@ -109,3 +109,5 @@ Check the vendored darktable tree against the tracked upstream release with:
 ```bash
 npm run darktable:upstream-status
 ```
+
+The upstream metadata distinguishes between the original fork base and the current upstream release our vendored tree matches.

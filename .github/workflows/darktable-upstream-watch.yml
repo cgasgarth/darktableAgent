@@ -24,6 +24,7 @@ jobs:
           from pathlib import Path
 
           config = json.loads(Path("darktable-upstream.json").read_text())
+          original_base_tag = config["originalBaseTag"]
           current_tag = config["trackedTag"]
           api_url = "https://api.github.com/repos/darktable-org/darktable/releases/latest"
           request = urllib.request.Request(
@@ -33,6 +34,7 @@ jobs:
           with urllib.request.urlopen(request, timeout=30) as response:
               latest = json.load(response)["tag_name"]
 
+          print(f"original_base_tag={original_base_tag}")
           print(f"current_tag={current_tag}")
           print(f"latest_tag={latest}")
           print(f"has_update={'true' if latest != current_tag else 'false'}")
@@ -42,6 +44,7 @@ jobs:
         if: steps.compare.outputs.has_update == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          ORIGINAL_BASE_TAG: ${{ steps.compare.outputs.original_base_tag }}
           CURRENT_TAG: ${{ steps.compare.outputs.current_tag }}
           LATEST_TAG: ${{ steps.compare.outputs.latest_tag }}
         run: |
@@ -49,6 +52,7 @@ jobs:
           body=$(cat <<EOF
           darktable upstream has published a newer release.
 
+          - Original fork/base tag: `${ORIGINAL_BASE_TAG}`
           - Current tracked tag: `${CURRENT_TAG}`
           - Latest upstream tag: `${LATEST_TAG}`
 
