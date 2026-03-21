@@ -4,6 +4,8 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .analysis_signals import ImageAnalysisSignals
+
 SCHEMA_VERSION = "3.0"
 DEFAULT_REFINEMENT_MAX_PASSES = 15
 
@@ -262,6 +264,7 @@ class ImageSnapshot(StrictBaseModel):
     history: list[ImageHistoryItem]
     preview: PreviewImage | None
     histogram: Histogram | None
+    analysisSignals: ImageAnalysisSignals | None = None
 
 
 class RequestEnvelope(StrictBaseModel):

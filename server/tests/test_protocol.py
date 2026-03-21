@@ -288,6 +288,7 @@ def test_request_envelope_accepts_v3_payload() -> None:
     assert envelope.fast is False
     assert envelope.capabilityManifest.targets[0].supportedModes == ["set", "delta"]
     assert envelope.capabilityManifest.targets[1].defaultBool is False
+    assert envelope.capabilityManifest.targets[2].choices is not None
     assert envelope.capabilityManifest.targets[2].choices[1].choiceId == "rgb"
     assert envelope.capabilityManifest.targets[3].moduleId == "colorequal"
     assert envelope.capabilityManifest.targets[4].moduleLabel == "rgb primaries"
@@ -300,7 +301,9 @@ def test_request_envelope_accepts_v3_payload() -> None:
     assert (
         envelope.imageSnapshot.editableSettings[4].actionPath == "iop/primaries/red_hue"
     )
+    assert envelope.imageSnapshot.preview is not None
     assert envelope.imageSnapshot.preview.width == 1000
+    assert envelope.imageSnapshot.histogram is not None
     assert envelope.imageSnapshot.histogram.binCount == 4
 
 
@@ -315,6 +318,49 @@ def test_request_envelope_accepts_white_balance_controls_when_manifest_matches()
     assert wb_setting.settingId == "setting.temperature.temperature"
     assert wb_setting.actionPath == "iop/temperature/temperature"
     assert wb_setting.currentNumber == 5003.0
+
+
+def test_request_envelope_accepts_optional_analysis_signals() -> None:
+    payload = _sample_request_payload()
+    payload["imageSnapshot"]["analysisSignals"] = {
+        "activeModuleCount": 1,
+        "activeModulesInOrder": [
+            {
+                "moduleId": "exposure",
+                "moduleLabel": "exposure",
+                "iopOrder": 20,
+                "multiPriority": 0,
+                "instanceName": "exposure",
+            }
+        ],
+        "tonal": {
+            "meanLuma": 0.5,
+            "highlightClipEstimate": 0.1,
+            "shadowCrushEstimate": 0.05,
+            "highlightHeadroomEstimate": 0.2,
+            "shadowHeadroomEstimate": 0.08,
+        },
+        "quality": {"noiseRisk": "low", "sharpnessEstimate": "normal"},
+        "regionSummaries": [
+            {
+                "regionId": "top-band-sky",
+                "kind": "sky-candidate",
+                "confidence": 0.6,
+                "coverageEstimate": 0.4,
+                "meanLuma": 0.7,
+                "meanSaturation": 0.3,
+            }
+        ],
+    }
+
+    envelope = RequestEnvelope.model_validate(payload)
+
+    assert envelope.imageSnapshot.analysisSignals is not None
+    assert envelope.imageSnapshot.analysisSignals.activeModuleCount == 1
+    assert (
+        envelope.imageSnapshot.analysisSignals.regionSummaries[0].kind
+        == "sky-candidate"
+    )
 
 
 def test_request_envelope_rejects_unknown_fields() -> None:
@@ -415,6 +461,7 @@ def test_build_response_from_plan_preserves_ordered_operations() -> None:
     response = build_response_from_plan(request, plan)
 
     assert response.assistantMessage.text == "Applying two exposure adjustments."
+    assert response.plan is not None
     assert [operation.operationId for operation in response.plan.operations] == [
         "op-exposure-plus-0.2",
         "op-exposure-plus-0.5",

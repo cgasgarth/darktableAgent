@@ -39,6 +39,7 @@ Prerequisites:
 - Linux: darktable build dependencies for your distribution
 - local CLI tools used by the build and test scripts: `ninja`, `cmake`, `curl`
 - optional: `xvfb-run` for headless smoke tests (Linux)
+- macOS smoke runs require an active logged-in GUI session; they do not use `xvfb-run`
 
 Install all dependencies (Homebrew packages on macOS, Python packages on all platforms):
 
@@ -91,6 +92,9 @@ Run the deterministic smoke test:
 ```bash
 npm run agent:smoke
 ```
+
+On Linux, the smoke script can run headlessly with `xvfb-run`.
+On macOS, run it from a logged-in desktop session so darktable can open normally.
 
 ## Protocol
 

@@ -1,0 +1,20 @@
+Plan the next darktable response for this request.
+
+Goal: ${goal_text}
+Latest user message: ${latest_user_message}
+Refinement: mode=${refinement_mode}, pass=${pass_index}/${max_passes}
+Tool budget: maximum ${max_tool_calls} tool calls in this run.
+Image: ${image_name} (${width}x${height})
+${exif_block}
+Tool usage:
+- Turn input already includes editable settings, histogram, compact analysis signals, and (in live mode) the preview image.
+- Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.
+- apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.
+- In live mode, apply_operations also returns a verifier summary JSON block; if verifier status is fail, keep refining before finalizing.
+- In live mode, every actual edit must be performed through apply_operations. Do not introduce new operations in the final JSON that were not already applied successfully.
+- Before finalizing, consider whether additional provided controls would materially improve tone, color, detail, crop, or noise; do not stop at basic exposure/contrast edits when stronger supported tools are available.
+- Always optimize toward refinement.goalText.
+- To crop, set the 'crop' or 'clipping' module's normalized [0.0, 1.0] parameters: cx=left edge, cy=top edge, cw=right edge, ch=bottom edge. No crop = cx=0, cy=0, cw=1, ch=1. Example: bottom-right quadrant = cx=0.5, cy=0.5, cw=1.0, ch=1.0.
+${mode_block}
+Respect refinement state: treat passIndex/maxPasses as budget, set continueRefining=false once safe gains are exhausted.
+Return only the JSON object required by the output schema.
