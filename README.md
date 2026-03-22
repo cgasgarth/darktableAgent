@@ -87,6 +87,12 @@ Run local pre-commit checks:
 uvx pre-commit run --all-files
 ```
 
+Run the evaluation harness against the built-in golden corpus:
+
+```bash
+npm run agent:eval
+```
+
 Run the deterministic smoke test:
 
 ```bash
@@ -105,6 +111,10 @@ On macOS, run it from a logged-in desktop session so darktable can open normally
 ## Protocol
 
 Protocol details are documented in `docs/protocol-v1.md`.
+
+## Evaluation Harness
+
+Evaluation harness details are documented in `docs/evaluation-harness.md`.
 
 ## Upstream darktable tracking
 
