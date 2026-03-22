@@ -23,15 +23,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.14'
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Install Python dependencies
         run: uv sync --extra dev
@@ -53,7 +53,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Enable apt source repositories
         run: |
@@ -95,7 +95,7 @@ jobs:
         run: tar -C darktable -cf "${RUNNER_TEMP}/darktable-install.tar" .install-5.4.1
 
       - name: Upload darktable install artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: darktable-install
           path: ${{ runner.temp }}/darktable-install.tar
@@ -108,20 +108,20 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.14'
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '24'
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Enable apt source repositories
         run: |
@@ -160,7 +160,7 @@ jobs:
         run: uv sync --extra dev
 
       - name: Download darktable install artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: darktable-install
           path: ${{ runner.temp }}/darktable-install
@@ -195,7 +195,7 @@ jobs:
 
       - name: Upload mock smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mock-e2e-artifacts
           retention-days: 7
