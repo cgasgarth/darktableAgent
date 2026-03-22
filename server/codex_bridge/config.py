@@ -48,6 +48,7 @@ _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY = int(
 )
 _TOOL_GET_IMAGE_STATE = "get_image_state"
 _TOOL_GET_PREVIEW_IMAGE = "get_preview_image"
+_TOOL_GET_PLAYBOOK = "get_playbook"
 _TOOL_APPLY_OPERATIONS = "apply_operations"
 _WHITE_BALANCE_ACTION_PATH_PREFIXES = ("iop/temperature/",)
 

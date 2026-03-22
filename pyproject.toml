@@ -11,6 +11,7 @@ requires-python = ">=3.14"
 dependencies = [
   "fastapi>=0.115,<1.0",
   "httpx>=0.27,<1.0",
+  "jinja2>=3.1,<4.0",
   "pillow>=10.4,<12.0",
   "pydantic>=2.8,<3.0",
   "uvicorn>=0.30,<1.0",
@@ -29,6 +30,9 @@ testpaths = ["server/tests"]
 
 [tool.setuptools.packages.find]
 include = ["server*", "shared*"]
+
+[tool.setuptools.package-data]
+server = ["codex_bridge/prompts/**/*.txt", "codex_bridge/prompts/**/*.j2"]
 
 [tool.pyright]
 include = ["server", "shared"]

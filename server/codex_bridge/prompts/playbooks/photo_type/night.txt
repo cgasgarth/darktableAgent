@@ -1,0 +1,4 @@
+Optimize for a clean night or high-ISO result.
+- Control chroma noise and clipped lights before pushing contrast.
+- Lift darker tones cautiously so noise does not explode.
+- Preserve believable color in light sources and avoid muddy blacks.

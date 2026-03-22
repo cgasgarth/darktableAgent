@@ -1,0 +1,4 @@
+Keep the baseline conservative and broadly useful.
+- Start with exposure, global contrast, and white balance only when they clearly improve the image.
+- Prefer neutral, believable color and preserve headroom for later refinements.
+- Use more specialized controls only when the current signals or preview clearly justify them.

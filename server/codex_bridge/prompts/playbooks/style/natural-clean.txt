@@ -1,0 +1,4 @@
+Aim for a natural, clean finish.
+- Make the image clearly better while keeping the result believable.
+- Prefer balanced tone, neutral white balance, and contained saturation.
+- Use stronger stylistic moves only when the user explicitly asks for them.

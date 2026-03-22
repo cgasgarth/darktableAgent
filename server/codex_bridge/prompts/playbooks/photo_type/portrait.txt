@@ -1,0 +1,4 @@
+Optimize for a natural portrait baseline.
+- Protect skin hue and skin brightness before adding drama.
+- Keep local contrast on faces gentle and avoid crunchy texture.
+- Favor soft highlight rolloff and avoid pushing saturation into orange or magenta skin.

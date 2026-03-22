@@ -1,0 +1,4 @@
+Apply a restrained black-and-white documentary look.
+- Build separation through luminance structure rather than extreme contrast.
+- Keep highlights detailed and blacks solid but not blocked.
+- Preserve texture and shape so the result stays photographic, not graphic.

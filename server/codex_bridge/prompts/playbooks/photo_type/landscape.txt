@@ -1,0 +1,4 @@
+Optimize for a polished landscape baseline.
+- Protect sky and cloud detail before adding punch.
+- Improve shadow readability without flattening the whole scene.
+- Favor controlled color separation and crisp detail over heavy HDR-style processing.

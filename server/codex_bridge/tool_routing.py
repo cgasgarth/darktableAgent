@@ -10,9 +10,11 @@ from .config import (
     _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY,
     _TOOL_APPLY_OPERATIONS,
     _TOOL_GET_IMAGE_STATE,
+    _TOOL_GET_PLAYBOOK,
     _TOOL_GET_PREVIEW_IMAGE,
     logger,
 )
+from .intent_router import list_playbooks, load_playbook
 
 
 class ToolRoutingMixin:
@@ -35,6 +37,17 @@ class ToolRoutingMixin:
             "required": ["operations"],
             "additionalProperties": False,
         }
+        get_playbook_schema = {
+            "type": "object",
+            "properties": {
+                "playbookId": {
+                    "type": "string",
+                    "enum": [entry.id for entry in list_playbooks()],
+                }
+            },
+            "required": ["playbookId"],
+            "additionalProperties": False,
+        }
         return [
             {
                 "name": _TOOL_GET_IMAGE_STATE,
@@ -45,6 +58,11 @@ class ToolRoutingMixin:
                 "name": _TOOL_GET_PREVIEW_IMAGE,
                 "description": "Get the current rendered preview image as a data URL for visual analysis.",
                 "inputSchema": empty_object_schema,
+            },
+            {
+                "name": _TOOL_GET_PLAYBOOK,
+                "description": "Fetch one planning playbook by id. Choose playbooks yourself from the request and current image signals.",
+                "inputSchema": get_playbook_schema,
             },
             {
                 "name": _TOOL_APPLY_OPERATIONS,
@@ -115,6 +133,8 @@ class ToolRoutingMixin:
         if not isinstance(arguments, dict):
             return self._tool_error_response("Tool arguments must be an object.")
 
+        tool_status_message: str | None = None
+
         with self._state_lock:
             context = self._turn_contexts.get((thread_id, turn_id))
             if context is None:
@@ -147,6 +167,28 @@ class ToolRoutingMixin:
                     }
                 ],
             }
+        elif tool_name == _TOOL_GET_PLAYBOOK:
+            playbook_id = arguments.get("playbookId")
+            if not isinstance(playbook_id, str) or not playbook_id:
+                response = self._tool_error_response(
+                    "get_playbook requires a playbookId string."
+                )
+            else:
+                try:
+                    playbook = load_playbook(playbook_id)
+                except ValueError as exc:
+                    response = self._tool_error_response(str(exc))
+                else:
+                    tool_status_message = f"Using playbook {playbook['title']}."
+                    response = {
+                        "success": True,
+                        "contentItems": [
+                            {
+                                "type": "inputText",
+                                "text": json.dumps(playbook, separators=(",", ":")),
+                            }
+                        ],
+                    }
         elif tool_name == _TOOL_APPLY_OPERATIONS:
             response = self._apply_operations_tool_call(
                 context,
@@ -156,7 +198,7 @@ class ToolRoutingMixin:
             )
         else:
             response = self._tool_error_response(
-                f"Unsupported tool '{tool_name}'. Supported tools: {_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_APPLY_OPERATIONS}."
+                f"Unsupported tool '{tool_name}'. Supported tools: {_TOOL_GET_PREVIEW_IMAGE}, {_TOOL_GET_IMAGE_STATE}, {_TOOL_GET_PLAYBOOK}, {_TOOL_APPLY_OPERATIONS}."
             )
 
         with self._state_lock:
@@ -177,20 +219,25 @@ class ToolRoutingMixin:
                             tool_error = text
                             break
 
-        self._set_active_request_status_for_turn_locked(
-            thread_id,
-            turn_id,
-            status="running",
-            message=(
+        if response["success"] and tool_status_message:
+            progress_message = tool_status_message
+        elif response["success"]:
+            progress_message = (
                 f"Handled tool {tool_name} ({tool_calls_used}/{max_tool_calls}); {applied_operation_count} live edits"
                 + (
                     f". Latest step: {last_applied_summary}"
                     if tool_name == _TOOL_APPLY_OPERATIONS and last_applied_summary
                     else ""
                 )
-                if response["success"]
-                else f"Tool {tool_name} failed ({tool_calls_used}/{max_tool_calls}): {tool_error or 'No details provided'}"
-            ),
+            )
+        else:
+            progress_message = f"Tool {tool_name} failed ({tool_calls_used}/{max_tool_calls}): {tool_error or 'No details provided'}"
+
+        self._set_active_request_status_for_turn_locked(
+            thread_id,
+            turn_id,
+            status="running",
+            message=progress_message,
             last_tool_name=tool_name,
         )
 
@@ -268,7 +315,11 @@ class ToolRoutingMixin:
 
     @staticmethod
     def _is_read_only_tool(tool_name: str) -> bool:
-        return tool_name in {_TOOL_GET_PREVIEW_IMAGE, _TOOL_GET_IMAGE_STATE}
+        return tool_name in {
+            _TOOL_GET_PREVIEW_IMAGE,
+            _TOOL_GET_IMAGE_STATE,
+            _TOOL_GET_PLAYBOOK,
+        }
 
     def _register_tool_call_progress_locked(
         self, context, tool_name: str
