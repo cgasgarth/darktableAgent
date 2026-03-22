@@ -17,6 +17,7 @@ from server.codex_app_server import (
     _THREAD_DEVELOPER_INSTRUCTIONS,
     TurnRunState,
 )
+from server.codex_bridge.intent_router import build_edit_profile
 from shared.protocol import AgentPlan, RequestEnvelope
 
 try:
@@ -590,6 +591,71 @@ def test_prompt_payload_includes_module_context_for_live_runs() -> None:
         "height": 667,
         "base64Data": None,
     }
+    assert payload["imageSnapshot"]["editProfile"] == {
+        "photoType": "landscape",
+        "lighting": "daylight",
+        "prioritySubject": "scene",
+        "styleArchetype": "natural-clean",
+        "riskFlags": ["highlight-detail"],
+        "verificationLevel": "standard",
+        "playbookIds": [
+            "playbooks/photo_type/landscape.txt",
+            "playbooks/style/natural-clean.txt",
+        ],
+    }
+
+
+def test_edit_profile_routes_portrait_requests_to_skin_safe_playbooks() -> None:
+    request = _sample_request()
+    request.message.text = "Keep the skin natural and make this portrait feel polished."
+    request.refinement.goalText = request.message.text
+    request.imageSnapshot.metadata.exifIso = 400.0
+    request.imageSnapshot.analysisSignals = None
+    request.imageSnapshot.preview.base64Data = base64.b64encode(  # type: ignore[union-attr]
+        _region_preview_bytes()
+    ).decode("ascii")
+
+    profile = build_edit_profile(request)
+
+    assert profile.photoType == "portrait"
+    assert profile.prioritySubject == "person"
+    assert profile.styleArchetype == "natural-clean"
+    assert "skin-tones" in profile.riskFlags
+    assert profile.verificationLevel == "strict"
+
+
+def test_edit_profile_routes_product_requests_to_color_accurate_playbooks() -> None:
+    request = _sample_request()
+    request.message.text = (
+        "Make this product shot clean and color accurate for ecommerce."
+    )
+    request.refinement.goalText = request.message.text
+    request.imageSnapshot.metadata.exifIso = 100.0
+
+    profile = build_edit_profile(request)
+
+    assert profile.photoType == "product"
+    assert profile.prioritySubject == "product"
+    assert profile.styleArchetype == "color-accurate"
+    assert "color-accuracy" in profile.riskFlags
+    assert profile.verificationLevel == "strict"
+
+
+def test_edit_profile_routes_high_iso_requests_to_night_playbooks() -> None:
+    request = _sample_request()
+    request.message.text = (
+        "Clean up this night street photo without losing the atmosphere."
+    )
+    request.refinement.goalText = request.message.text
+    request.imageSnapshot.metadata.exifIso = 6400.0
+
+    profile = build_edit_profile(request)
+
+    assert profile.photoType == "night"
+    assert profile.lighting == "night"
+    assert profile.styleArchetype == "noise-aware"
+    assert "noise-heavy" in profile.riskFlags
+    assert profile.verificationLevel == "strict"
 
 
 def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() -> None:
@@ -624,6 +690,12 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
         "Latest user message: Do a full edit so this becomes a polished gallery-ready landscape photo."
         in prompt
     )
+    assert "Edit profile:" in prompt
+    assert "- photoType: landscape" in prompt
+    assert "- prioritySubject: scene" in prompt
+    assert "Targeted playbooks:" in prompt
+    assert "[landscape]" in prompt
+    assert "[natural clean]" in prompt
 
 
 def test_turn_input_in_live_mode_includes_prompt_state_and_initial_preview_image() -> (

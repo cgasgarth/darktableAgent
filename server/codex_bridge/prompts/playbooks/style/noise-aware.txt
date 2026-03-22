@@ -1,0 +1,4 @@
+Bias decisions toward a clean, detail-preserving result.
+- Reduce distracting chroma noise before increasing contrast or clarity.
+- Accept slightly gentler shadow lifting if it avoids gritty noise.
+- Keep lights controlled so high-ISO scenes still look polished.

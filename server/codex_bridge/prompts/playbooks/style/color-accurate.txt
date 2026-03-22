@@ -1,0 +1,4 @@
+Keep the rendering color-accurate and commercially safe.
+- Neutralize obvious casts before making contrast or saturation moves.
+- Treat product and brand colors as high-sensitivity areas.
+- Prefer precision and consistency over mood.

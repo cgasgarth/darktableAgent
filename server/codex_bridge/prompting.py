@@ -12,6 +12,7 @@ from shared.protocol import AgentPlan, RequestEnvelope
 from .config import _DEFAULT_HISTOGRAM_BINS, _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
 from .errors import CodexAppServerError
 from .image_signals import build_image_analysis_signals
+from .intent_router import build_edit_profile, build_playbook_prompts
 from .models import TurnContext
 from .prompt_templates import render_prompt_template
 
@@ -258,6 +259,7 @@ class PromptingMixin:
             if value is not None:
                 metadata_payload[exif_field] = value
         analysis_signals = request.imageSnapshot.analysisSignals
+        edit_profile = build_edit_profile(request)
         return {
             "imageSnapshot": {
                 "imageRevisionId": request.imageSnapshot.imageRevisionId,
@@ -279,6 +281,7 @@ class PromptingMixin:
                     if request.imageSnapshot.preview
                     else None
                 ),
+                "editProfile": edit_profile.to_payload(),
             }
         }
 
@@ -348,6 +351,7 @@ class PromptingMixin:
         exif_line = f"EXIF: {', '.join(exif_parts)}\n" if exif_parts else ""
 
         exif_block = f"{exif_line.strip()}\n" if exif_line else ""
+        edit_profile = build_edit_profile(request)
         if live_run_enabled:
             mode_block = (
                 "Live run mode is enabled: use apply_operations for iterative edits inside this same run.\n"
@@ -362,7 +366,7 @@ class PromptingMixin:
             mode_block = "Single-turn mode: do not call apply_operations; return operations directly in final JSON.\n"
 
         return render_prompt_template(
-            "turn_prompt.txt",
+            "turn_prompt.j2",
             goal_text=request.refinement.goalText,
             latest_user_message=request.message.text,
             refinement_mode=request.refinement.mode,
@@ -372,8 +376,11 @@ class PromptingMixin:
             image_name=request.uiContext.imageName or "unknown",
             width=meta.width,
             height=meta.height,
-            exif_block=exif_block,
-            mode_block=mode_block,
+            exif_line=exif_line.strip(),
+            edit_profile=edit_profile.to_payload(),
+            playbooks=build_playbook_prompts(edit_profile),
+            live_run_enabled=live_run_enabled,
+            apply_budget_window=_DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY + 2,
         )
 
     @staticmethod

@@ -1,0 +1,4 @@
+Apply a muted cinematic grade with restraint.
+- Compress highlights smoothly and keep blacks controlled rather than crushed.
+- Reduce overall saturation before adding selective color emphasis.
+- Maintain believable skin and avoid neon hues.

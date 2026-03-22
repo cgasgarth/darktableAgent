@@ -1,0 +1,4 @@
+Optimize for a clean product or catalog result.
+- Prioritize neutral whites, accurate color, and texture clarity.
+- Avoid creative color shifts unless the user explicitly asks for them.
+- Keep backgrounds and edges clean so the subject reads immediately.
