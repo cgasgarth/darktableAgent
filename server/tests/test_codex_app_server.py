@@ -18,6 +18,7 @@ from server.codex_app_server import (
     _THREAD_DEVELOPER_INSTRUCTIONS,
     TurnRunState,
 )
+from server.codex_bridge.canonical_binder import bind_canonical_plan
 from server.codex_bridge.intent_router import list_playbooks, load_playbook
 from shared.protocol import AgentPlan, RequestEnvelope
 
@@ -338,6 +339,192 @@ def _sample_request_with_white_balance_controls() -> RequestEnvelope:
     return RequestEnvelope.model_validate(payload)
 
 
+def _sample_request_with_canonical_controls() -> RequestEnvelope:
+    payload = _sample_request_with_white_balance_controls().model_dump(mode="json")
+    extra_targets = [
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "capabilityId": "clipping.cx",
+            "label": "cx",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/clipping/cx",
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "capabilityId": "clipping.cy",
+            "label": "cy",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/clipping/cy",
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "capabilityId": "clipping.cw",
+            "label": "cw",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/clipping/cw",
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "capabilityId": "clipping.ch",
+            "label": "ch",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/clipping/ch",
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "denoiseprofile",
+            "moduleLabel": "denoise (profiled)",
+            "capabilityId": "denoiseprofile.chroma",
+            "label": "Chroma",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/denoiseprofile/chroma",
+            "supportedModes": ["set", "delta"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
+        },
+        {
+            "moduleId": "filmicrgb",
+            "moduleLabel": "filmic rgb",
+            "capabilityId": "filmicrgb.white-relative",
+            "label": "White relative exposure",
+            "kind": "set-float",
+            "targetType": "darktable-action",
+            "actionPath": "iop/filmicrgb/white_relative_exposure",
+            "supportedModes": ["set", "delta"],
+            "minNumber": -4.0,
+            "maxNumber": 4.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
+        },
+    ]
+    extra_settings = [
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "settingId": "setting.clipping.cx",
+            "capabilityId": "clipping.cx",
+            "label": "cx",
+            "actionPath": "iop/clipping/cx",
+            "kind": "set-float",
+            "currentNumber": 0.0,
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "settingId": "setting.clipping.cy",
+            "capabilityId": "clipping.cy",
+            "label": "cy",
+            "actionPath": "iop/clipping/cy",
+            "kind": "set-float",
+            "currentNumber": 0.0,
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "settingId": "setting.clipping.cw",
+            "capabilityId": "clipping.cw",
+            "label": "cw",
+            "actionPath": "iop/clipping/cw",
+            "kind": "set-float",
+            "currentNumber": 1.0,
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "clipping",
+            "moduleLabel": "crop",
+            "settingId": "setting.clipping.ch",
+            "capabilityId": "clipping.ch",
+            "label": "ch",
+            "actionPath": "iop/clipping/ch",
+            "kind": "set-float",
+            "currentNumber": 1.0,
+            "supportedModes": ["set"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 1.0,
+            "stepNumber": 0.001,
+        },
+        {
+            "moduleId": "denoiseprofile",
+            "moduleLabel": "denoise (profiled)",
+            "settingId": "setting.denoiseprofile.chroma",
+            "capabilityId": "denoiseprofile.chroma",
+            "label": "Chroma",
+            "actionPath": "iop/denoiseprofile/chroma",
+            "kind": "set-float",
+            "currentNumber": 0.05,
+            "supportedModes": ["set", "delta"],
+            "minNumber": 0.0,
+            "maxNumber": 1.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
+        },
+        {
+            "moduleId": "filmicrgb",
+            "moduleLabel": "filmic rgb",
+            "settingId": "setting.filmicrgb.white-relative",
+            "capabilityId": "filmicrgb.white-relative",
+            "label": "White relative exposure",
+            "actionPath": "iop/filmicrgb/white_relative_exposure",
+            "kind": "set-float",
+            "currentNumber": 1.0,
+            "supportedModes": ["set", "delta"],
+            "minNumber": -4.0,
+            "maxNumber": 4.0,
+            "defaultNumber": 0.0,
+            "stepNumber": 0.01,
+        },
+    ]
+
+    payload["capabilityManifest"]["targets"].extend(extra_targets)
+    payload["imageSnapshot"]["editableSettings"].extend(extra_settings)
+    return RequestEnvelope.model_validate(payload)
+
+
 def test_default_command_uses_stdio_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -445,6 +632,8 @@ def test_output_schema_marks_nullable_object_fields_as_required() -> None:
         "choiceId",
         "boolValue",
     ]
+    agent_plan = schema
+    assert "canonicalActions" in agent_plan["required"]
 
 
 def test_model_selection_uses_default_model_when_fast_mode_disabled() -> None:
@@ -481,7 +670,7 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Core rules" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "expert RAW photo editor" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert (
-        "Only emit operations targeting provided settingId/actionPath pairs."
+        "Only emit raw operations targeting provided settingId/actionPath pairs."
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
     assert (
@@ -495,6 +684,10 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "colorequal" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "primaries" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "set-choice uses value.choiceValue" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert (
+        "In multi-turn live runs, prefer canonical intent"
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
 
 
 def test_prompt_payload_includes_all_histogram_channels() -> None:
@@ -633,6 +826,9 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Live run mode is enabled" in prompt
     assert "Turn input includes the current preview image" in prompt
     assert "compact analysis signals" in prompt
+    assert "you may pass `canonicalActions` to apply_operations" in prompt
+    assert "adjust-exposure" in prompt
+    assert "grade-color" in prompt
     assert "apply_operations returns the refreshed preview automatically" in prompt
     assert "operations are auto-applied one at a time" in prompt
     assert "Do not introduce new operations in the final JSON" in prompt
@@ -662,6 +858,128 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     )
     assert "Use get_playbook when the request" in prompt
     assert "Choose which playbooks to fetch yourself" in prompt
+
+
+def test_turn_prompt_keeps_single_turn_instructions_separate_from_live_canonical_path() -> (
+    None
+):
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request()
+    request.refinement.enabled = False
+    request.refinement.mode = "single-turn"
+    request.refinement.maxPasses = 1
+    request.refinement.passIndex = 1
+
+    prompt = bridge._build_turn_prompt(request)  # type: ignore[attr-defined]
+
+    assert "Single-turn mode: do not call apply_operations" in prompt
+    assert "return raw operations directly in the final JSON" in prompt
+    assert "you may pass `canonicalActions` to apply_operations" not in prompt
+
+
+def test_canonical_binder_resolves_supported_actions_without_raw_ids() -> None:
+    request = _sample_request_with_canonical_controls()
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "Apply a polished baseline.",
+            "continueRefining": False,
+            "operations": [],
+            "canonicalActions": [
+                {
+                    "action": "adjust-exposure",
+                    "exposureEv": 0.4,
+                    "rationale": "Lift the overall exposure.",
+                },
+                {
+                    "action": "adjust-white-balance",
+                    "temperatureDelta": 300.0,
+                    "tintDelta": 0.05,
+                    "rationale": "Warm slightly and remove green cast.",
+                },
+                {
+                    "action": "grade-color",
+                    "target": "blue-saturation",
+                    "amount": -0.1,
+                    "rationale": "Calm the sky saturation.",
+                },
+                {
+                    "action": "recover-highlights",
+                    "strength": "medium",
+                    "rationale": "Protect cloud detail.",
+                },
+                {
+                    "action": "reduce-noise",
+                    "strength": "low",
+                    "noiseType": "chroma",
+                    "rationale": "Reduce color speckling.",
+                },
+                {
+                    "action": "crop-normalized",
+                    "left": 0.1,
+                    "top": 0.05,
+                    "right": 0.9,
+                    "bottom": 0.95,
+                    "rationale": "Tighten framing.",
+                },
+            ],
+        }
+    )
+
+    bound_plan = bind_canonical_plan(request, plan)
+    action_paths = [operation.target.actionPath for operation in bound_plan.operations]
+
+    assert bound_plan.canonicalActions is not None
+    assert action_paths == [
+        "iop/exposure/exposure",
+        "iop/temperature/temperature",
+        "iop/temperature/tint",
+        "iop/colorequal/sat_blue",
+        "iop/filmicrgb/white_relative_exposure",
+        "iop/denoiseprofile/chroma",
+        "iop/clipping/cx",
+        "iop/clipping/cy",
+        "iop/clipping/cw",
+        "iop/clipping/ch",
+    ]
+    assert bound_plan.operations[0].value.mode == "delta"
+    assert bound_plan.operations[6].value.mode == "set"
+    assert bound_plan.operations[6].value.number == pytest.approx(0.1)
+
+
+def test_canonical_binder_surfaces_binding_failures_safely() -> None:
+    request = _sample_request()
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "Try to recover highlights and crop.",
+            "continueRefining": False,
+            "operations": [],
+            "canonicalActions": [
+                {
+                    "action": "recover-highlights",
+                    "strength": "high",
+                },
+                {
+                    "action": "crop-normalized",
+                    "left": 0.0,
+                    "top": 0.0,
+                    "right": 1.0,
+                    "bottom": 1.0,
+                },
+            ],
+        }
+    )
+
+    bound_plan = bind_canonical_plan(request, plan)
+
+    assert bound_plan.operations == []
+    assert "Binding notes:" in bound_plan.assistantText
+    assert (
+        "recover-highlights could not find a highlight control"
+        in bound_plan.assistantText
+    )
+    assert "crop-normalized could not find a cx control" in bound_plan.assistantText
 
 
 def test_turn_input_in_live_mode_includes_prompt_state_and_initial_preview_image() -> (
@@ -974,6 +1292,10 @@ def test_get_or_create_thread_includes_native_dynamic_tools() -> None:
     for tool in tool_specs:
         assert tool["inputSchema"]["type"] == "object"
         assert tool["inputSchema"]["additionalProperties"] is False
+    apply_tool = next(
+        tool for tool in tool_specs if tool["name"] == _TOOL_APPLY_OPERATIONS
+    )
+    assert "canonicalActions" in apply_tool["inputSchema"]["properties"]
 
 
 def test_handle_server_request_denies_approval_requests_with_decline() -> None:
@@ -1293,6 +1615,75 @@ def test_apply_operations_tool_updates_state_and_stages_operations(
         )
         state_payload = sent_payloads[0]["result"]["contentItems"][0]["text"]
         assert '"currentNumber":0.4' in state_payload
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+
+def test_apply_operations_tool_binds_canonical_actions_in_live_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request_with_canonical_controls()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        turn_context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert turn_context is not None
+
+        def _mock_wait(timeout=None, *, context=turn_context):
+            context.rendered_preview_bytes = b"fake-preview-stage-1"
+            return True
+
+        monkeypatch.setattr(turn_context.render_event, "wait", _mock_wait)
+
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 119,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-canonical",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "canonicalActions": [
+                            {
+                                "action": "adjust-exposure",
+                                "exposureEv": 0.4,
+                            },
+                            {
+                                "action": "crop-normalized",
+                                "left": 0.1,
+                                "top": 0.1,
+                                "right": 0.9,
+                                "bottom": 0.9,
+                            },
+                        ]
+                    },
+                },
+            }
+        )
+
+        result = sent_payloads[0]["result"]
+        assert result["success"] is True
+        assert "Applied 5 operations" in result["contentItems"][0]["text"]
+        turn_context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert turn_context is not None
+        assert turn_context.setting_by_id["setting.exposure.primary"][
+            "currentNumber"
+        ] == pytest.approx(0.4)
+        assert turn_context.setting_by_id["setting.clipping.cx"][
+            "currentNumber"
+        ] == pytest.approx(0.1)
     finally:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 

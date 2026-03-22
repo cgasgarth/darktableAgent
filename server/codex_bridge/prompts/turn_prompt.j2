@@ -23,12 +23,15 @@ Tool usage:
 - Always optimize toward refinement.goalText.
 - To crop, set the 'crop' or 'clipping' module's normalized [0.0, 1.0] parameters: cx=left edge, cy=top edge, cw=right edge, ch=bottom edge. No crop = cx=0, cy=0, cw=1, ch=1. Example: bottom-right quadrant = cx=0.5, cy=0.5, cw=1.0, ch=1.0.
 {% if live_run_enabled %}Live run mode is enabled: use apply_operations for iterative edits inside this same run.
+For this multi-turn path, you may pass `canonicalActions` to apply_operations instead of raw operations for these supported intent-level edits: `adjust-exposure`, `adjust-white-balance`, `recover-highlights`, `reduce-noise`, `grade-color`, `crop-normalized`.
+Canonical fields: `adjust-exposure` uses `exposureEv`; `adjust-white-balance` uses `temperatureDelta`, `tintDelta`, and/or `presetChoiceId`; `recover-highlights` and `reduce-noise` use `strength`; `grade-color` uses `target` + `amount`; `crop-normalized` uses `left`, `top`, `right`, `bottom` in normalized [0,1] coordinates.
+The runtime binds supported canonical actions to concrete darktable controls deterministically before applying them.
 Inside each apply_operations call, operations are auto-applied one at a time with a fresh render after each step.
 Turn input includes the current preview image, editable settings, and histogram.
 After each apply_operations call, inspect the refreshed preview and re-check get_image_state when you need refreshed exact state.
 Apply at least one edit batch within the first {{ apply_budget_window }} tool calls.
 When satisfied, return final JSON with continueRefining=false and usually empty operations.
 In multi-turn mode the final JSON should summarize the run; continueRefining must be false.
-{% else %}Single-turn mode: do not call apply_operations; return operations directly in final JSON.
+{% else %}Single-turn mode: do not call apply_operations; return raw operations directly in the final JSON for this path.
 {% endif %}Respect refinement state: treat passIndex/maxPasses as budget, set continueRefining=false once safe gains are exhausted.
 Return only the JSON object required by the output schema.

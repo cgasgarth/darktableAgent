@@ -32,9 +32,17 @@ class ToolRoutingMixin:
                     "type": "array",
                     "minItems": 1,
                     "items": {"type": "object"},
-                }
+                },
+                "canonicalActions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {"type": "object"},
+                },
             },
-            "required": ["operations"],
+            "anyOf": [
+                {"required": ["operations"]},
+                {"required": ["canonicalActions"]},
+            ],
             "additionalProperties": False,
         }
         get_playbook_schema = {
@@ -66,7 +74,7 @@ class ToolRoutingMixin:
             },
             {
                 "name": _TOOL_APPLY_OPERATIONS,
-                "description": "Apply darktable operations in the live run. Operations are auto-applied one at a time with a fresh render after each step so the user can see every change.",
+                "description": "Apply darktable operations in the live run. You may provide raw operations or canonicalActions; supported canonical actions are bound to concrete controls before stepwise live application and render refresh.",
                 "inputSchema": apply_operations_schema,
             },
         ]

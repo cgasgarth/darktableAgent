@@ -4,6 +4,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .canonical_plan import CanonicalEditAction
 from .analysis_signals import ImageAnalysisSignals
 
 SCHEMA_VERSION = "3.0"
@@ -408,6 +409,7 @@ class AgentPlan(StrictBaseModel):
     assistantText: str = Field(min_length=1)
     continueRefining: bool
     operations: list[PlannedOperationDraft]
+    canonicalActions: list[CanonicalEditAction] | None = None
 
     @model_validator(mode="after")
     def validate_operation_ids(self) -> "AgentPlan":
