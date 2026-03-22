@@ -19,6 +19,7 @@ from .config import (
     _THREAD_DEVELOPER_INSTRUCTIONS,
     logger,
 )
+from .canonical_binder import bind_canonical_plan
 from .errors import CodexAppServerError
 from .models import ActiveRequestState, CodexTurnResult, TurnRunState
 from .request_state import build_output_schema
@@ -222,6 +223,8 @@ class TurnsMixin:
                     f"Codex returned invalid plan JSON: {raw_message}",
                 ) from exc
 
+            if request.refinement.enabled:
+                plan = bind_canonical_plan(request, plan)
             context = self._get_turn_context(thread_id, turn_id)
             plan = self._finalize_plan_with_live_context(plan, context)
             self._set_active_request_status_locked(
@@ -234,14 +237,14 @@ class TurnsMixin:
             summary_text = plan.assistantText or ""
             if len(summary_text) > 200:
                 summary_text = summary_text[:200] + "..."
-            turn_summary = (
-                f"Turn {turn_index}: {op_count} operations. {summary_text}"
-            )
+            turn_summary = f"Turn {turn_index}: {op_count} operations. {summary_text}"
             conv_id = active_request.conversation_id
             if conv_id not in self._conversation_histories:
                 self._conversation_histories[conv_id] = []
             self._conversation_histories[conv_id].append(turn_summary)
-            self._conversation_histories[conv_id] = self._conversation_histories[conv_id][-10:]
+            self._conversation_histories[conv_id] = self._conversation_histories[
+                conv_id
+            ][-10:]
 
             duration_ms = int((time.monotonic() - started_at) * 1000)
             logger.info(

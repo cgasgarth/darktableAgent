@@ -8,6 +8,7 @@ from typing import Any
 
 from shared.protocol import AgentPlan
 
+from .apply_batch import prepare_apply_batch
 from .config import _TOOL_APPLY_OPERATIONS, _WHITE_BALANCE_ACTION_PATH_PREFIXES, logger
 from .models import TurnContext
 
@@ -26,42 +27,35 @@ class OperationsMixin:
                 "apply_operations is only available when live run mode is enabled."
             )
 
-        raw_operations = arguments.get("operations")
-        if not isinstance(raw_operations, list) or not raw_operations:
-            return self._tool_error_response(
-                "apply_operations requires a non-empty operations array."
-            )
-
-        normalized_batch: list[dict[str, Any]] = []
-        for index, raw_operation in enumerate(raw_operations):
-            if not isinstance(raw_operation, dict):
-                self._log_white_balance_tool_call(
-                    context,
-                    raw_operations,
-                    [],
-                    success=False,
-                    error="Every apply_operations entry must be an object.",
-                )
-                return self._tool_error_response(
-                    "Every apply_operations entry must be an object."
-                )
-            normalized_operation, error = self._normalize_tool_operation(
+        prepared_batch, prepare_error = prepare_apply_batch(
+            context,
+            arguments,
+            normalize_operation=lambda raw_operation,
+            sequence_number: self._normalize_tool_operation(
                 context,
                 raw_operation,
-                sequence_number=context.next_operation_sequence + index,
+                sequence_number=sequence_number,
+            ),
+        )
+        if prepare_error:
+            attempted = arguments.get("operations")
+            if not isinstance(attempted, list):
+                attempted = []
+            self._log_white_balance_tool_call(
+                context,
+                attempted,
+                [],
+                success=False,
+                error=prepare_error,
             )
-            if error:
-                self._log_white_balance_tool_call(
-                    context,
-                    raw_operations,
-                    [],
-                    success=False,
-                    error=error,
-                )
-                return self._tool_error_response(error)
-            normalized_batch.append(normalized_operation)
+            return self._tool_error_response(prepare_error)
 
-        ordered_batch = self._order_operations_for_apply(normalized_batch)
+        assert prepared_batch is not None
+        ordered_batch = self._order_operations_for_apply(
+            prepared_batch.normalized_batch
+        )
+        attempted_operations_for_logging = ordered_batch
+        render_warnings = prepared_batch.render_warnings
         simulated_settings = copy.deepcopy(context.setting_by_id)
         for operation in ordered_batch:
             apply_error, _ = self._apply_operation_to_settings(
@@ -70,7 +64,7 @@ class OperationsMixin:
             if apply_error:
                 self._log_white_balance_tool_call(
                     context,
-                    ordered_batch,
+                    attempted_operations_for_logging,
                     [],
                     success=False,
                     error=apply_error,
@@ -80,14 +74,13 @@ class OperationsMixin:
         step_summaries: list[str] = []
         latest_preview_url: str | None = None
         latest_verifier_result: dict[str, Any] | None = None
-        render_warnings: list[str] = []
 
         for step_index, operation in enumerate(ordered_batch, start=1):
             apply_error = self._apply_live_operation_step(context, operation)
             if apply_error:
                 self._log_white_balance_tool_call(
                     context,
-                    ordered_batch,
+                    attempted_operations_for_logging,
                     applied_batch,
                     success=False,
                     error=apply_error,
@@ -120,7 +113,7 @@ class OperationsMixin:
                 render_warnings.append(warning)
         self._log_white_balance_tool_call(
             context,
-            ordered_batch,
+            attempted_operations_for_logging,
             applied_batch,
             success=True,
         )
