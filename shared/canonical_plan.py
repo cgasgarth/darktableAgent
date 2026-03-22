@@ -11,6 +11,7 @@ CanonicalActionName = Literal[
     "reduce-noise",
     "grade-color",
     "crop-normalized",
+    "crop-to-bounding-box",
 ]
 CanonicalStrength = Literal["low", "medium", "high"]
 CanonicalNoiseType = Literal["chroma", "luma", "both"]
@@ -40,6 +41,11 @@ class CanonicalEditAction(CanonicalBaseModel):
     top: float | None = None
     right: float | None = None
     bottom: float | None = None
+    boxLeft: float | None = None
+    boxTop: float | None = None
+    boxWidth: float | None = None
+    boxHeight: float | None = None
+    paddingRatio: float | None = None
     rationale: str | None = None
 
     @model_validator(mode="after")
@@ -91,4 +97,34 @@ class CanonicalEditAction(CanonicalBaseModel):
                 raise ValueError("crop-normalized left must be less than right")
             if self.top >= self.bottom:
                 raise ValueError("crop-normalized top must be less than bottom")
+        elif self.action == "crop-to-bounding-box":
+            bounds = (self.boxLeft, self.boxTop, self.boxWidth, self.boxHeight)
+            if any(value is None for value in bounds):
+                raise ValueError(
+                    "crop-to-bounding-box requires boxLeft, boxTop, boxWidth, and boxHeight"
+                )
+            assert self.boxLeft is not None
+            assert self.boxTop is not None
+            assert self.boxWidth is not None
+            assert self.boxHeight is not None
+            for label, value in (
+                ("boxLeft", self.boxLeft),
+                ("boxTop", self.boxTop),
+                ("boxWidth", self.boxWidth),
+                ("boxHeight", self.boxHeight),
+            ):
+                if not 0.0 <= value <= 1.0:
+                    raise ValueError(
+                        f"crop-to-bounding-box {label} must be within [0, 1]"
+                    )
+            if self.boxWidth <= 0.0:
+                raise ValueError("crop-to-bounding-box boxWidth must be greater than 0")
+            if self.boxHeight <= 0.0:
+                raise ValueError(
+                    "crop-to-bounding-box boxHeight must be greater than 0"
+                )
+            if self.paddingRatio is not None and not 0.0 <= self.paddingRatio <= 1.0:
+                raise ValueError(
+                    "crop-to-bounding-box paddingRatio must be within [0, 1]"
+                )
         return self
