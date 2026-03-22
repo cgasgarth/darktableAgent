@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "bootstrap": "./scripts/install.sh",
+    "agent:eval": "uv run python -c \"from server.evals.harness import main; raise SystemExit(main())\"",
     "build:serve": "npm run darktable:build-and-start && npm run server:start",
     "darktable:build": "./scripts/build_darktable_local.sh",
     "darktable:upstream-status": "python3 ./scripts/darktable_upstream.py status",
