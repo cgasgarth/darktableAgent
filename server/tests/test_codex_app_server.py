@@ -829,6 +829,9 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "you may pass `canonicalActions` to apply_operations" in prompt
     assert "adjust-exposure" in prompt
     assert "grade-color" in prompt
+    assert "crop-to-bounding-box" in prompt
+    assert "boxLeft" in prompt
+    assert "paddingRatio" in prompt
     assert "apply_operations returns the refreshed preview automatically" in prompt
     assert "operations are auto-applied one at a time" in prompt
     assert "Do not introduce new operations in the final JSON" in prompt
@@ -877,6 +880,27 @@ def test_turn_prompt_keeps_single_turn_instructions_separate_from_live_canonical
     assert "Single-turn mode: do not call apply_operations" in prompt
     assert "return raw operations directly in the final JSON" in prompt
     assert "you may pass `canonicalActions` to apply_operations" not in prompt
+    assert "To crop in this single-turn/raw path" in prompt
+    assert "cx=left edge" in prompt
+
+
+def test_crop_to_bounding_box_requires_box_coordinates() -> None:
+    with pytest.raises(ValueError, match="crop-to-bounding-box requires"):
+        AgentPlan.model_validate(
+            {
+                "assistantText": "Crop around the subject.",
+                "continueRefining": False,
+                "operations": [],
+                "canonicalActions": [
+                    {
+                        "action": "crop-to-bounding-box",
+                        "boxLeft": 0.2,
+                        "boxTop": 0.2,
+                        "boxWidth": 0.4,
+                    }
+                ],
+            }
+        )
 
 
 def test_canonical_binder_resolves_supported_actions_without_raw_ids() -> None:
@@ -946,6 +970,41 @@ def test_canonical_binder_resolves_supported_actions_without_raw_ids() -> None:
     assert bound_plan.operations[0].value.mode == "delta"
     assert bound_plan.operations[6].value.mode == "set"
     assert bound_plan.operations[6].value.number == pytest.approx(0.1)
+
+
+def test_canonical_binder_translates_bounding_box_crop_to_crop_controls() -> None:
+    request = _sample_request_with_canonical_controls()
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "Crop around the subject.",
+            "continueRefining": False,
+            "operations": [],
+            "canonicalActions": [
+                {
+                    "action": "crop-to-bounding-box",
+                    "boxLeft": 0.2,
+                    "boxTop": 0.25,
+                    "boxWidth": 0.5,
+                    "boxHeight": 0.4,
+                    "paddingRatio": 0.1,
+                    "rationale": "Frame the subject with a little breathing room.",
+                }
+            ],
+        }
+    )
+
+    bound_plan = bind_canonical_plan(request, plan)
+
+    axis_values = {
+        operation.target.actionPath: operation.value.number
+        for operation in bound_plan.operations
+    }
+    assert axis_values == {
+        "iop/clipping/cx": pytest.approx(0.15),
+        "iop/clipping/cy": pytest.approx(0.21),
+        "iop/clipping/cw": pytest.approx(0.75),
+        "iop/clipping/ch": pytest.approx(0.69),
+    }
 
 
 def test_canonical_binder_surfaces_binding_failures_safely() -> None:
@@ -1684,6 +1743,78 @@ def test_apply_operations_tool_binds_canonical_actions_in_live_mode(
         assert turn_context.setting_by_id["setting.clipping.cx"][
             "currentNumber"
         ] == pytest.approx(0.1)
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+
+def test_apply_operations_tool_binds_bounding_box_crop_in_live_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request_with_canonical_controls()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        turn_context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert turn_context is not None
+
+        def _mock_wait(timeout=None, *, context=turn_context):
+            context.rendered_preview_bytes = b"fake-preview-stage-crop"
+            return True
+
+        monkeypatch.setattr(turn_context.render_event, "wait", _mock_wait)
+
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 120,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-apply-crop-box",
+                    "tool": _TOOL_APPLY_OPERATIONS,
+                    "arguments": {
+                        "canonicalActions": [
+                            {
+                                "action": "crop-to-bounding-box",
+                                "boxLeft": 0.2,
+                                "boxTop": 0.25,
+                                "boxWidth": 0.5,
+                                "boxHeight": 0.4,
+                                "paddingRatio": 0.1,
+                            }
+                        ]
+                    },
+                },
+            }
+        )
+
+        result = sent_payloads[0]["result"]
+        assert result["success"] is True
+        assert "Applied 4 operations" in result["contentItems"][0]["text"]
+        turn_context = bridge._get_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        assert turn_context is not None
+        assert turn_context.setting_by_id["setting.clipping.cx"][
+            "currentNumber"
+        ] == pytest.approx(0.15)
+        assert turn_context.setting_by_id["setting.clipping.cy"][
+            "currentNumber"
+        ] == pytest.approx(0.21)
+        assert turn_context.setting_by_id["setting.clipping.cw"][
+            "currentNumber"
+        ] == pytest.approx(0.75)
+        assert turn_context.setting_by_id["setting.clipping.ch"][
+            "currentNumber"
+        ] == pytest.approx(0.69)
     finally:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 

@@ -105,6 +105,8 @@ def _bind_action(
         return _bind_grade(settings, action)
     if action.action == "crop-normalized":
         return _bind_crop(settings, action)
+    if action.action == "crop-to-bounding-box":
+        return _bind_crop_box(settings, action)
     return _BindingResult([], [f"unsupported canonical action {action.action}"])
 
 
@@ -317,6 +319,51 @@ def _bind_crop(
         "cw": action.right,
         "ch": action.bottom,
     }
+    return _bind_crop_axis_values(
+        settings,
+        axis_values,
+        rationale=action.rationale,
+        failure_prefix="crop-normalized",
+    )
+
+
+def _bind_crop_box(
+    settings: list[EditableSetting], action: CanonicalEditAction
+) -> _BindingResult:
+    assert action.boxLeft is not None
+    assert action.boxTop is not None
+    assert action.boxWidth is not None
+    assert action.boxHeight is not None
+    padding_ratio = action.paddingRatio or 0.0
+
+    left = _clamp(action.boxLeft)
+    top = _clamp(action.boxTop)
+    right = _clamp(action.boxLeft + action.boxWidth)
+    bottom = _clamp(action.boxTop + action.boxHeight)
+    pad_x = action.boxWidth * padding_ratio
+    pad_y = action.boxHeight * padding_ratio
+
+    axis_values = {
+        "cx": _clamp(left - pad_x),
+        "cy": _clamp(top - pad_y),
+        "cw": _clamp(right + pad_x),
+        "ch": _clamp(bottom + pad_y),
+    }
+    return _bind_crop_axis_values(
+        settings,
+        axis_values,
+        rationale=action.rationale,
+        failure_prefix="crop-to-bounding-box",
+    )
+
+
+def _bind_crop_axis_values(
+    settings: list[EditableSetting],
+    axis_values: dict[str, float],
+    *,
+    rationale: str | None,
+    failure_prefix: str,
+) -> _BindingResult:
     operations: list[dict[str, object]] = []
     failures: list[str] = []
     for axis, value in axis_values.items():
@@ -329,12 +376,14 @@ def _bind_crop(
             label_keywords=(axis,),
         )
         if setting is None:
-            failures.append(f"crop-normalized could not find a {axis} control")
+            failures.append(f"{failure_prefix} could not find a {axis} control")
             continue
-        operations.append(
-            _float_operation(setting, value, action.rationale, prefer_set=True)
-        )
+        operations.append(_float_operation(setting, value, rationale, prefer_set=True))
     return _BindingResult(operations, failures)
+
+
+def _clamp(value: float) -> float:
+    return max(0.0, min(1.0, value))
 
 
 def _find_setting(
