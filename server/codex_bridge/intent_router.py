@@ -57,7 +57,6 @@ PHOTO_TYPE_SPECS: tuple[RouteSpec, ...] = (
             "catalogue",
             "e-commerce",
             "ecommerce",
-            "studio",
             "item",
             "bottle",
             "watch",

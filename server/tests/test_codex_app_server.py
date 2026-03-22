@@ -624,6 +624,22 @@ def test_edit_profile_routes_portrait_requests_to_skin_safe_playbooks() -> None:
     assert profile.verificationLevel == "strict"
 
 
+def test_edit_profile_keeps_studio_portraits_out_of_product_playbooks() -> None:
+    request = _sample_request()
+    request.message.text = "Make this studio portrait polished and natural."
+    request.refinement.goalText = request.message.text
+    request.imageSnapshot.metadata.exifIso = 200.0
+    request.imageSnapshot.analysisSignals = None
+
+    profile = build_edit_profile(request)
+
+    assert profile.photoType == "portrait"
+    assert profile.prioritySubject == "person"
+    assert profile.styleArchetype == "natural-clean"
+    assert "playbooks/photo_type/portrait.txt" in profile.playbookIds
+    assert "playbooks/photo_type/product.txt" not in profile.playbookIds
+
+
 def test_edit_profile_routes_product_requests_to_color_accurate_playbooks() -> None:
     request = _sample_request()
     request.message.text = (
