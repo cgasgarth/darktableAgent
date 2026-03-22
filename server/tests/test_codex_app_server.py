@@ -656,6 +656,10 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Available playbooks:" in prompt
     assert "playbooks/photo_type/landscape.txt" in prompt
     assert "playbooks/style/natural-clean.txt" in prompt
+    assert (
+        "infer likely photo type and style direction from the provided preview image"
+        in prompt
+    )
     assert "Use get_playbook when the request" in prompt
     assert "Choose which playbooks to fetch yourself" in prompt
 
@@ -1116,6 +1120,56 @@ def test_handle_server_request_routes_playbook_tool_call_to_dynamic_result() -> 
     assert '"id":"playbooks/photo_type/portrait.txt"' in payload
     assert '"title":"portrait"' in payload
     assert '"summary":"Optimize for a natural portrait baseline."' in payload
+
+
+def test_playbook_tool_updates_request_progress_with_selected_playbook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request()
+    active_request = bridge._register_request(request)  # type: ignore[attr-defined]
+
+    def _capture(_payload: dict[object, object]) -> None:
+        return None
+
+    monkeypatch.setattr(bridge, "_send_json_locked", _capture)
+    try:
+        data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+        bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+        active_request.thread_id = "thread-1"
+        active_request.codex_turn_id = "turn-1"
+        active_request.status = "running"
+
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 17,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-playbook-progress",
+                    "tool": _TOOL_GET_PLAYBOOK,
+                    "arguments": {"playbookId": "playbooks/photo_type/portrait.txt"},
+                },
+            }
+        )
+
+        progress = bridge.get_request_progress(
+            request_id=request.requestId,
+            app_session_id=request.session.appSessionId,
+            image_session_id=request.session.imageSessionId,
+            conversation_id=request.session.conversationId,
+            turn_id=request.session.turnId,
+        )
+        assert progress["found"] is True
+        assert progress["lastToolName"] == _TOOL_GET_PLAYBOOK
+        assert progress["message"] == "Using playbook portrait."
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+        bridge._unregister_request(request.requestId)  # type: ignore[attr-defined]
 
 
 def test_apply_operations_tool_updates_state_and_stages_operations(

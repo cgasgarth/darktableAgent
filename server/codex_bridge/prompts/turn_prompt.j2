@@ -13,6 +13,7 @@ Available playbooks:
 
 Tool usage:
 - Turn input already includes editable settings, histogram, compact analysis signals, and (in live mode) the preview image.
+- If the user's prompt is underspecified, infer likely photo type and style direction from the provided preview image and analysis signals.
 - Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.
 - Use get_playbook when the request, preview, or image-state signals suggest a specific photo type or style. Choose which playbooks to fetch yourself; do not assume one is required.
 - apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.
