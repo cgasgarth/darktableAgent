@@ -8,6 +8,7 @@ from .config import (
     _THREAD_DEVELOPER_INSTRUCTIONS,
     _TOOL_APPLY_OPERATIONS,
     _TOOL_GET_IMAGE_STATE,
+    _TOOL_GET_PLAYBOOK,
     _TOOL_GET_PREVIEW_IMAGE,
     logger,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "_THREAD_DEVELOPER_INSTRUCTIONS",
     "_TOOL_APPLY_OPERATIONS",
     "_TOOL_GET_IMAGE_STATE",
+    "_TOOL_GET_PLAYBOOK",
     "_TOOL_GET_PREVIEW_IMAGE",
     "logger",
 ]

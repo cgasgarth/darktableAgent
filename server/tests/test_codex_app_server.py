@@ -13,11 +13,12 @@ from server.codex_app_server import (
     _FAST_MODE_REASONING_EFFORT,
     _TOOL_APPLY_OPERATIONS,
     _TOOL_GET_IMAGE_STATE,
+    _TOOL_GET_PLAYBOOK,
     _TOOL_GET_PREVIEW_IMAGE,
     _THREAD_DEVELOPER_INSTRUCTIONS,
     TurnRunState,
 )
-from server.codex_bridge.intent_router import build_edit_profile
+from server.codex_bridge.intent_router import list_playbooks, load_playbook
 from shared.protocol import AgentPlan, RequestEnvelope
 
 try:
@@ -591,87 +592,33 @@ def test_prompt_payload_includes_module_context_for_live_runs() -> None:
         "height": 667,
         "base64Data": None,
     }
-    assert payload["imageSnapshot"]["editProfile"] == {
-        "photoType": "landscape",
-        "lighting": "daylight",
-        "prioritySubject": "scene",
-        "styleArchetype": "natural-clean",
-        "riskFlags": ["highlight-detail"],
-        "verificationLevel": "standard",
-        "playbookIds": [
-            "playbooks/photo_type/landscape.txt",
-            "playbooks/style/natural-clean.txt",
-        ],
-    }
+    assert "editProfile" not in payload["imageSnapshot"]
 
 
-def test_edit_profile_routes_portrait_requests_to_skin_safe_playbooks() -> None:
-    request = _sample_request()
-    request.message.text = "Keep the skin natural and make this portrait feel polished."
-    request.refinement.goalText = request.message.text
-    request.imageSnapshot.metadata.exifIso = 400.0
-    request.imageSnapshot.analysisSignals = None
-    request.imageSnapshot.preview.base64Data = base64.b64encode(  # type: ignore[union-attr]
-        _region_preview_bytes()
-    ).decode("ascii")
+def test_playbook_catalog_lists_available_prompt_playbooks() -> None:
+    catalog = list_playbooks()
 
-    profile = build_edit_profile(request)
-
-    assert profile.photoType == "portrait"
-    assert profile.prioritySubject == "person"
-    assert profile.styleArchetype == "natural-clean"
-    assert "skin-tones" in profile.riskFlags
-    assert profile.verificationLevel == "strict"
+    ids = {entry.id for entry in catalog}
+    assert "playbooks/photo_type/portrait.txt" in ids
+    assert "playbooks/photo_type/product.txt" in ids
+    assert "playbooks/style/cinematic-muted.txt" in ids
+    portrait = next(entry for entry in catalog if entry.id.endswith("portrait.txt"))
+    assert portrait.category == "photo-type"
+    assert "natural portrait baseline" in portrait.summary.lower()
 
 
-def test_edit_profile_keeps_studio_portraits_out_of_product_playbooks() -> None:
-    request = _sample_request()
-    request.message.text = "Make this studio portrait polished and natural."
-    request.refinement.goalText = request.message.text
-    request.imageSnapshot.metadata.exifIso = 200.0
-    request.imageSnapshot.analysisSignals = None
+def test_load_playbook_returns_prompt_body() -> None:
+    playbook = load_playbook("playbooks/photo_type/portrait.txt")
 
-    profile = build_edit_profile(request)
-
-    assert profile.photoType == "portrait"
-    assert profile.prioritySubject == "person"
-    assert profile.styleArchetype == "natural-clean"
-    assert "playbooks/photo_type/portrait.txt" in profile.playbookIds
-    assert "playbooks/photo_type/product.txt" not in profile.playbookIds
+    assert playbook["id"] == "playbooks/photo_type/portrait.txt"
+    assert playbook["title"] == "portrait"
+    assert "natural portrait baseline" in playbook["summary"].lower()
+    assert "Protect skin hue" in playbook["body"]
 
 
-def test_edit_profile_routes_product_requests_to_color_accurate_playbooks() -> None:
-    request = _sample_request()
-    request.message.text = (
-        "Make this product shot clean and color accurate for ecommerce."
-    )
-    request.refinement.goalText = request.message.text
-    request.imageSnapshot.metadata.exifIso = 100.0
-
-    profile = build_edit_profile(request)
-
-    assert profile.photoType == "product"
-    assert profile.prioritySubject == "product"
-    assert profile.styleArchetype == "color-accurate"
-    assert "color-accuracy" in profile.riskFlags
-    assert profile.verificationLevel == "strict"
-
-
-def test_edit_profile_routes_high_iso_requests_to_night_playbooks() -> None:
-    request = _sample_request()
-    request.message.text = (
-        "Clean up this night street photo without losing the atmosphere."
-    )
-    request.refinement.goalText = request.message.text
-    request.imageSnapshot.metadata.exifIso = 6400.0
-
-    profile = build_edit_profile(request)
-
-    assert profile.photoType == "night"
-    assert profile.lighting == "night"
-    assert profile.styleArchetype == "noise-aware"
-    assert "noise-heavy" in profile.riskFlags
-    assert profile.verificationLevel == "strict"
+def test_load_playbook_rejects_unknown_ids() -> None:
+    with pytest.raises(ValueError, match="Unknown playbook"):
+        load_playbook("playbooks/style/unknown.txt")
 
 
 def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() -> None:
@@ -706,12 +653,11 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
         "Latest user message: Do a full edit so this becomes a polished gallery-ready landscape photo."
         in prompt
     )
-    assert "Edit profile:" in prompt
-    assert "- photoType: landscape" in prompt
-    assert "- prioritySubject: scene" in prompt
-    assert "Targeted playbooks:" in prompt
-    assert "[landscape]" in prompt
-    assert "[natural clean]" in prompt
+    assert "Available playbooks:" in prompt
+    assert "playbooks/photo_type/landscape.txt" in prompt
+    assert "playbooks/style/natural-clean.txt" in prompt
+    assert "Use get_playbook when the request" in prompt
+    assert "Choose which playbooks to fetch yourself" in prompt
 
 
 def test_turn_input_in_live_mode_includes_prompt_state_and_initial_preview_image() -> (
@@ -1018,6 +964,7 @@ def test_get_or_create_thread_includes_native_dynamic_tools() -> None:
     assert names == {
         _TOOL_GET_PREVIEW_IMAGE,
         _TOOL_GET_IMAGE_STATE,
+        _TOOL_GET_PLAYBOOK,
         _TOOL_APPLY_OPERATIONS,
     }
     for tool in tool_specs:
@@ -1130,6 +1077,45 @@ def test_handle_server_request_routes_image_state_tool_call_to_dynamic_result() 
     assert '"editableSettings"' in state_payload
     assert '"histogram"' in state_payload
     assert '"base64Data":null' in state_payload
+
+
+def test_handle_server_request_routes_playbook_tool_call_to_dynamic_result() -> None:
+    bridge = CodexAppServerBridge(
+        command=["codex", "app-server", "--listen", "stdio://"]
+    )
+    request = _sample_request()
+    data_url = bridge._preview_data_url(request)  # type: ignore[attr-defined]
+    bridge._register_turn_context("thread-1", "turn-1", request, data_url)  # type: ignore[attr-defined]
+    sent_payloads: list[dict] = []
+
+    def _capture(payload):  # type: ignore[no-untyped-def]
+        sent_payloads.append(payload)
+
+    bridge._send_json_locked = _capture  # type: ignore[method-assign,attr-defined]
+    try:
+        bridge._handle_server_request_locked(  # type: ignore[attr-defined]
+            {
+                "jsonrpc": "2.0",
+                "id": 17,
+                "method": "item/tool/call",
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "callId": "call-playbook",
+                    "tool": _TOOL_GET_PLAYBOOK,
+                    "arguments": {"playbookId": "playbooks/photo_type/portrait.txt"},
+                },
+            }
+        )
+    finally:
+        bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
+
+    result = sent_payloads[0]["result"]
+    assert result["success"] is True
+    payload = result["contentItems"][0]["text"]
+    assert '"id":"playbooks/photo_type/portrait.txt"' in payload
+    assert '"title":"portrait"' in payload
+    assert '"summary":"Optimize for a natural portrait baseline."' in payload
 
 
 def test_apply_operations_tool_updates_state_and_stages_operations(

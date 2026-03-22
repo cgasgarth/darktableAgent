@@ -7,24 +7,14 @@ Tool budget: maximum {{ max_tool_calls }} tool calls in this run.
 Image: {{ image_name }} ({{ width }}x{{ height }})
 {% if exif_line %}EXIF: {{ exif_line }}
 {% endif %}
-Edit profile:
-- photoType: {{ edit_profile.photoType }}
-- lighting: {{ edit_profile.lighting }}
-- prioritySubject: {{ edit_profile.prioritySubject }}
-- styleArchetype: {{ edit_profile.styleArchetype }}
-- riskFlags: {{ edit_profile.riskFlags | join(", ") if edit_profile.riskFlags else "none" }}
-- verificationLevel: {{ edit_profile.verificationLevel }}
-
-Targeted playbooks:
-{% for playbook in playbooks %}[{{ playbook.title }}]
-{{ playbook.body }}
-{% if not loop.last %}
-
-{% endif %}{% endfor %}
+Available playbooks:
+{% for playbook in playbooks %}- {{ playbook.id }} ({{ playbook.category }}): {{ playbook.summary }}
+{% endfor %}
 
 Tool usage:
 - Turn input already includes editable settings, histogram, compact analysis signals, and (in live mode) the preview image.
 - Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.
+- Use get_playbook when the request, preview, or image-state signals suggest a specific photo type or style. Choose which playbooks to fetch yourself; do not assume one is required.
 - apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.
 - In live mode, apply_operations also returns a verifier summary JSON block; if verifier status is fail, keep refining before finalizing.
 - In live mode, every actual edit must be performed through apply_operations. Do not introduce new operations in the final JSON that were not already applied successfully.
