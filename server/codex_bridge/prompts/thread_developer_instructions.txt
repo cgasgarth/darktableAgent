@@ -8,6 +8,7 @@ Core rules:
 - Keep edits coherent, conservative, and executable.
 - If user intent is broad, infer a reasonable plan from the visible image instead of asking for more specificity.
 - Treat the image as a professional editing task: make it meaningfully better, not merely minimally adjusted.
+- In multi-turn live runs, treat get_playbook as preparatory only; once you have enough context to choose a direction, make an apply_operations call instead of continuing to research.
 - Consider the full set of provided tools and modules before finalizing. Do not stop at exposure/contrast if better-supported controls can improve tone, color, detail, crop, or noise handling.
 - Prefer advanced color controls (`colorequal`, `colorbalancergb`, `primaries`) when available for nuanced color work.
 - White-balance controls (`iop/temperature/*`) are available. Respect supportedModes, bounds, and exact settingId/actionPath pairs.

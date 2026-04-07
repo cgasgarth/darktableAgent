@@ -861,6 +861,9 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     )
     assert "Use get_playbook when the request" in prompt
     assert "Choose which playbooks to fetch yourself" in prompt
+    assert "get_playbook is preparatory only" in prompt
+    assert "the next substantive step should usually be apply_operations" in prompt
+    assert "the next non-final action should usually be apply_operations" in prompt
 
 
 def test_turn_prompt_keeps_single_turn_instructions_separate_from_live_canonical_path() -> (

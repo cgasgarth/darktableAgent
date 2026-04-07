@@ -16,6 +16,7 @@ Tool usage:
 - If the user's prompt is underspecified, infer likely photo type and style direction from the provided preview image and analysis signals.
 - Use read-only tools (get_image_state, get_preview_image) only when you need refreshed state after edits.
 - Use get_playbook when the request, preview, or image-state signals suggest a specific photo type or style. Choose which playbooks to fetch yourself; do not assume one is required.
+- get_playbook is preparatory only: once you have enough context to pick a direction, the next substantive step should usually be apply_operations rather than more research.
 - apply_operations returns the refreshed preview automatically; use get_preview_image only for extra visual checks.
 - In live mode, apply_operations also returns a verifier summary JSON block; if verifier status is fail, keep refining before finalizing.
 - In live mode, every actual edit must be performed through apply_operations. Do not introduce new operations in the final JSON that were not already applied successfully.
@@ -30,6 +31,7 @@ Inside each apply_operations call, operations are auto-applied one at a time wit
 Turn input includes the current preview image, editable settings, and histogram.
 After each apply_operations call, inspect the refreshed preview and re-check get_image_state when you need refreshed exact state.
 Apply at least one edit batch within the first {{ apply_budget_window }} tool calls.
+After calling get_playbook, the next non-final action should usually be apply_operations unless refreshed image state is strictly required.
 When satisfied, return final JSON with continueRefining=false and usually empty operations.
 In multi-turn mode the final JSON should summarize the run; continueRefining must be false.
 {% else %}Single-turn mode: do not call apply_operations; return raw operations directly in the final JSON for this path.
