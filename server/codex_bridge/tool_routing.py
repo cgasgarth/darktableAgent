@@ -193,8 +193,16 @@ class ToolRoutingMixin:
                         "contentItems": [
                             {
                                 "type": "inputText",
+                                "text": (
+                                    "Use this playbook as editing guidance, not as a final answer. "
+                                    "If you have enough context, convert it into a concrete apply_operations call now. "
+                                    "Only do more read-only tool calls if refreshed image state is strictly necessary."
+                                ),
+                            },
+                            {
+                                "type": "inputText",
                                 "text": json.dumps(playbook, separators=(",", ":")),
-                            }
+                            },
                         ],
                     }
         elif tool_name == _TOOL_APPLY_OPERATIONS:

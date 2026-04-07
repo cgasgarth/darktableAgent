@@ -669,6 +669,10 @@ def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Core rules" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "expert RAW photo editor" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert _DEFAULT_MODEL == "gpt-5.4"
+    assert _DEFAULT_REASONING_EFFORT == "high"
+    assert _FAST_MODE_MODEL == "gpt-5.4-mini"
+    assert _FAST_MODE_REASONING_EFFORT == "high"
     assert (
         "Only emit raw operations targeting provided settingId/actionPath pairs."
         in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -1500,7 +1504,13 @@ def test_handle_server_request_routes_playbook_tool_call_to_dynamic_result() -> 
 
     result = sent_payloads[0]["result"]
     assert result["success"] is True
-    payload = result["contentItems"][0]["text"]
+    assert result["contentItems"][0]["type"] == "inputText"
+    assert "Use this playbook as editing guidance" in result["contentItems"][0]["text"]
+    assert (
+        "convert it into a concrete apply_operations call now"
+        in result["contentItems"][0]["text"]
+    )
+    payload = result["contentItems"][1]["text"]
     assert '"id":"playbooks/photo_type/portrait.txt"' in payload
     assert '"title":"portrait"' in payload
     assert '"summary":"Optimize for a natural portrait baseline."' in payload
