@@ -692,6 +692,16 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
         "In multi-turn live runs, prefer canonical intent"
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
+    assert "Do not browse playbooks speculatively" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert (
+        "anchor playbook selection on the strongest photo-type match"
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
+    assert "fetch the single best match" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert (
+        "style would materially change editing priorities"
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
 
 
 def test_prompt_payload_includes_all_histogram_channels() -> None:
@@ -802,6 +812,7 @@ def test_playbook_catalog_lists_available_prompt_playbooks() -> None:
     portrait = next(entry for entry in catalog if entry.id.endswith("portrait.txt"))
     assert portrait.category == "photo-type"
     assert "natural portrait baseline" in portrait.summary.lower()
+    assert "person is the main subject" in portrait.selection_hint.lower()
 
 
 def test_load_playbook_returns_prompt_body() -> None:
@@ -810,6 +821,7 @@ def test_load_playbook_returns_prompt_body() -> None:
     assert playbook["id"] == "playbooks/photo_type/portrait.txt"
     assert playbook["title"] == "portrait"
     assert "natural portrait baseline" in playbook["summary"].lower()
+    assert "person is the main subject" in playbook["selectionHint"].lower()
     assert "Protect skin hue" in playbook["body"]
 
 
@@ -859,12 +871,18 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Available playbooks:" in prompt
     assert "playbooks/photo_type/landscape.txt" in prompt
     assert "playbooks/style/natural-clean.txt" in prompt
+    assert "Use when:" in prompt
+    assert "scene is primarily outdoor scenery" in prompt
+    assert "believable polished finish" in prompt
     assert (
         "infer likely photo type and style direction from the provided preview image"
         in prompt
     )
-    assert "Use get_playbook when the request" in prompt
-    assert "Choose which playbooks to fetch yourself" in prompt
+    assert "materially change the edit plan or reduce real uncertainty" in prompt
+    assert "Do not browse playbooks speculatively" in prompt
+    assert "start from the strongest matching photo-type playbook" in prompt
+    assert "Treat style playbooks as optional refinements" in prompt
+    assert "materially change editing priorities" in prompt
     assert "get_playbook is preparatory only" in prompt
     assert "the next substantive step should usually be apply_operations" in prompt
     assert "the next non-final action should usually be apply_operations" in prompt
