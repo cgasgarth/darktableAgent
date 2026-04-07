@@ -13,8 +13,12 @@ from fastapi.responses import JSONResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 
 from server.bridge_types import PlannerBridge, PlannerTurnResult, RequestProgressPayload
+from server.batch_orchestrator import BatchOrchestrator
+from server.chat_batch import run_chat_batch
 from server.codex_app_server import CodexAppServerBridge, CodexAppServerError
 from server.mock_planner import MockPlannerBridge
+from shared.batch_protocol import BatchChatRequest, BatchChatResponse
+from shared.chat_batch_protocol import BatchRequestEnvelope, BatchResponseEnvelope
 from shared.protocol import (
     ErrorInfo,
     ProtocolError,
@@ -81,6 +85,10 @@ def get_codex_bridge() -> PlannerBridge:
     if os.environ.get("DARKTABLE_AGENT_USE_MOCK_RESPONSES") == "1":
         return _mock_bridge
     return _codex_bridge
+
+
+def build_planner_bridge() -> PlannerBridge:
+    return get_codex_bridge()
 
 
 def build_request_error_refinement(request: RequestEnvelope) -> RefinementStatus:
@@ -192,6 +200,24 @@ def _log_fulfilled_request(
                 "refinement": response.refinement.model_dump(),
                 "operationCount": len(response.plan.operations) if response.plan else 0,
                 "assistantText": response.assistantMessage.text,
+            }
+        },
+    )
+
+
+def _log_batch_request(
+    request: BatchChatRequest, batch_id: str, review_tag: str
+) -> None:
+    logger.info(
+        "accepted_batch_request",
+        extra={
+            "structured": {
+                "event": "accepted_batch_request",
+                "batchId": batch_id,
+                "reviewTag": review_tag,
+                "submittedCount": len(request.items),
+                "selectedMax": request.selection.maxImages,
+                "selectionStrategy": request.selection.strategy,
             }
         },
     )
@@ -333,6 +359,19 @@ async def chat(request: RequestEnvelope) -> ResponseEnvelope | JSONResponse:
     response = build_response_from_plan(request, turn_result.plan)
     _log_fulfilled_request(request, response, turn_result)
     return response
+
+
+@app.post("/v1/batch/chat", response_model=BatchChatResponse)
+async def batch_chat(request: BatchChatRequest) -> BatchChatResponse:
+    orchestrator = BatchOrchestrator(build_planner_bridge)
+    response = await orchestrator.run(request)
+    _log_batch_request(request, response.batchId, response.reviewTag)
+    return response
+
+
+@app.post("/v1/chat/batch", response_model=BatchResponseEnvelope)
+async def chat_batch(request: BatchRequestEnvelope) -> BatchResponseEnvelope:
+    return await run_chat_batch(request, build_planner_bridge)
 
 
 @app.post("/v1/chat/stream")

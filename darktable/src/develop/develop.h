@@ -358,12 +358,16 @@ typedef struct dt_develop_t
     guint active_request_refinement_max_passes;
     guint active_request_tool_calls_used;
     guint active_request_tool_calls_max;
+    GArray *batch_image_ids;
+    gchar *batch_prompt;
+    guint batch_index;
     gboolean multi_turn_enabled;
     gboolean fast_mode_enabled;
     gboolean active_request_canceling;
     gboolean is_loading;
     gboolean autorun_sent;
     gboolean exit_after_autorun;
+    gboolean batch_active;
   } agent_chat;
 
   // late scaling down from full roi

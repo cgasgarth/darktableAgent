@@ -26,6 +26,7 @@
 #include "gui/accelerators.h"
 #include "gui/gtk.h"
 #include "libs/lib.h"
+#include "views/view.h"
 #include <gdk/gdkkeysyms.h>
 #ifdef USE_LUA
 #include "lua/call.h"
@@ -63,7 +64,157 @@ typedef struct dt_lib_select_t
   GtkWidget *select_invert_button;
   GtkWidget *select_film_roll_button;
   GtkWidget *select_untouched_button;
+  GtkWidget *agent_batch_button;
 } dt_lib_select_t;
+
+typedef struct dt_lib_select_batch_launch_t
+{
+  GList *image_ids;
+  gchar *prompt;
+  guint attempts;
+} dt_lib_select_batch_launch_t;
+
+static void _batch_launch_free(dt_lib_select_batch_launch_t *launch)
+{
+  if(!launch)
+    return;
+
+  g_list_free(launch->image_ids);
+  g_free(launch->prompt);
+  g_free(launch);
+}
+
+static void _batch_launch_restore_selection(const dt_lib_select_batch_launch_t *launch)
+{
+  if(!launch || !launch->image_ids)
+    return;
+
+  dt_selection_clear(darktable.selection);
+  dt_selection_select_list(darktable.selection, launch->image_ids);
+}
+
+static gboolean _batch_launch_when_ready(gpointer user_data)
+{
+  dt_lib_select_batch_launch_t *launch = user_data;
+  if(dt_view_get_current() != DT_VIEW_DARKROOM
+     || !darktable.view_manager->proxy.darkroom.view
+     || !darktable.view_manager->proxy.darkroom.run_batch_agent_review)
+  {
+    launch->attempts++;
+    if(launch->attempts < 40)
+      return G_SOURCE_CONTINUE;
+
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)),
+                                               GTK_DIALOG_DESTROY_WITH_PARENT,
+                                               GTK_MESSAGE_ERROR,
+                                               GTK_BUTTONS_CLOSE,
+                                               "%s",
+                                               _("darkroom was not ready to start the batch review"));
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    _batch_launch_restore_selection(launch);
+    _batch_launch_free(launch);
+    return G_SOURCE_REMOVE;
+  }
+
+  GError *error = NULL;
+  if(!darktable.view_manager->proxy.darkroom.run_batch_agent_review(
+       darktable.view_manager->proxy.darkroom.view, launch->image_ids, launch->prompt, &error))
+  {
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)),
+                                               GTK_DIALOG_DESTROY_WITH_PARENT,
+                                               GTK_MESSAGE_ERROR,
+                                               GTK_BUTTONS_CLOSE,
+                                               "%s",
+                                               error && error->message ? error->message
+                                                                       : _("failed to start the batch review"));
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    g_clear_error(&error);
+    _batch_launch_restore_selection(launch);
+  }
+
+  _batch_launch_free(launch);
+  return G_SOURCE_REMOVE;
+}
+
+static void _start_agent_batch_review(void)
+{
+  GList *image_ids = dt_selection_get_list(darktable.selection, FALSE, TRUE);
+  const guint image_count = g_list_length(image_ids);
+  if(image_count == 0 || image_count > 10)
+  {
+    GtkWidget *dialog = gtk_message_dialog_new(GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)),
+                                               GTK_DIALOG_DESTROY_WITH_PARENT,
+                                               GTK_MESSAGE_WARNING,
+                                               GTK_BUTTONS_CLOSE,
+                                               "%s",
+                                               _("select between 1 and 10 images to start a batch review"));
+    gtk_dialog_run(GTK_DIALOG(dialog));
+    gtk_widget_destroy(dialog);
+    g_list_free(image_ids);
+    return;
+  }
+
+  GtkWidget *dialog = gtk_dialog_new_with_buttons(_("start batch review"),
+                                                  GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)),
+                                                  GTK_DIALOG_DESTROY_WITH_PARENT,
+                                                  _("_cancel"), GTK_RESPONSE_CANCEL,
+                                                  _("_start"), GTK_RESPONSE_ACCEPT,
+                                                  NULL);
+  GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, DT_PIXEL_APPLY_DPI(8));
+  gtk_container_set_border_width(GTK_CONTAINER(box), DT_PIXEL_APPLY_DPI(12));
+  gtk_box_pack_start(GTK_BOX(content), box, TRUE, TRUE, 0);
+
+  GtkWidget *label = gtk_label_new(_("Run the assistant across the selected images one by one. Each image is tagged for easy review when the batch finishes."));
+  gtk_label_set_line_wrap(GTK_LABEL(label), TRUE);
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+  gtk_box_pack_start(GTK_BOX(box), label, FALSE, FALSE, 0);
+
+  GtkWidget *entry = gtk_entry_new();
+  gtk_entry_set_placeholder_text(GTK_ENTRY(entry), _("describe the edit you want applied across the batch"));
+  const char *saved_prompt = dt_conf_get_string_const("plugins/lighttable/selection/agent_batch_prompt");
+  if(saved_prompt && saved_prompt[0])
+    gtk_entry_set_text(GTK_ENTRY(entry), saved_prompt);
+  gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 0);
+
+  gtk_widget_show_all(dialog);
+  gtk_widget_grab_focus(entry);
+  const gint response = gtk_dialog_run(GTK_DIALOG(dialog));
+  g_autofree gchar *prompt = g_strdup(gtk_entry_get_text(GTK_ENTRY(entry)));
+  gtk_widget_destroy(dialog);
+
+  if(response != GTK_RESPONSE_ACCEPT)
+  {
+    g_list_free(image_ids);
+    return;
+  }
+
+  g_strstrip(prompt);
+  if(!prompt[0])
+  {
+    GtkWidget *warning = gtk_message_dialog_new(GTK_WINDOW(dt_ui_main_window(darktable.gui->ui)),
+                                                GTK_DIALOG_DESTROY_WITH_PARENT,
+                                                GTK_MESSAGE_WARNING,
+                                                GTK_BUTTONS_CLOSE,
+                                                "%s",
+                                                _("enter a prompt to start the batch review"));
+    gtk_dialog_run(GTK_DIALOG(warning));
+    gtk_widget_destroy(warning);
+    g_list_free(image_ids);
+    return;
+  }
+
+  dt_conf_set_string("plugins/lighttable/selection/agent_batch_prompt", prompt);
+  dt_selection_select_single(darktable.selection, GPOINTER_TO_INT(image_ids->data));
+  dt_ctl_switch_mode_to("darkroom");
+
+  dt_lib_select_batch_launch_t *launch = g_malloc0(sizeof(*launch));
+  launch->image_ids = image_ids;
+  launch->prompt = g_strdup(prompt);
+  g_timeout_add(50, _batch_launch_when_ready, launch);
+}
 
 void gui_update(dt_lib_module_t *self)
 {
@@ -81,6 +232,7 @@ void gui_update(dt_lib_module_t *self)
   gtk_widget_set_sensitive(GTK_WIDGET(d->select_untouched_button), collection_cnt > 0);
 
   gtk_widget_set_sensitive(GTK_WIDGET(d->select_film_roll_button), selected_cnt > 0);
+  gtk_widget_set_sensitive(GTK_WIDGET(d->agent_batch_button), selected_cnt > 0 && selected_cnt <= 10);
 }
 
 static void _image_selection_changed_callback(gpointer instance, dt_lib_module_t *self)
@@ -117,6 +269,9 @@ static void button_clicked(GtkWidget *widget, gpointer user_data)
     case 4: // untouched
       dt_selection_select_unaltered(darktable.selection);
       break;
+    case 5:
+      _start_agent_batch_review();
+      return;
     default: // case 3: same film roll
       dt_selection_select_filmroll(darktable.selection);
   }
@@ -156,8 +311,12 @@ void gui_init(dt_lib_module_t *self)
   gtk_grid_attach(grid, d->select_film_roll_button, 1, line++, 1, 1);
 
   d->select_untouched_button = dt_action_button_new(self, N_("select untouched"), button_clicked, GINT_TO_POINTER(4),
-                                              _("select untouched images in\ncurrent collection"), 0, 0);
+                                               _("select untouched images in\ncurrent collection"), 0, 0);
   gtk_grid_attach(grid, d->select_untouched_button, 0, line, 2, 1);
+
+  d->agent_batch_button = dt_action_button_new(self, N_("agent batch review"), button_clicked, GINT_TO_POINTER(5),
+                                               _("run the assistant on up to 10 selected images and tag them for review"), 0, 0);
+  gtk_grid_attach(grid, d->agent_batch_button, 0, ++line, 2, 1);
 
   gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(d->select_all_button))), PANGO_ELLIPSIZE_START);
   gtk_label_set_ellipsize(GTK_LABEL(gtk_bin_get_child(GTK_BIN(d->select_none_button))), PANGO_ELLIPSIZE_START);

@@ -315,6 +315,10 @@ typedef struct dt_view_manager_t
     {
       struct dt_view_t *view;
       dt_darkroom_layout_t (*get_layout)(struct dt_view_t *view);
+      gboolean (*run_batch_agent_review)(struct dt_view_t *view,
+                                         const GList *image_ids,
+                                         const char *prompt,
+                                         GError **error);
     } darkroom;
 
     /* lighttable view proxy object */
