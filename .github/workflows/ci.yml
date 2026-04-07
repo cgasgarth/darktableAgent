@@ -115,7 +115,7 @@ jobs:
 
       - name: Build darktable
         env:
-          BUILD_TYPE: Debug
+          BUILD_TYPE: RelWithDebInfo
           CCACHE_DIR: ~/.cache/ccache
         run: |
           ./scripts/build_darktable_local.sh -- \
