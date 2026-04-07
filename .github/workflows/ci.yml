@@ -23,15 +23,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.14'
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.0.0
 
       - name: Install Python dependencies
         run: uv sync --extra dev
@@ -53,7 +53,15 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
+
+      - name: Restore ccache
+        uses: actions/cache@v5.0.4
+        with:
+          path: ~/.cache/ccache
+          key: darktable-ccache-${{ runner.os }}-${{ hashFiles('.github/workflows/ci.yml', 'scripts/build_darktable_local.sh', 'darktable/build.sh', 'darktable/CMakeLists.txt', 'darktable/cmake/**') }}
+          restore-keys: |
+            darktable-ccache-${{ runner.os }}-
 
       - name: Enable apt source repositories
         run: |
@@ -86,16 +94,29 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get build-dep -y darktable
-          sudo apt-get install -y cmake curl ninja-build xvfb
+          sudo apt-get install -y ccache cmake ninja-build
+
+      - name: Prime ccache
+        run: |
+          ccache --set-config=max_size=1G
+          ccache --zero-stats
 
       - name: Build darktable
-        run: ./scripts/build_darktable_local.sh
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+        run: ./scripts/build_darktable_local.sh -- -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Show ccache stats
+        if: always()
+        env:
+          CCACHE_DIR: ~/.cache/ccache
+        run: ccache --show-stats
 
       - name: Package darktable install
         run: tar -C darktable -cf "${RUNNER_TEMP}/darktable-install.tar" .install-5.4.1
 
       - name: Upload darktable install artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: darktable-install
           path: ${{ runner.temp }}/darktable-install.tar
@@ -108,59 +129,63 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.0.2
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v6.2.0
         with:
           python-version: '3.14'
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v6.3.0
         with:
           node-version: '24'
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Enable apt source repositories
-        run: |
-          sudo python3 - <<'PY'
-          from pathlib import Path
-
-          sources = [Path('/etc/apt/sources.list')]
-          sources.extend(sorted(Path('/etc/apt/sources.list.d').glob('*.sources')))
-
-          for path in sources:
-              if not path.exists():
-                  continue
-              text = path.read_text()
-              original = text
-              if path.suffix == '.sources':
-                  text = text.replace('Types: deb\n', 'Types: deb deb-src\n')
-              else:
-                  lines = []
-                  for line in text.splitlines():
-                      if line.startswith('# deb-src '):
-                          lines.append(line[2:])
-                      else:
-                          lines.append(line)
-                  text = '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
-              if text != original:
-                  path.write_text(text)
-          PY
+        uses: astral-sh/setup-uv@v8.0.0
 
       - name: Install Linux runtime and headless test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get build-dep -y darktable
-          sudo apt-get install -y curl xvfb
+          python3 - <<'PY' > "${RUNNER_TEMP}/darktable-runtime-deps.txt"
+          import subprocess
+
+          result = subprocess.run(
+              [
+                  'apt-cache',
+                  'depends',
+                  '--recurse',
+                  '--no-recommends',
+                  '--no-suggests',
+                  '--no-conflicts',
+                  '--no-breaks',
+                  '--no-replaces',
+                  '--no-enhances',
+                  'darktable',
+              ],
+              capture_output=True,
+              check=True,
+              text=True,
+          )
+          dependencies = set()
+          for raw_line in result.stdout.splitlines():
+              line = raw_line.strip()
+              if line.startswith(('Depends:', 'PreDepends:')):
+                  dependency = line.split(':', 1)[1].strip()
+                  if dependency and not dependency.startswith('<'):
+                      dependencies.add(dependency)
+
+          for dependency in sorted(dependencies):
+              print(dependency)
+          PY
+          mapfile -t darktable_runtime_deps < "${RUNNER_TEMP}/darktable-runtime-deps.txt"
+          sudo apt-get install -y --no-install-recommends curl xvfb "${darktable_runtime_deps[@]}"
 
       - name: Install Python dependencies
         run: uv sync --extra dev
 
       - name: Download darktable install artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: darktable-install
           path: ${{ runner.temp }}/darktable-install
@@ -178,6 +203,7 @@ jobs:
           REPORT_FILE: ${{ runner.temp }}/single-turn-report.ini
           RUNTIME_DIR: ${{ runner.temp }}/darktable-runtime-single
           SERVER_LOG: ${{ runner.temp }}/single-turn-server.log
+          SKIP_BUILD: '1'
           SKIP_SERVER_TESTS: '1'
         run: npm run agent:smoke
 
@@ -195,7 +221,7 @@ jobs:
 
       - name: Upload mock smoke artifacts
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.0
         with:
           name: mock-e2e-artifacts
           retention-days: 7
