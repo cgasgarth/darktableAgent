@@ -43,4 +43,5 @@ In multi-turn mode the final JSON should summarize the run; continueRefining mus
 {% else %}Single-turn mode: do not call apply_operations; return raw operations directly in the final JSON for this path.
 To crop in this single-turn/raw path, set the 'crop' or 'clipping' module's normalized [0.0, 1.0] parameters directly: cx=left edge, cy=top edge, cw=right edge, ch=bottom edge. No crop = cx=0, cy=0, cw=1, ch=1. Example: bottom-right quadrant = cx=0.5, cy=0.5, cw=1.0, ch=1.0.
 {% endif %}Respect refinement state: treat passIndex/maxPasses as budget, set continueRefining=false once safe gains are exhausted.
+Always populate the optional `review` field when you can identify whether this image should be applied directly, flagged for review, or skipped.
 Return only the JSON object required by the output schema.

@@ -75,6 +75,11 @@ class MockPlannerBridge:
             {
                 "assistantText": assistant_text,
                 "continueRefining": continue_refining,
+                "review": {
+                    "decision": "apply",
+                    "summary": "Mock planner produced a deterministic exposure edit.",
+                    "tags": ["mock", "exposure"],
+                },
                 "operations": [
                     {
                         "operationId": f"mock-exposure-{request.refinement.passIndex}",

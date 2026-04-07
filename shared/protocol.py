@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .canonical_plan import CanonicalEditAction
 from .analysis_signals import ImageAnalysisSignals
+from .review_protocol import ReviewMetadata
 
 SCHEMA_VERSION = "3.0"
 DEFAULT_REFINEMENT_MAX_PASSES = 15
@@ -410,6 +411,7 @@ class AgentPlan(StrictBaseModel):
     continueRefining: bool
     operations: list[PlannedOperationDraft]
     canonicalActions: list[CanonicalEditAction] | None = None
+    review: ReviewMetadata | None = None
 
     @model_validator(mode="after")
     def validate_operation_ids(self) -> "AgentPlan":
@@ -459,6 +461,7 @@ class ResponseEnvelope(StrictBaseModel):
     refinement: RefinementStatus
     plan: PlanEnvelope | None
     operationResults: list[OperationResult]
+    review: ReviewMetadata | None = None
     error: ErrorInfo | None
 
     @model_validator(mode="after")
@@ -507,6 +510,7 @@ def build_response_from_plan(
             )
             for operation in plan.operations
         ],
+        review=plan.review,
         error=None,
     )
 

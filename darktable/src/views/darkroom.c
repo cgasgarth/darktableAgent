@@ -91,6 +91,11 @@ DT_MODULE(1)
 #define DT_AGENT_CHAT_TEST_AUTORUN_QUIT_MS_ENV "DARKTABLE_AGENT_TEST_AUTORUN_QUIT_AFTER_MS"
 #define DT_AGENT_CHAT_TEST_MULTI_TURN_ENABLED_ENV "DARKTABLE_AGENT_TEST_MULTI_TURN_ENABLED"
 #define DT_AGENT_CHAT_TEST_MULTI_TURN_MAX_TURNS_ENV "DARKTABLE_AGENT_TEST_MULTI_TURN_MAX_TURNS"
+#define DT_AGENT_BATCH_MAX_IMAGES 10
+#define DT_AGENT_BATCH_TAG_BASE "darktable|agent|batch-review"
+#define DT_AGENT_BATCH_TAG_QUEUE DT_AGENT_BATCH_TAG_BASE "|queued"
+#define DT_AGENT_BATCH_TAG_DONE DT_AGENT_BATCH_TAG_BASE "|edited"
+#define DT_AGENT_BATCH_TAG_FAILED DT_AGENT_BATCH_TAG_BASE "|failed"
 
 static void _update_softproof_gamut_checking(dt_develop_t *d);
 
@@ -142,6 +147,9 @@ static struct dt_agent_chat_session_t *_agent_chat_lookup_session(dt_develop_t *
                                                                   dt_imgid_t image_id);
 static void _agent_chat_session_set_status(dt_agent_chat_session_t *session,
                                            const char *status);
+static void _agent_chat_append_message(dt_develop_t *dev,
+                                       const char *speaker,
+                                       const char *message);
 static void _agent_chat_update_sensitivity(dt_develop_t *dev);
 static void _agent_chat_set_status(dt_develop_t *dev, const char *status);
 static void _agent_chat_set_error(dt_develop_t *dev, const char *error);
@@ -165,10 +173,24 @@ static gboolean _agent_chat_submit_internal(dt_develop_t *dev,
                                             const dt_agent_refinement_mode_t refinement_mode,
                                             const guint refinement_pass_index,
                                             const guint refinement_max_passes);
+static void _agent_chat_submit(dt_develop_t *dev, const char *prompt, const gboolean autorun);
+static gboolean _agent_chat_run_batch_agent_review(dt_view_t *view,
+                                                   const GList *image_ids,
+                                                   const char *prompt,
+                                                   GError **error);
 static gboolean _agent_chat_apply_operation_range(const GPtrArray *operations,
                                                   const guint start_index,
                                                   dt_agent_execution_report_t *execution_report,
                                                   GError **error);
+static void _agent_chat_batch_clear(dt_develop_t *dev);
+static void _agent_chat_batch_restore_selection(dt_develop_t *dev);
+static gboolean _agent_chat_batch_advance(dt_develop_t *dev);
+static gboolean _agent_chat_batch_set_status_tags(const GList *image_ids,
+                                                  const char *status_tag,
+                                                  GError **error);
+static gboolean _agent_chat_batch_set_image_status(dt_imgid_t imgid,
+                                                   const char *status_tag,
+                                                   GError **error);
 
 const char *name(const dt_view_t *self)
 {
@@ -300,6 +322,9 @@ void cleanup(dt_view_t *self)
   g_free(dev->agent_chat.active_request_id);
   g_free(dev->agent_chat.autorun_message);
   g_free(dev->agent_chat.test_report_path);
+  g_free(dev->agent_chat.batch_prompt);
+  if(dev->agent_chat.batch_image_ids)
+    g_array_unref(dev->agent_chat.batch_image_ids);
   if(dev->agent_chat.image_sessions)
     g_hash_table_unref(dev->agent_chat.image_sessions);
 
@@ -2325,6 +2350,226 @@ static dt_develop_t *_agent_chat_get_darkroom_dev(void)
   return darktable.view_manager->proxy.darkroom.view->data;
 }
 
+static GList *_agent_chat_batch_list_from_array(const GArray *image_ids)
+{
+  GList *list = NULL;
+  if(!image_ids)
+    return NULL;
+
+  for(guint i = 0; i < image_ids->len; i++)
+  {
+    const dt_imgid_t imgid = g_array_index(image_ids, dt_imgid_t, i);
+    list = g_list_append(list, GINT_TO_POINTER(imgid));
+  }
+
+  return list;
+}
+
+static gboolean _agent_chat_batch_lookup_tag(const char *tag_name,
+                                             guint *tagid,
+                                             GError **error)
+{
+  if(!tag_name || !tag_name[0])
+    return FALSE;
+
+  guint resolved_tagid = 0;
+  if(!dt_tag_new(tag_name, &resolved_tagid))
+  {
+    g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
+                _("failed to create batch review tag: %s"), tag_name);
+    return FALSE;
+  }
+
+  if(tagid)
+    *tagid = resolved_tagid;
+  return TRUE;
+}
+
+static gboolean _agent_chat_batch_reset_status_tags(const GList *image_ids,
+                                                    GError **error)
+{
+  const char *status_tags[] = {
+    DT_AGENT_BATCH_TAG_QUEUE,
+    DT_AGENT_BATCH_TAG_DONE,
+    DT_AGENT_BATCH_TAG_FAILED,
+  };
+
+  for(guint i = 0; i < G_N_ELEMENTS(status_tags); i++)
+  {
+    guint tagid = 0;
+    if(!_agent_chat_batch_lookup_tag(status_tags[i], &tagid, error))
+      return FALSE;
+    dt_tag_detach_images(tagid, image_ids, FALSE);
+  }
+
+  return TRUE;
+}
+
+static gboolean _agent_chat_batch_set_status_tags(const GList *image_ids,
+                                                  const char *status_tag,
+                                                  GError **error)
+{
+  if(!_agent_chat_batch_reset_status_tags(image_ids, error))
+    return FALSE;
+
+  guint base_tagid = 0;
+  guint status_tagid = 0;
+  if(!_agent_chat_batch_lookup_tag(DT_AGENT_BATCH_TAG_BASE, &base_tagid, error)
+     || !_agent_chat_batch_lookup_tag(status_tag, &status_tagid, error))
+    return FALSE;
+
+  if(!dt_tag_attach_images(base_tagid, image_ids, FALSE))
+  {
+    g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
+                _("failed to attach the batch review tag"));
+    return FALSE;
+  }
+
+  if(!dt_tag_attach_images(status_tagid, image_ids, FALSE))
+  {
+    g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
+                _("failed to attach the batch status tag"));
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+static gboolean _agent_chat_batch_set_image_status(dt_imgid_t imgid,
+                                                   const char *status_tag,
+                                                   GError **error)
+{
+  GList *image_ids = g_list_append(NULL, GINT_TO_POINTER(imgid));
+  const gboolean ok = _agent_chat_batch_set_status_tags(image_ids, status_tag, error);
+  g_list_free(image_ids);
+  return ok;
+}
+
+static void _agent_chat_batch_restore_selection(dt_develop_t *dev)
+{
+  GList *image_ids = _agent_chat_batch_list_from_array(dev ? dev->agent_chat.batch_image_ids : NULL);
+  if(!image_ids)
+    return;
+
+  dt_selection_clear(darktable.selection);
+  dt_selection_select_list(darktable.selection, image_ids);
+  g_list_free(image_ids);
+}
+
+static void _agent_chat_batch_clear(dt_develop_t *dev)
+{
+  if(!dev)
+    return;
+
+  dev->agent_chat.batch_active = FALSE;
+  dev->agent_chat.batch_index = 0;
+  g_clear_pointer(&dev->agent_chat.batch_prompt, g_free);
+  g_clear_pointer(&dev->agent_chat.batch_image_ids, g_array_unref);
+}
+
+static void _agent_chat_batch_stop(dt_develop_t *dev,
+                                   const dt_imgid_t failed_imgid,
+                                   const char *message)
+{
+  if(!dev || !dev->agent_chat.batch_active)
+    return;
+
+  if(failed_imgid > 0)
+  {
+    GError *batch_error = NULL;
+    if(!_agent_chat_batch_set_image_status(failed_imgid, DT_AGENT_BATCH_TAG_FAILED, &batch_error))
+      dt_print(DT_DEBUG_ALWAYS,
+               "[agent-chat] failed to update batch failed tag: %s",
+               batch_error && batch_error->message ? batch_error->message : "unknown error");
+    g_clear_error(&batch_error);
+  }
+
+  if(message && message[0] != '\0')
+    _agent_chat_append_message(dev, _("system"), message);
+  _agent_chat_batch_restore_selection(dev);
+  _agent_chat_batch_clear(dev);
+  dt_ctl_switch_mode_to("lighttable");
+}
+
+static gboolean _agent_chat_batch_advance(dt_develop_t *dev)
+{
+  if(!dev || !dev->agent_chat.batch_active || !dev->agent_chat.batch_image_ids
+     || !dev->agent_chat.batch_prompt)
+    return FALSE;
+
+  dev->agent_chat.batch_index++;
+  if(dev->agent_chat.batch_index >= dev->agent_chat.batch_image_ids->len)
+  {
+    _agent_chat_append_message(dev, _("system"), _("Batch review complete. Returning to lighttable for review."));
+    _agent_chat_batch_restore_selection(dev);
+    _agent_chat_batch_clear(dev);
+    dt_ctl_switch_mode_to("lighttable");
+    return FALSE;
+  }
+
+  const dt_imgid_t next_imgid
+    = g_array_index(dev->agent_chat.batch_image_ids, dt_imgid_t, dev->agent_chat.batch_index);
+  _dev_change_image(dev, next_imgid);
+  _agent_chat_append_message(dev, _("system"), _("Continuing batch review on the next selected image."));
+  _agent_chat_submit(dev, dev->agent_chat.batch_prompt, FALSE);
+  return TRUE;
+}
+
+static gboolean _agent_chat_run_batch_agent_review(dt_view_t *view,
+                                                   const GList *image_ids,
+                                                   const char *prompt,
+                                                   GError **error)
+{
+  if(!view || !view->data)
+    return FALSE;
+
+  dt_develop_t *dev = view->data;
+  g_autofree gchar *message = g_strstrip(g_strdup(prompt ? prompt : ""));
+  const guint image_count = g_list_length((GList *)image_ids);
+  if(image_count == 0 || image_count > DT_AGENT_BATCH_MAX_IMAGES)
+  {
+    g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
+                _("select between 1 and %u images to start a batch review"),
+                DT_AGENT_BATCH_MAX_IMAGES);
+    return FALSE;
+  }
+
+  if(!message[0])
+  {
+    g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
+                "%s", _("enter a batch review prompt first"));
+    return FALSE;
+  }
+
+  if(dev->agent_chat.is_loading)
+  {
+    g_set_error(error, g_quark_from_static_string("dt-agent-chat-ui"), 1,
+                "%s", _("wait for the current request to finish before starting a batch review"));
+    return FALSE;
+  }
+
+  g_autoptr(GArray) batch_image_ids = g_array_sized_new(FALSE, FALSE, sizeof(dt_imgid_t), image_count);
+  for(const GList *iter = image_ids; iter; iter = g_list_next(iter))
+  {
+    const dt_imgid_t imgid = GPOINTER_TO_INT(iter->data);
+    g_array_append_val(batch_image_ids, imgid);
+  }
+
+  if(!_agent_chat_batch_set_status_tags(image_ids, DT_AGENT_BATCH_TAG_QUEUE, error))
+    return FALSE;
+
+  _agent_chat_batch_clear(dev);
+  dev->agent_chat.batch_image_ids = g_steal_pointer(&batch_image_ids);
+  dev->agent_chat.batch_prompt = g_strdup(message);
+  dev->agent_chat.batch_index = 0;
+  dev->agent_chat.batch_active = TRUE;
+
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(dev->agent_chat.button), TRUE);
+  _agent_chat_append_message(dev, _("system"), _("Starting batch review for the current selection."));
+  _agent_chat_submit(dev, message, FALSE);
+  return dev->agent_chat.is_loading;
+}
+
 static gboolean _agent_chat_darkroom_is_visible(void)
 {
   return dt_view_get_current() == DT_VIEW_DARKROOM;
@@ -3236,6 +3481,10 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
                                   result->transport_error ? result->transport_error
                                                           : _("chat request canceled"),
                                   submission ? submission->exposure_before : NAN);
+    if(dev->agent_chat.batch_active)
+      _agent_chat_batch_stop(dev,
+                             submission && submission->has_image_id ? submission->image_id : NO_IMGID,
+                             _("Batch review stopped after a canceled image. Returning to lighttable for review."));
     _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
     return;
   }
@@ -3260,6 +3509,10 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     _agent_chat_write_test_report(dev, "stale", result, NULL,
                                   _("ignored stale response"),
                                   submission ? submission->exposure_before : NAN);
+    if(dev->agent_chat.batch_active)
+      _agent_chat_batch_stop(dev,
+                             submission && submission->has_image_id ? submission->image_id : NO_IMGID,
+                             _("Batch review stopped because an image response became stale. Returning to lighttable for review."));
     return;
   }
 
@@ -3294,6 +3547,10 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
       }
       _agent_chat_write_test_report(dev, "revision_mismatch", result, NULL, message,
                                     submission ? submission->exposure_before : NAN);
+      if(dev->agent_chat.batch_active)
+        _agent_chat_batch_stop(dev,
+                               submission && submission->has_image_id ? submission->image_id : NO_IMGID,
+                               _("Batch review stopped after the image changed unexpectedly. Returning to lighttable for review."));
       _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
       return;
     }
@@ -3359,6 +3616,10 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     }
 
     _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
+    if(dev->agent_chat.batch_active)
+      _agent_chat_batch_stop(dev,
+                             submission && submission->has_image_id ? submission->image_id : NO_IMGID,
+                             _("Batch review stopped before darkroom could finish the current image. Returning to lighttable for review."));
     return;
   }
 
@@ -3369,6 +3630,10 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
                                   result->transport_error ? result->transport_error
                                                           : _("failed to contact the agent server"),
                                   submission ? submission->exposure_before : NAN);
+    if(dev->agent_chat.batch_active)
+      _agent_chat_batch_stop(dev,
+                             submission && submission->has_image_id ? submission->image_id : NO_IMGID,
+                             _("Batch review stopped after a failed image request. Returning to lighttable for review."));
   }
   else
   {
@@ -3393,6 +3658,26 @@ static void _agent_chat_request_finished(const dt_agent_client_result_t *result,
     _agent_chat_write_test_report(dev, status, result, &execution_report, response_error,
                                   submission ? submission->exposure_before : NAN);
     dt_agent_execution_report_clear(&execution_report);
+    if(dev->agent_chat.batch_active && submission && submission->has_image_id)
+    {
+      GError *batch_error = NULL;
+      if(handled)
+      {
+        if(!_agent_chat_batch_set_image_status(submission->image_id, DT_AGENT_BATCH_TAG_DONE, &batch_error))
+          dt_print(DT_DEBUG_ALWAYS,
+                   "[agent-chat] failed to update batch done tag: %s",
+                   batch_error && batch_error->message ? batch_error->message : "unknown error");
+        g_clear_error(&batch_error);
+        if(_agent_chat_batch_advance(dev))
+          return;
+      }
+      else
+      {
+        _agent_chat_batch_stop(dev,
+                               submission->image_id,
+                               _("Batch review stopped after a failed image. Returning to lighttable for review."));
+      }
+    }
     _agent_chat_maybe_schedule_test_quit(dev, submission->autorun);
     return;
   }
@@ -5077,6 +5362,7 @@ void gui_init(dt_view_t *self)
   }
 
   darktable.view_manager->proxy.darkroom.get_layout = _lib_darkroom_get_layout;
+  darktable.view_manager->proxy.darkroom.run_batch_agent_review = _agent_chat_run_batch_agent_review;
   dev->full.border_size = DT_PIXEL_APPLY_DPI(dt_conf_get_int("plugins/darkroom/ui/border_size"));
 
   // Fullscreen preview key
