@@ -1,10 +1,13 @@
+import json
+import logging
+import sys
 from dataclasses import dataclass
 import time
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app import app
+from server.app import JsonFormatter, app
 from server.codex_app_server import CodexAppServerError
 from shared.protocol import AgentPlan
 
@@ -80,6 +83,30 @@ def _sample_capabilities() -> list[dict]:
             "stepNumber": 0.001,
         },
     ]
+
+
+def test_json_formatter_includes_exception_details() -> None:
+    formatter = JsonFormatter()
+
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError:
+        record = logging.getLogger("darktable_agent.server").makeRecord(
+            name="darktable_agent.server",
+            level=logging.ERROR,
+            fn=__file__,
+            lno=1,
+            msg="chat_request_unexpected_error",
+            args=(),
+            exc_info=sys.exc_info(),
+        )
+
+    payload = json.loads(formatter.format(record))
+
+    assert payload["message"] == "chat_request_unexpected_error"
+    assert payload["exception"]["type"] == "RuntimeError"
+    assert payload["exception"]["message"] == "boom"
+    assert "RuntimeError: boom" in payload["exception"]["traceback"]
 
 
 def _sample_image_snapshot() -> dict:
@@ -1052,4 +1079,3 @@ async def test_chat_render_callback_returns_unhandled_for_missing_session(
     assert response.status_code == 404
     body = response.text
     assert body == "Context not found"
-

@@ -669,6 +669,16 @@ def test_effort_selection_uses_fast_mode_effort_when_fast_mode_enabled() -> None
 def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert "Core rules" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert "expert RAW photo editor" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert _DEFAULT_MODEL == "gpt-5.4"
+    assert _DEFAULT_REASONING_EFFORT == "high"
+    assert _FAST_MODE_MODEL == "gpt-5.4-mini"
+    assert _FAST_MODE_REASONING_EFFORT == "high"
+    assert (
+        "This is an image-editing workflow, not a coding workflow."
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
+    assert "Use only these tools in this run" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Do not call generic command execution" in _THREAD_DEVELOPER_INSTRUCTIONS
     assert (
         "Only emit raw operations targeting provided settingId/actionPath pairs."
         in _THREAD_DEVELOPER_INSTRUCTIONS
@@ -688,6 +698,17 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
         "In multi-turn live runs, prefer canonical intent"
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
+    assert "Do not browse playbooks speculatively" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert (
+        "anchor playbook selection on the strongest photo-type match"
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
+    assert "fetch the single best match" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert (
+        "style would materially change editing priorities"
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
+    assert "Follow this loop: infer scene and goal" in _THREAD_DEVELOPER_INSTRUCTIONS
 
 
 def test_prompt_payload_includes_all_histogram_channels() -> None:
@@ -798,6 +819,7 @@ def test_playbook_catalog_lists_available_prompt_playbooks() -> None:
     portrait = next(entry for entry in catalog if entry.id.endswith("portrait.txt"))
     assert portrait.category == "photo-type"
     assert "natural portrait baseline" in portrait.summary.lower()
+    assert "person is the main subject" in portrait.selection_hint.lower()
 
 
 def test_load_playbook_returns_prompt_body() -> None:
@@ -806,6 +828,7 @@ def test_load_playbook_returns_prompt_body() -> None:
     assert playbook["id"] == "playbooks/photo_type/portrait.txt"
     assert playbook["title"] == "portrait"
     assert "natural portrait baseline" in playbook["summary"].lower()
+    assert "person is the main subject" in playbook["selectionHint"].lower()
     assert "Protect skin hue" in playbook["body"]
 
 
@@ -823,6 +846,8 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
 
     assert "Tool budget: maximum" in prompt
     assert "tool calls in this run." in prompt
+    assert "Use only these tools" in prompt
+    assert "Do not use command execution, file editing, patching, filesystem" in prompt
     assert "Live run mode is enabled" in prompt
     assert "Turn input includes the current preview image" in prompt
     assert "compact analysis signals" in prompt
@@ -855,12 +880,22 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Available playbooks:" in prompt
     assert "playbooks/photo_type/landscape.txt" in prompt
     assert "playbooks/style/natural-clean.txt" in prompt
+    assert "Use when:" in prompt
+    assert "scene is primarily outdoor scenery" in prompt
+    assert "believable polished finish" in prompt
     assert (
         "infer likely photo type and style direction from the provided preview image"
         in prompt
     )
-    assert "Use get_playbook when the request" in prompt
-    assert "Choose which playbooks to fetch yourself" in prompt
+    assert "materially change the edit plan or reduce real uncertainty" in prompt
+    assert "Do not browse playbooks speculatively" in prompt
+    assert "start from the strongest matching photo-type playbook" in prompt
+    assert "Treat style playbooks as optional refinements" in prompt
+    assert "materially change editing priorities" in prompt
+    assert "get_playbook is preparatory only" in prompt
+    assert "Stay inside the darktable tool loop" in prompt
+    assert "the next substantive step should usually be apply_operations" in prompt
+    assert "the next non-final action should usually be apply_operations" in prompt
 
 
 def test_turn_prompt_keeps_single_turn_instructions_separate_from_live_canonical_path() -> (
@@ -1497,7 +1532,13 @@ def test_handle_server_request_routes_playbook_tool_call_to_dynamic_result() -> 
 
     result = sent_payloads[0]["result"]
     assert result["success"] is True
-    payload = result["contentItems"][0]["text"]
+    assert result["contentItems"][0]["type"] == "inputText"
+    assert "Use this playbook as editing guidance" in result["contentItems"][0]["text"]
+    assert (
+        "convert it into a concrete apply_operations call now"
+        in result["contentItems"][0]["text"]
+    )
+    payload = result["contentItems"][1]["text"]
     assert '"id":"playbooks/photo_type/portrait.txt"' in payload
     assert '"title":"portrait"' in payload
     assert '"summary":"Optimize for a natural portrait baseline."' in payload

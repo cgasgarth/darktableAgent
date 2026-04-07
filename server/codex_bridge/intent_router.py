@@ -15,6 +15,7 @@ class PlaybookEntry:
     title: str
     summary: str
     category: str
+    selection_hint: str
 
     def to_payload(self) -> dict[str, str]:
         return {
@@ -22,6 +23,7 @@ class PlaybookEntry:
             "title": self.title,
             "summary": self.summary,
             "category": self.category,
+            "selectionHint": self.selection_hint,
         }
 
 
@@ -39,6 +41,45 @@ def _playbook_summary(playbook_id: str) -> str:
     return rendered.splitlines()[0].strip() if rendered else ""
 
 
+def _playbook_selection_hint(playbook_id: str) -> str:
+    hints = {
+        "playbooks/photo_type/general.txt": (
+            "Use when no more specific photo type clearly fits the scene."
+        ),
+        "playbooks/photo_type/landscape.txt": (
+            "Use when the scene is primarily outdoor scenery and sky, distance, or tonal separation drive the edit."
+        ),
+        "playbooks/photo_type/night.txt": (
+            "Use when the image is genuinely low-light or high-ISO and noise or light-source control is central."
+        ),
+        "playbooks/photo_type/portrait.txt": (
+            "Use when a person is the main subject and skin tone or facial rendering is important."
+        ),
+        "playbooks/photo_type/product.txt": (
+            "Use when the subject is a product and clean edges, neutral color, or commercial clarity matter most."
+        ),
+        "playbooks/style/bw-documentary.txt": (
+            "Use when the requested finish is black-and-white and documentary rather than graphic or highly stylized."
+        ),
+        "playbooks/style/cinematic-muted.txt": (
+            "Use when the user wants a restrained cinematic grade with reduced saturation and controlled contrast."
+        ),
+        "playbooks/style/color-accurate.txt": (
+            "Use when accurate neutral color is more important than mood, especially for commercial or brand-sensitive work."
+        ),
+        "playbooks/style/natural-clean.txt": (
+            "Use when the goal is a believable polished finish without a strong stylized look."
+        ),
+        "playbooks/style/noise-aware.txt": (
+            "Use when visible noise or high-ISO risk should constrain contrast, shadow lifting, or detail moves."
+        ),
+    }
+    return hints.get(
+        playbook_id,
+        "Use only when this playbook clearly matches the scene or requested finish.",
+    )
+
+
 def list_playbooks() -> list[PlaybookEntry]:
     entries: list[PlaybookEntry] = []
     for path in sorted(_PLAYBOOKS_DIR.rglob("*.txt")):
@@ -49,6 +90,7 @@ def list_playbooks() -> list[PlaybookEntry]:
                 title=_playbook_title(playbook_id),
                 summary=_playbook_summary(playbook_id),
                 category=_playbook_category(playbook_id),
+                selection_hint=_playbook_selection_hint(playbook_id),
             )
         )
     return entries
@@ -69,5 +111,6 @@ def load_playbook(playbook_id: str) -> dict[str, str]:
         "id": playbook_id,
         "title": _playbook_title(playbook_id),
         "summary": _playbook_summary(playbook_id),
+        "selectionHint": _playbook_selection_hint(playbook_id),
         "body": render_prompt_template(playbook_id),
     }
