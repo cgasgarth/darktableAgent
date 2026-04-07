@@ -4,7 +4,7 @@
   "scripts": {
     "bootstrap": "./scripts/install.sh",
     "agent:eval": "uv run python -c \"from server.evals.harness import main; raise SystemExit(main())\"",
-    "build:serve": "npm run darktable:build-and-start && npm run server:start",
+    "build:serve": "DARKTABLE_SKIP_CONFIG=1 DARKTABLE_INSTALL=0 npm run darktable:build && DARKTABLE_RUN_FROM_BUILD_DIR=1 npm run darktable:start && npm run server:start",
     "darktable:build": "./scripts/build_darktable_local.sh",
     "darktable:upstream-status": "python3 ./scripts/darktable_upstream.py status",
     "darktable:start": "./scripts/run_darktable_local.sh",
