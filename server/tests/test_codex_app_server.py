@@ -674,6 +674,12 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
     assert _FAST_MODE_MODEL == "gpt-5.4-mini"
     assert _FAST_MODE_REASONING_EFFORT == "high"
     assert (
+        "This is an image-editing workflow, not a coding workflow."
+        in _THREAD_DEVELOPER_INSTRUCTIONS
+    )
+    assert "Use only these tools in this run" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert "Do not call generic command execution" in _THREAD_DEVELOPER_INSTRUCTIONS
+    assert (
         "Only emit raw operations targeting provided settingId/actionPath pairs."
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
@@ -702,6 +708,7 @@ def test_developer_instructions_require_proactive_full_edit_planning() -> None:
         "style would materially change editing priorities"
         in _THREAD_DEVELOPER_INSTRUCTIONS
     )
+    assert "Follow this loop: infer scene and goal" in _THREAD_DEVELOPER_INSTRUCTIONS
 
 
 def test_prompt_payload_includes_all_histogram_channels() -> None:
@@ -839,6 +846,8 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
 
     assert "Tool budget: maximum" in prompt
     assert "tool calls in this run." in prompt
+    assert "Use only these tools" in prompt
+    assert "Do not use command execution, file editing, patching, filesystem" in prompt
     assert "Live run mode is enabled" in prompt
     assert "Turn input includes the current preview image" in prompt
     assert "compact analysis signals" in prompt
@@ -884,6 +893,7 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "Treat style playbooks as optional refinements" in prompt
     assert "materially change editing priorities" in prompt
     assert "get_playbook is preparatory only" in prompt
+    assert "Stay inside the darktable tool loop" in prompt
     assert "the next substantive step should usually be apply_operations" in prompt
     assert "the next non-final action should usually be apply_operations" in prompt
 
