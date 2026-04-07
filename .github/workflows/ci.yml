@@ -115,8 +115,24 @@ jobs:
 
       - name: Build darktable
         env:
+          BUILD_TYPE: RelWithDebInfo
           CCACHE_DIR: ~/.cache/ccache
-        run: ./scripts/build_darktable_local.sh -- -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: |
+          ./scripts/build_darktable_local.sh -- \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DBUILD_CMSTEST=OFF \
+            -DBUILD_PRINT=OFF \
+            -DBUILD_RS_IDENTIFY=OFF \
+            -DDONT_USE_INTERNAL_LIBRAW=ON \
+            -DTESTBUILD_OPENCL_PROGRAMS=OFF \
+            -DUSE_COLORD=OFF \
+            -DUSE_GMIC=OFF \
+            -DUSE_KWALLET=OFF \
+            -DUSE_LIBSECRET=OFF \
+            -DUSE_LUA=OFF \
+            -DUSE_MAP=OFF \
+            -DUSE_PORTMIDI=OFF
 
       - name: Show ccache stats
         if: always()
