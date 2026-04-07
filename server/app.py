@@ -34,7 +34,7 @@ codex_logger = logging.getLogger("darktable_agent.codex")
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        payload = {
+        payload: dict[str, Any] = {
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -42,6 +42,13 @@ class JsonFormatter(logging.Formatter):
         structured = getattr(record, "structured", None)
         if isinstance(structured, dict):
             payload.update(structured)
+        if record.exc_info:
+            exc_type, exc_value, _ = record.exc_info
+            payload["exception"] = {
+                "type": exc_type.__name__ if exc_type else None,
+                "message": str(exc_value) if exc_value is not None else None,
+                "traceback": self.formatException(record.exc_info),
+            }
         return json.dumps(payload, separators=(",", ":"))
 
 
@@ -378,7 +385,9 @@ async def chat_stream(request: RequestEnvelope) -> StreamingResponse:
                     "message": progress_payload["message"],
                     "lastToolName": progress_payload["lastToolName"],
                     "progressVersion": progress_payload["progressVersion"],
-                    "requiresRenderCallback": progress_payload["requiresRenderCallback"],
+                    "requiresRenderCallback": progress_payload[
+                        "requiresRenderCallback"
+                    ],
                 }
                 yield _encode_sse("progress", progress_payload)
 
