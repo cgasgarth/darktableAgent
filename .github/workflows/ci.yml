@@ -203,6 +203,7 @@ jobs:
           REPORT_FILE: ${{ runner.temp }}/single-turn-report.ini
           RUNTIME_DIR: ${{ runner.temp }}/darktable-runtime-single
           SERVER_LOG: ${{ runner.temp }}/single-turn-server.log
+          SKIP_BUILD: '1'
           SKIP_SERVER_TESTS: '1'
         run: npm run agent:smoke
 
