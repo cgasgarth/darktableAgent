@@ -1502,6 +1502,66 @@ _gui_preferences_string_callback(GtkWidget *widget,
   dt_conf_set_string((char *)data, str);
 }
 
+static const char *_gui_preferences_dir_default_data_key = "dt-preferences-default-dir";
+
+static const char *_gui_preferences_dir_get_default(GtkWidget *widget)
+{
+  const char *default_dir = g_object_get_data(G_OBJECT(widget), _gui_preferences_dir_default_data_key);
+  if(default_dir) return default_dir;
+
+  const char *key = gtk_widget_get_name(widget);
+  return key ? dt_confgen_get(key, DT_DEFAULT) : "";
+}
+
+static gchar *_gui_preferences_dir_expand(const char *path)
+{
+  return (path && *path) ? dt_conf_expand_default_dir(path) : g_strdup("");
+}
+
+static void _gui_preferences_dir_open_chooser(GtkEntry *entry)
+{
+  GtkWindow *window = GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(entry)));
+  GtkFileChooserNative *chooser = gtk_file_chooser_native_new(
+      _("select directory"), window, GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER, _("_select"), _("_cancel"));
+
+  const char *current_path = gtk_entry_get_text(entry);
+  gchar *default_path = NULL;
+  if(current_path && *current_path)
+  {
+    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), current_path);
+  }
+  else
+  {
+    default_path = _gui_preferences_dir_expand(_gui_preferences_dir_get_default(GTK_WIDGET(entry)));
+    if(default_path[0])
+      gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(chooser), default_path);
+  }
+
+  if(gtk_native_dialog_run(GTK_NATIVE_DIALOG(chooser)) == GTK_RESPONSE_ACCEPT)
+  {
+    gchar *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(chooser));
+    if(folder)
+    {
+      gtk_entry_set_text(entry, folder);
+      g_free(folder);
+    }
+  }
+
+  g_free(default_path);
+  g_object_unref(chooser);
+}
+
+static void _gui_preferences_dir_icon_press(GtkEntry *entry,
+                                            GtkEntryIconPosition icon_pos,
+                                            GdkEvent *event,
+                                            gpointer user_data)
+{
+  (void)event;
+  (void)user_data;
+  if(icon_pos == GTK_ENTRY_ICON_SECONDARY)
+    _gui_preferences_dir_open_chooser(entry);
+}
+
 void dt_gui_preferences_string_reset(GtkWidget *widget)
 {
   const char *key = gtk_widget_get_name(widget);
@@ -1552,6 +1612,58 @@ GtkWidget *dt_gui_preferences_string(GtkGrid *grid,
                    G_CALLBACK(_gui_preferences_string_callback), (gpointer)key);
   g_signal_connect(G_OBJECT(labelev), "button-press-event",
                    G_CALLBACK(_gui_preferences_string_reset), (gpointer)w);
+  return w;
+}
+
+void dt_gui_preferences_dir_reset(GtkWidget *widget)
+{
+  const char *key = gtk_widget_get_name(widget);
+  const char *default_dir = _gui_preferences_dir_get_default(widget);
+  gchar *path = _gui_preferences_dir_expand(default_dir);
+  dt_conf_set_string(key, default_dir);
+  gtk_entry_set_text(GTK_ENTRY(widget), path);
+  g_free(path);
+}
+
+void dt_gui_preferences_dir_update(GtkWidget *widget)
+{
+  const char *key = gtk_widget_get_name(widget);
+  gchar *setting = dt_conf_get_string(key);
+  gchar *path = _gui_preferences_dir_expand(setting);
+  gtk_entry_set_text(GTK_ENTRY(widget), path);
+  g_free(path);
+  g_free(setting);
+}
+
+void dt_gui_preferences_dir_write(GtkWidget *widget)
+{
+  const char *key = gtk_widget_get_name(widget);
+  const char *path = gtk_entry_get_text(GTK_ENTRY(widget));
+  const char *default_dir = _gui_preferences_dir_get_default(widget);
+  gchar *default_path = _gui_preferences_dir_expand(default_dir);
+
+  if(!g_strcmp0(path, default_path))
+    dt_conf_set_string(key, default_dir);
+  else
+    dt_conf_set_string(key, path);
+
+  g_free(default_path);
+}
+
+GtkWidget *dt_gui_preferences_dir(GtkWidget *dialog, const char *key, const char *default_dir)
+{
+  GtkWidget *w = gtk_entry_new();
+  gtk_widget_set_name(w, key);
+  gtk_widget_set_halign(w, GTK_ALIGN_FILL);
+  gtk_widget_set_hexpand(w, TRUE);
+  gtk_editable_set_editable(GTK_EDITABLE(w), FALSE);
+  gtk_entry_set_icon_from_icon_name(GTK_ENTRY(w), GTK_ENTRY_ICON_SECONDARY, "document-open-symbolic");
+  gtk_entry_set_icon_activatable(GTK_ENTRY(w), GTK_ENTRY_ICON_SECONDARY, TRUE);
+  gtk_entry_set_icon_sensitive(GTK_ENTRY(w), GTK_ENTRY_ICON_SECONDARY, TRUE);
+  gtk_entry_set_icon_tooltip_text(GTK_ENTRY(w), GTK_ENTRY_ICON_SECONDARY, _("select directory"));
+  g_object_set_data_full(G_OBJECT(w), _gui_preferences_dir_default_data_key, g_strdup(default_dir), g_free);
+  dt_gui_preferences_dir_update(w);
+  g_signal_connect(G_OBJECT(w), "icon-press", G_CALLBACK(_gui_preferences_dir_icon_press), dialog);
   return w;
 }
 

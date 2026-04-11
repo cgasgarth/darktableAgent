@@ -29,20 +29,23 @@ GtkWidget *dt_gui_preferences_int(GtkGrid *grid, const char *key, const guint co
 GtkWidget *dt_gui_preferences_enum(dt_action_t *action, const char *key);
 GtkWidget *dt_gui_preferences_string(GtkGrid *grid, const char *key, const guint col,
                                      const guint line);
+GtkWidget *dt_gui_preferences_dir(GtkWidget *dialog, const char *key, const char *default_dir);
 
 // update widget with current preference
 void dt_gui_preferences_bool_update(GtkWidget *widget);
 void dt_gui_preferences_int_update(GtkWidget *widget);
 void dt_gui_preferences_string_update(GtkWidget *widget);
+void dt_gui_preferences_dir_update(GtkWidget *widget);
 
 // reset widget to default value
 void dt_gui_preferences_bool_reset(GtkWidget *widget);
 void dt_gui_preferences_int_reset(GtkWidget *widget);
 void dt_gui_preferences_string_reset(GtkWidget *widget);
+void dt_gui_preferences_dir_reset(GtkWidget *widget);
+void dt_gui_preferences_dir_write(GtkWidget *widget);
 
 // clang-format off
 // modelines: These editor modelines have been set for all relevant files by tools/update_modelines.py
 // vim: shiftwidth=2 expandtab tabstop=2 cindent
 // kate: tab-indents: off; indent-width 2; replace-tabs on; indent-mode cstyle; remove-trailing-spaces modified;
 // clang-format on
-
