@@ -1389,6 +1389,7 @@ def test_get_or_create_thread_includes_native_dynamic_tools() -> None:
     apply_tool = next(
         tool for tool in tool_specs if tool["name"] == _TOOL_APPLY_OPERATIONS
     )
+    assert "anyOf" not in apply_tool["inputSchema"]
     assert "canonicalActions" in apply_tool["inputSchema"]["properties"]
 
 
