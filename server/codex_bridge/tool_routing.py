@@ -39,10 +39,6 @@ class ToolRoutingMixin:
                     "items": {"type": "object"},
                 },
             },
-            "anyOf": [
-                {"required": ["operations"]},
-                {"required": ["canonicalActions"]},
-            ],
             "additionalProperties": False,
         }
         get_playbook_schema = {
