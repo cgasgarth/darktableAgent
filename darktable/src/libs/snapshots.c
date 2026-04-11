@@ -38,6 +38,7 @@ DT_MODULE(1)
 // the snapshot offset in the memory table to use an area not used by the
 // undo/redo support.
 #define SNAPSHOT_ID_OFFSET 0xFFFFFF00
+#define SNAPSHOT_ID_BEFORE_AFTER 0xFFFFFE00
 
 /* a snapshot */
 typedef struct dt_lib_snapshot_t
@@ -68,12 +69,14 @@ typedef struct dt_lib_snapshots_t
   int selected;
   gboolean snap_requested;
   guint expose_again_timeout_id;
+  gboolean before_after_active;
 
   /* current active snapshots */
   uint32_t num_snapshots;
 
   /* snapshots */
   dt_lib_snapshot_t snapshot[MAX_SNAPSHOT];
+  dt_lib_snapshot_t before_after_snapshot;
 
   /* change snapshot overlay controls */
   gboolean dragging, vertical, inverted, panning, sidebyside;
@@ -83,6 +86,15 @@ typedef struct dt_lib_snapshots_t
 
   GtkWidget *take_button, *sidebyside_button;
 } dt_lib_snapshots_t;
+
+static void _update_proxy_state(dt_lib_module_t *self);
+static void _queue_before_after_gui_update(void);
+static dt_lib_snapshot_t *_get_active_snapshot(dt_lib_snapshots_t *d);
+static void _clear_before_after_snapshot(dt_lib_snapshots_t *d);
+static gboolean _prepare_before_after_snapshot(dt_lib_module_t *self);
+static gboolean _is_before_after_active(dt_lib_module_t *self);
+static void _set_before_after(dt_lib_module_t *self, gboolean enabled);
+static void _toggle_before_after(dt_lib_module_t *self);
 
 /* callback for take snapshot */
 static void _lib_snapshots_add_button_clicked_callback(GtkWidget *widget,
@@ -179,6 +191,27 @@ static gboolean _snap_expose_again(gpointer user_data)
   return FALSE;
 }
 
+static void _queue_before_after_gui_update(void)
+{
+  dt_lib_module_t *module = dt_lib_get_module("before_after");
+  if(module) dt_lib_gui_queue_update(module);
+}
+
+static dt_lib_snapshot_t *_get_active_snapshot(dt_lib_snapshots_t *d)
+{
+  if(d->before_after_active) return &d->before_after_snapshot;
+  if(d->selected >= 0) return &d->snapshot[d->selected];
+  return NULL;
+}
+
+static void _update_proxy_state(dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+
+  darktable.lib->proxy.snapshots.enabled = d->before_after_active || d->selected >= 0;
+  _queue_before_after_gui_update();
+}
+
 /* check if (x,y) closer to rotation sym than area_size. Set the size of area s
    and the center of the sym (rx, ry). Return TRUE if (x,y) in sym area. */
 static inline gboolean _get_rotation_area(dt_lib_module_t *self,
@@ -218,14 +251,13 @@ void gui_post_expose(dt_lib_module_t *self,
 {
   dt_lib_snapshots_t *d = self->data;
   dt_develop_t *dev = darktable.develop;
+  dt_lib_snapshot_t *snap = _get_active_snapshot(d);
 
   if(d->sidebyside && (!darktable.gui->drawing_snapshot ^ !d->inverted))
     return;
 
-  if(d->selected >= 0)
+  if(snap)
   {
-    dt_lib_snapshot_t *snap = &d->snapshot[d->selected];
-
     const dt_view_context_t ctx = dt_view_get_context_hash();
 
     // if a new snapshot is needed, do this now
@@ -394,7 +426,7 @@ int button_released(struct dt_lib_module_t *self,
     return 0;
   }
 
-  if(d->selected >= 0)
+  if(_get_active_snapshot(d))
   {
     d->dragging = FALSE;
     return 1;
@@ -420,7 +452,7 @@ int button_pressed(struct dt_lib_module_t *self,
     return 0;
   }
 
-  if(d->selected >= 0 && which != GDK_BUTTON_MIDDLE)
+  if(_get_active_snapshot(d) && which != GDK_BUTTON_MIDDLE)
   {
     if(d->on_going) return 1;
 
@@ -485,7 +517,7 @@ int mouse_moved(dt_lib_module_t *self,
   // if panning, do not handle here, let darkroom do the job
   if(d->panning) return 0;
 
-  if(d->selected >= 0)
+  if(_get_active_snapshot(d))
   {
     const double xp = x / d->vp_width;
     const double yp = y / d->vp_height;
@@ -633,12 +665,44 @@ static void _clear_snapshot_entry(dt_lib_snapshot_t *s)
   s->buf = NULL;
 }
 
+static void _clear_before_after_snapshot(dt_lib_snapshots_t *d)
+{
+  _clear_snapshot_entry(&d->before_after_snapshot);
+  d->before_after_snapshot.id = SNAPSHOT_ID_BEFORE_AFTER;
+}
+
+static gboolean _prepare_before_after_snapshot(dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+  dt_lib_snapshot_t *s = &d->before_after_snapshot;
+  const dt_imgid_t imgid = darktable.develop->image_storage.id;
+
+  _clear_before_after_snapshot(d);
+
+  if(!dt_is_valid_imgid(imgid)) return FALSE;
+
+  // Persist the current history first so the compare always reflects the current "after" state.
+  dt_dev_write_history(darktable.develop);
+
+  s->imgid = imgid;
+  s->history_end = 0;
+  s->module = g_strdup(_("original"));
+  s->ctx = 0;
+
+  dt_history_snapshot_create(s->imgid, s->id, s->history_end);
+
+  d->snap_requested = TRUE;
+  return TRUE;
+}
+
 static void _clear_snapshots(dt_lib_module_t *self)
 {
   dt_lib_snapshots_t *d = self->data;
   d->selected = -1;
-  darktable.lib->proxy.snapshots.enabled = FALSE;
+  d->before_after_active = FALSE;
+  d->sidebyside = FALSE;
   d->snap_requested = FALSE;
+  _clear_before_after_snapshot(d);
 
   for(uint32_t k = 0; k < d->num_snapshots; k++)
   {
@@ -650,8 +714,54 @@ static void _clear_snapshots(dt_lib_module_t *self)
 
   d->num_snapshots = 0;
   gtk_widget_set_sensitive(d->take_button, TRUE);
+  if(d->sidebyside_button)
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->sidebyside_button), FALSE);
+  gtk_widget_set_visible(dt_ui_snapshot(darktable.gui->ui), FALSE);
+
+  _update_proxy_state(self);
 
   dt_control_queue_redraw_center();
+}
+
+static gboolean _is_before_after_active(dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+  return d->before_after_active;
+}
+
+static void _set_before_after(dt_lib_module_t *self, gboolean enabled)
+{
+  dt_lib_snapshots_t *d = self->data;
+
+  if(enabled)
+  {
+    ++darktable.gui->reset;
+    for(uint32_t k = 0; k < d->num_snapshots; k++)
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->snapshot[k].button), FALSE);
+    if(d->sidebyside_button)
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->sidebyside_button), FALSE);
+    --darktable.gui->reset;
+
+    d->selected = -1;
+    d->sidebyside = FALSE;
+    d->before_after_active = _prepare_before_after_snapshot(self);
+  }
+  else
+  {
+    d->before_after_active = FALSE;
+    d->snap_requested = FALSE;
+    _clear_before_after_snapshot(d);
+  }
+
+  gtk_widget_set_visible(dt_ui_snapshot(darktable.gui->ui), FALSE);
+  _update_proxy_state(self);
+  dt_control_queue_redraw_center();
+}
+
+static void _toggle_before_after(dt_lib_module_t *self)
+{
+  dt_lib_snapshots_t *d = self->data;
+  _set_before_after(self, !d->before_after_active);
 }
 
 void gui_reset(dt_lib_module_t *self)
@@ -668,7 +778,7 @@ static void _signal_profile_changed(gpointer instance,
   {
     dt_lib_snapshots_t *d = self->data;
 
-    if(d->selected >= 0)
+    if(_get_active_snapshot(d))
       d->snap_requested = TRUE;
 
     dt_control_queue_redraw_center();
@@ -721,6 +831,13 @@ static void _signal_image_removed(gpointer instance,
     else
       k++;
   }
+
+  if(d->before_after_snapshot.imgid == imgid)
+  {
+    d->before_after_active = FALSE;
+    _clear_before_after_snapshot(d);
+    _update_proxy_state(self);
+  }
 }
 
 static void _signal_image_changed(gpointer instance,
@@ -766,12 +883,25 @@ static void _signal_image_changed(gpointer instance,
     gtk_label_set_text(GTK_LABEL(st), stat);
   }
 
+  if(d->before_after_active)
+    _prepare_before_after_snapshot(self);
+  else if(dt_is_valid_imgid(d->before_after_snapshot.imgid)
+          && d->before_after_snapshot.imgid != imgid)
+    _clear_before_after_snapshot(d);
+
+  _update_proxy_state(self);
   dt_control_queue_redraw_center();
 }
 
 static void _sidebyside_button_clicked(GtkWidget *widget, dt_lib_module_t *self)
 {
   dt_lib_snapshots_t *d = self->data;
+
+  if(d->before_after_active)
+  {
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(widget), FALSE);
+    return;
+  }
 
   d->sidebyside = !d->sidebyside;
   d->snap_requested = TRUE;
@@ -798,7 +928,13 @@ void gui_init(dt_lib_module_t *self)
   d->snap_requested = FALSE;
   d->expose_again_timeout_id = 0;
   d->num_snapshots = 0;
+  d->before_after_active = FALSE;
+  d->before_after_snapshot.id = SNAPSHOT_ID_BEFORE_AFTER;
   darktable.lib->proxy.snapshots.enabled = FALSE;
+  darktable.lib->proxy.snapshots.module = self;
+  darktable.lib->proxy.snapshots.is_before_after_active = _is_before_after_active;
+  darktable.lib->proxy.snapshots.set_before_after = _set_before_after;
+  darktable.lib->proxy.snapshots.toggle_before_after = _toggle_before_after;
 
   /* initialize ui containers */
   self->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -883,6 +1019,11 @@ void gui_init(dt_lib_module_t *self)
 void gui_cleanup(dt_lib_module_t *self)
 {
   _clear_snapshots(self);
+
+  darktable.lib->proxy.snapshots.module = NULL;
+  darktable.lib->proxy.snapshots.is_before_after_active = NULL;
+  darktable.lib->proxy.snapshots.set_before_after = NULL;
+  darktable.lib->proxy.snapshots.toggle_before_after = NULL;
 
   g_free(self->data);
   self->data = NULL;
@@ -997,13 +1138,18 @@ static void _lib_snapshots_toggled_callback(GtkToggleButton *widget,
   if(gtk_toggle_button_get_active(widget))
   {
     d->selected = _lib_snapshots_get_activated(self, GTK_WIDGET(widget));
+    d->before_after_active = FALSE;
+    _clear_before_after_snapshot(d);
 
     /* lets deactivate all togglebuttons except for self */
     for(uint32_t k = 0; k < d->num_snapshots; k++)
       if(d->selected != k)
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(d->snapshot[k].button), FALSE);
   }
-  darktable.lib->proxy.snapshots.enabled = d->selected >= 0;
+  else
+    d->selected = -1;
+
+  _update_proxy_state(self);
   gtk_widget_set_visible(dt_ui_snapshot(darktable.gui->ui), d->sidebyside && d->selected >= 0);
 
   --darktable.gui->reset;

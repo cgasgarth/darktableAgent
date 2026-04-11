@@ -91,6 +91,11 @@ typedef struct dt_lib_t
     struct
     {
       gboolean enabled;
+      struct dt_lib_module_t *module;
+      gboolean (*is_before_after_active)(struct dt_lib_module_t *self);
+      void (*set_before_after)(struct dt_lib_module_t *self,
+                               const gboolean enabled);
+      void (*toggle_before_after)(struct dt_lib_module_t *self);
     } snapshots;
   } proxy;
 } dt_lib_t;
