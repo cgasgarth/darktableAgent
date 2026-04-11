@@ -1042,6 +1042,77 @@ def test_canonical_binder_translates_bounding_box_crop_to_crop_controls() -> Non
     }
 
 
+def test_canonical_binder_deduplicates_ids_for_repeated_bound_settings() -> None:
+    request = _sample_request_with_canonical_controls()
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "Lift exposure twice.",
+            "continueRefining": False,
+            "operations": [],
+            "canonicalActions": [
+                {
+                    "action": "adjust-exposure",
+                    "exposureEv": 0.2,
+                },
+                {
+                    "action": "adjust-exposure",
+                    "exposureEv": 0.3,
+                },
+            ],
+        }
+    )
+
+    bound_plan = bind_canonical_plan(request, plan)
+
+    assert [operation.operationId for operation in bound_plan.operations] == [
+        "bind-setting.exposure.primary",
+        "bind-setting.exposure.primary-2",
+    ]
+    assert [operation.sequence for operation in bound_plan.operations] == [1, 2]
+
+
+def test_canonical_binder_deduplicates_ids_across_raw_and_bound_operations() -> None:
+    request = _sample_request_with_canonical_controls()
+    plan = AgentPlan.model_validate(
+        {
+            "assistantText": "Keep the existing operation and bind another.",
+            "continueRefining": False,
+            "operations": [
+                {
+                    "operationId": "bind-setting.exposure.primary",
+                    "sequence": 1,
+                    "kind": "set-float",
+                    "target": {
+                        "type": "darktable-action",
+                        "actionPath": "iop/exposure/exposure",
+                        "settingId": "setting.exposure.primary",
+                    },
+                    "value": {"mode": "delta", "number": 0.1},
+                    "reason": None,
+                    "constraints": {
+                        "onOutOfRange": "clamp",
+                        "onRevisionMismatch": "fail",
+                    },
+                }
+            ],
+            "canonicalActions": [
+                {
+                    "action": "adjust-exposure",
+                    "exposureEv": 0.2,
+                }
+            ],
+        }
+    )
+
+    bound_plan = bind_canonical_plan(request, plan)
+
+    assert [operation.operationId for operation in bound_plan.operations] == [
+        "bind-setting.exposure.primary",
+        "bind-setting.exposure.primary-2",
+    ]
+    assert [operation.sequence for operation in bound_plan.operations] == [1, 2]
+
+
 def test_canonical_binder_surfaces_binding_failures_safely() -> None:
     request = _sample_request()
     plan = AgentPlan.model_validate(
