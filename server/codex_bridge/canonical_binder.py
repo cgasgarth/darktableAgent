@@ -113,6 +113,8 @@ def _bind_action(
         return _bind_noise(settings, action)
     if action.action == "grade-color":
         return _bind_grade(settings, action)
+    if action.action == "rotate":
+        return _bind_rotate(settings, action)
     if action.action == "crop-normalized":
         return _bind_crop(settings, action)
     if action.action == "crop-to-bounding-box":
@@ -312,6 +314,26 @@ def _bind_grade(
         )
     return _BindingResult(
         [_float_operation(setting, action.amount, action.rationale)],
+        [],
+    )
+
+
+def _bind_rotate(
+    settings: list[EditableSetting], action: CanonicalEditAction
+) -> _BindingResult:
+    setting = _find_setting(
+        settings,
+        kind="set-float",
+        exact_action_paths=("iop/clipping/angle", "iop/crop/angle"),
+        module_ids=("clipping", "crop"),
+        action_keywords=("angle", "rotate"),
+        label_keywords=("angle", "rotation"),
+    )
+    if setting is None:
+        return _BindingResult([], ["rotate could not find a rotation control"])
+    assert action.angleDegrees is not None
+    return _BindingResult(
+        [_float_operation(setting, action.angleDegrees, action.rationale)],
         [],
     )
 
