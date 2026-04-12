@@ -10,6 +10,7 @@ uv.lock
 darktable/build/
 darktable/build-*/
 darktable/.install-*/
+darktable/compile_commands.json
 darktable/Testing/
 .darktable-local/
 assets/*.xmp
