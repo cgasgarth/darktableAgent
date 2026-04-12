@@ -113,7 +113,7 @@ def _bind_action(
         return _bind_noise(settings, action)
     if action.action == "grade-color":
         return _bind_grade(settings, action)
-    if action.action in {"rotate-left", "rotate-right"}:
+    if action.action == "rotate":
         return _bind_rotate(settings, action)
     if action.action == "crop-normalized":
         return _bind_crop(settings, action)
@@ -321,7 +321,6 @@ def _bind_grade(
 def _bind_rotate(
     settings: list[EditableSetting], action: CanonicalEditAction
 ) -> _BindingResult:
-    rotation_delta = -90.0 if action.action == "rotate-left" else 90.0
     setting = _find_setting(
         settings,
         kind="set-float",
@@ -331,11 +330,10 @@ def _bind_rotate(
         label_keywords=("angle", "rotation"),
     )
     if setting is None:
-        return _BindingResult(
-            [], [f"{action.action} could not find a rotation control"]
-        )
+        return _BindingResult([], ["rotate could not find a rotation control"])
+    assert action.angleDegrees is not None
     return _BindingResult(
-        [_float_operation(setting, rotation_delta, action.rationale)],
+        [_float_operation(setting, action.angleDegrees, action.rationale)],
         [],
     )
 

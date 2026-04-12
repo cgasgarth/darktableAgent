@@ -883,8 +883,8 @@ def test_turn_prompt_tells_codex_to_infer_broad_edit_plan_from_visual_context() 
     assert "you may pass `canonicalActions` to apply_operations" in prompt
     assert "adjust-exposure" in prompt
     assert "grade-color" in prompt
-    assert "rotate-left" in prompt
-    assert "rotate-right" in prompt
+    assert "rotate" in prompt
+    assert "angleDegrees" in prompt
     assert "crop-to-bounding-box" in prompt
     assert "boxLeft" in prompt
     assert "paddingRatio" in prompt
@@ -969,6 +969,18 @@ def test_crop_to_bounding_box_requires_box_coordinates() -> None:
         )
 
 
+def test_rotate_requires_angle_degrees() -> None:
+    with pytest.raises(ValueError, match="rotate requires angleDegrees"):
+        AgentPlan.model_validate(
+            {
+                "assistantText": "Rotate slightly.",
+                "continueRefining": False,
+                "operations": [],
+                "canonicalActions": [{"action": "rotate"}],
+            }
+        )
+
+
 def test_canonical_binder_resolves_supported_actions_without_raw_ids() -> None:
     request = _sample_request_with_canonical_controls()
     plan = AgentPlan.model_validate(
@@ -1014,8 +1026,9 @@ def test_canonical_binder_resolves_supported_actions_without_raw_ids() -> None:
                     "rationale": "Tighten framing.",
                 },
                 {
-                    "action": "rotate-right",
-                    "rationale": "Turn the frame clockwise.",
+                    "action": "rotate",
+                    "angleDegrees": 2.5,
+                    "rationale": "Straighten the frame slightly clockwise.",
                 },
             ],
         }
@@ -1042,7 +1055,7 @@ def test_canonical_binder_resolves_supported_actions_without_raw_ids() -> None:
     assert bound_plan.operations[6].value.mode == "set"
     assert bound_plan.operations[6].value.number == pytest.approx(0.1)
     assert bound_plan.operations[10].value.mode == "delta"
-    assert bound_plan.operations[10].value.number == pytest.approx(90.0)
+    assert bound_plan.operations[10].value.number == pytest.approx(2.5)
 
 
 def test_canonical_binder_binds_rotate_actions_to_clipping_angle() -> None:
@@ -1053,8 +1066,8 @@ def test_canonical_binder_binds_rotate_actions_to_clipping_angle() -> None:
             "continueRefining": False,
             "operations": [],
             "canonicalActions": [
-                {"action": "rotate-left"},
-                {"action": "rotate-right"},
+                {"action": "rotate", "angleDegrees": -1.25},
+                {"action": "rotate", "angleDegrees": 2.5},
             ],
         }
     )
@@ -1070,8 +1083,8 @@ def test_canonical_binder_binds_rotate_actions_to_clipping_angle() -> None:
         "delta",
     ]
     assert [operation.value.number for operation in bound_plan.operations] == [
-        pytest.approx(-90.0),
-        pytest.approx(90.0),
+        pytest.approx(-1.25),
+        pytest.approx(2.5),
     ]
 
 
@@ -1908,7 +1921,8 @@ def test_apply_operations_tool_binds_canonical_actions_in_live_mode(
                                 "bottom": 0.9,
                             },
                             {
-                                "action": "rotate-right",
+                                "action": "rotate",
+                                "angleDegrees": 2.5,
                             },
                         ]
                     },
@@ -1929,7 +1943,7 @@ def test_apply_operations_tool_binds_canonical_actions_in_live_mode(
         ] == pytest.approx(0.1)
         assert turn_context.setting_by_id["setting.clipping.angle"][
             "currentNumber"
-        ] == pytest.approx(90.0)
+        ] == pytest.approx(2.5)
     finally:
         bridge._clear_turn_context("thread-1", "turn-1")  # type: ignore[attr-defined]
 

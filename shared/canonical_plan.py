@@ -10,8 +10,7 @@ CanonicalActionName = Literal[
     "recover-highlights",
     "reduce-noise",
     "grade-color",
-    "rotate-left",
-    "rotate-right",
+    "rotate",
     "crop-normalized",
     "crop-to-bounding-box",
 ]
@@ -39,6 +38,7 @@ class CanonicalEditAction(CanonicalBaseModel):
     noiseType: CanonicalNoiseType | None = None
     target: CanonicalGradeTarget | None = None
     amount: float | None = None
+    angleDegrees: float | None = None
     left: float | None = None
     top: float | None = None
     right: float | None = None
@@ -77,8 +77,9 @@ class CanonicalEditAction(CanonicalBaseModel):
                 raise ValueError("grade-color requires target")
             if self.amount is None:
                 raise ValueError("grade-color requires amount")
-        elif self.action in {"rotate-left", "rotate-right"}:
-            pass
+        elif self.action == "rotate":
+            if self.angleDegrees is None:
+                raise ValueError("rotate requires angleDegrees")
         elif self.action == "crop-normalized":
             bounds = (self.left, self.top, self.right, self.bottom)
             if any(value is None for value in bounds):
