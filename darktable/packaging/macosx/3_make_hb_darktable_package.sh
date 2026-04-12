@@ -22,7 +22,7 @@ dtAppName="darktable"
 dtWorkingDir="$dtPackageDir"/"$dtAppName".app
 dtResourcesDir="$dtWorkingDir"/Contents/Resources
 dtExecDir="$dtWorkingDir"/Contents/MacOS
-dtExecutables=$(echo "$dtExecDir"/darktable{,-chart,-cli,-cltest,-generate-cache,-rs-identify,-curve-tool,-noiseprofile})
+dtExecutables="$dtExecDir/darktable-bin $dtExecDir/darktable-chart $dtExecDir/darktable-cli $dtExecDir/darktable-cltest $dtExecDir/darktable-generate-cache $dtExecDir/darktable-rs-identify $dtExecDir/darktable-curve-tool $dtExecDir/darktable-noiseprofile"
 homebrewHome=$(brew --prefix)
 
 
@@ -216,6 +216,9 @@ gtk-icon-theme-name = Adwaita
 
 # Add darktable executables
 cp "$buildDir"/bin/darktable{,-chart,-cli,-cltest,-generate-cache,-rs-identify} "$dtExecDir"/
+mv "$dtExecDir"/darktable "$dtExecDir"/darktable-bin
+cp darktable-launcher.sh "$dtExecDir"/darktable
+chmod +x "$dtExecDir"/darktable
 
 # Add darktable tools if existent
 if [[ -d "$buildDir"/libexec/darktable/tools ]]; then
