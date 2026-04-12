@@ -676,6 +676,7 @@ static gboolean _prepare_before_after_snapshot(dt_lib_module_t *self)
   dt_lib_snapshots_t *d = self->data;
   dt_lib_snapshot_t *s = &d->before_after_snapshot;
   const dt_imgid_t imgid = darktable.develop->image_storage.id;
+  int baseline_history_end = 0;
 
   _clear_before_after_snapshot(d);
 
@@ -685,11 +686,16 @@ static gboolean _prepare_before_after_snapshot(dt_lib_module_t *self)
   dt_dev_write_history(darktable.develop);
 
   s->imgid = imgid;
-  s->history_end = 0;
-  s->module = g_strdup(_("original"));
+  s->module = g_strdup(_("base edits"));
   s->ctx = 0;
 
-  dt_history_snapshot_create(s->imgid, s->id, s->history_end);
+  if(!dt_dev_write_baseline_snapshot(darktable.develop, s->id, &baseline_history_end))
+  {
+    _clear_before_after_snapshot(d);
+    return FALSE;
+  }
+
+  s->history_end = MAX(0, baseline_history_end);
 
   d->snap_requested = TRUE;
   return TRUE;

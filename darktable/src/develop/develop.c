@@ -28,6 +28,7 @@
 #include "common/atomic.h"
 #include "common/debug.h"
 #include "common/history.h"
+#include "common/history_snapshot.h"
 #include "common/image_cache.h"
 #include "common/mipmap_cache.h"
 #include "common/opencl.h"
@@ -69,6 +70,7 @@ void dt_dev_init(dt_develop_t *dev,
 
   dev->snapshot_id = -1;
   dev->history_end = 0;
+  dev->baseline_history_end = 0;
   dev->history = NULL; // empty list
   dev->history_postpone_invalidate = FALSE;
   dev->module_filter_out = NULL;
@@ -1463,6 +1465,379 @@ static int _dev_get_module_nb_records(void)
   return cnt;
 }
 
+typedef struct dt_dev_baseline_item_t
+{
+  char operation[20];
+  int multi_priority;
+} dt_dev_baseline_item_t;
+
+static void _dev_baseline_append_item(GArray *items,
+                                      const char *operation,
+                                      const int multi_priority)
+{
+  if(!items || !operation || !operation[0]) return;
+
+  dt_dev_baseline_item_t item;
+  g_strlcpy(item.operation, operation, sizeof(item.operation));
+  item.multi_priority = multi_priority;
+  g_array_append_val(items, item);
+}
+
+static void _dev_collect_default_baseline_items(dt_develop_t *dev,
+                                                GArray *items)
+{
+  for(GList *modules = dev->iop; modules; modules = g_list_next(modules))
+  {
+    dt_iop_module_t *module = modules->data;
+
+    if(module->default_enabled
+       && module->hide_enable_button
+       && !(module->flags() & IOP_FLAGS_NO_HISTORY_STACK))
+    {
+      _dev_baseline_append_item(items, module->op, 0);
+    }
+  }
+
+  for(GList *modules = dev->iop; modules; modules = g_list_next(modules))
+  {
+    dt_iop_module_t *module = modules->data;
+
+    if(module->default_enabled
+       && !module->hide_enable_button
+       && !(module->flags() & IOP_FLAGS_NO_HISTORY_STACK))
+    {
+      _dev_baseline_append_item(items, module->op, 0);
+    }
+  }
+}
+
+static void _dev_collect_auto_preset_baseline_items(dt_develop_t *dev,
+                                                    GArray *items)
+{
+  const dt_imgid_t imgid = dev->image_storage.id;
+  if(!dt_is_valid_imgid(imgid)) return;
+
+  dt_image_t *image = dt_image_cache_get(imgid, 'r');
+  const gboolean is_display_referred = dt_is_display_referred();
+  char *format_filter = dt_presets_get_filter(image);
+  char query[2048];
+
+  snprintf(query, sizeof(query),
+           "SELECT operation,"
+           "       ROW_NUMBER() OVER (PARTITION BY operation ORDER BY operation) - 1"
+           " FROM data.presets"
+           " WHERE ( (autoapply=1"
+           "          AND ((?2 LIKE model AND ?3 LIKE maker)"
+           "               OR (?4 LIKE model AND ?5 LIKE maker))"
+           "          AND ?6 LIKE lens AND ?7 BETWEEN iso_min AND iso_max"
+           "          AND ?8 BETWEEN exposure_min AND exposure_max"
+           "          AND ?9 BETWEEN aperture_min AND aperture_max"
+           "          AND ?10 BETWEEN focal_length_min AND focal_length_max"
+           "          AND (%s)))"
+           "   AND operation NOT IN"
+           "       ('ioporder', 'metadata', 'modulegroups', 'export',"
+           "        'tagging', 'collect', '%s')"
+           "   AND (writeprotect = 0"
+           "        OR (SELECT NOT EXISTS"
+           "             (SELECT op"
+           "              FROM presets"
+           "              WHERE autoapply = 1 AND operation = op AND writeprotect = 0"
+           "                    AND ((?2 LIKE model AND ?3 LIKE maker)"
+           "                         OR (?4 LIKE model AND ?5 LIKE maker))"
+           "                    AND ?6 LIKE lens AND ?7 BETWEEN iso_min AND iso_max"
+           "                    AND ?8 BETWEEN exposure_min AND exposure_max"
+           "                    AND ?9 BETWEEN aperture_min AND aperture_max"
+           "                    AND ?10 BETWEEN focal_length_min AND focal_length_max"
+           "                    AND (%s))))"
+           " ORDER BY writeprotect DESC, LENGTH(model), LENGTH(maker), LENGTH(lens)",
+           format_filter,
+           is_display_referred ? "" : "basecurve",
+           format_filter);
+
+  sqlite3_stmt *stmt;
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, imgid);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 2, image->exif_model, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 3, image->exif_maker, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 4, image->camera_alias, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 5, image->camera_maker, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 6, image->exif_lens, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 7, fmaxf(0.0f, fminf(FLT_MAX, image->exif_iso)));
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 8, fmaxf(0.0f, fminf(1000000, image->exif_exposure)));
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 9, fmaxf(0.0f, fminf(1000000, image->exif_aperture)));
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 10, fmaxf(0.0f, fminf(1000000, image->exif_focal_length)));
+
+  while(sqlite3_step(stmt) == SQLITE_ROW)
+  {
+    const char *operation = (const char *)sqlite3_column_text(stmt, 0);
+    const int multi_priority = sqlite3_column_int(stmt, 1);
+    _dev_baseline_append_item(items, operation, multi_priority);
+  }
+
+  sqlite3_finalize(stmt);
+  g_free(format_filter);
+  dt_image_cache_read_release(image);
+}
+
+static int _dev_compute_baseline_history_end(dt_develop_t *dev)
+{
+  if(!dev || !dev->history) return 0;
+
+  GArray *items = g_array_new(FALSE, FALSE, sizeof(dt_dev_baseline_item_t));
+  _dev_collect_default_baseline_items(dev, items);
+  _dev_collect_auto_preset_baseline_items(dev, items);
+
+  int baseline_history_end = 0;
+  GList *history = dev->history;
+  for(guint i = 0; i < items->len && history; i++, history = g_list_next(history))
+  {
+    const dt_dev_baseline_item_t *expected = &g_array_index(items, dt_dev_baseline_item_t, i);
+    const dt_dev_history_item_t *actual = history->data;
+    if(!actual
+       || g_strcmp0(actual->op_name, expected->operation) != 0
+       || actual->multi_priority != expected->multi_priority)
+    {
+      break;
+    }
+
+    baseline_history_end++;
+  }
+
+  g_array_unref(items);
+  return baseline_history_end;
+}
+
+static gboolean _dev_insert_snapshot_default_module(const int snap_id,
+                                                    const dt_imgid_t imgid,
+                                                    dt_iop_module_t *module)
+{
+  if(!module) return FALSE;
+
+  sqlite3_stmt *stmt;
+  char *preset_name = dt_presets_get_module_label(module->op,
+                                                  module->default_params,
+                                                  module->params_size,
+                                                  TRUE,
+                                                  module->blend_params,
+                                                  sizeof(dt_develop_blend_params_t));
+
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                              "INSERT INTO memory.snapshot_history"
+                              " VALUES (?1, ?2, 0, ?3, ?4, ?5, 1, NULL, 0, 0, ?6, 0)",
+                              -1, &stmt, NULL);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, snap_id);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 3, module->version());
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 4, module->op, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_BLOB(stmt, 5, module->default_params, module->params_size,
+                             SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 6, preset_name ? preset_name : "", -1, SQLITE_TRANSIENT);
+  const gboolean ok = (sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+  g_free(preset_name);
+  return ok;
+}
+
+static gboolean _dev_insert_snapshot_auto_preset_rows(dt_develop_t *dev,
+                                                      const int snap_id,
+                                                      const dt_imgid_t imgid,
+                                                      const dt_image_t *image)
+{
+  const gboolean is_display_referred = dt_is_display_referred();
+  const gboolean auto_module = dt_conf_get_bool("darkroom/ui/auto_module_name_update");
+  char *format_filter = dt_presets_get_filter(image);
+  char query[2048];
+
+  snprintf(query, sizeof(query),
+           "INSERT OR REPLACE INTO memory.snapshot_history"
+           " SELECT ?1, ?2, 0, op_version, operation AS op, op_params,"
+           "        enabled, blendop_params, blendop_version,"
+           "        ROW_NUMBER() OVER (PARTITION BY operation ORDER BY operation) - 1,"
+           "        %s, multi_name_hand_edited"
+           " FROM data.presets"
+           " WHERE ( (autoapply=1"
+           "          AND ((?3 LIKE model AND ?4 LIKE maker)"
+           "               OR (?5 LIKE model AND ?6 LIKE maker))"
+           "          AND ?7 LIKE lens AND ?8 BETWEEN iso_min AND iso_max"
+           "          AND ?9 BETWEEN exposure_min AND exposure_max"
+           "          AND ?10 BETWEEN aperture_min AND aperture_max"
+           "          AND ?11 BETWEEN focal_length_min AND focal_length_max"
+           "          AND (%s)))"
+           "   AND operation NOT IN"
+           "       ('ioporder', 'metadata', 'modulegroups', 'export',"
+           "        'tagging', 'collect', '%s')"
+           "   AND (writeprotect = 0"
+           "        OR (SELECT NOT EXISTS"
+           "             (SELECT op"
+           "              FROM presets"
+           "              WHERE autoapply = 1 AND operation = op AND writeprotect = 0"
+           "                    AND ((?3 LIKE model AND ?4 LIKE maker)"
+           "                         OR (?5 LIKE model AND ?6 LIKE maker))"
+           "                    AND ?7 LIKE lens AND ?8 BETWEEN iso_min AND iso_max"
+           "                    AND ?9 BETWEEN exposure_min AND exposure_max"
+           "                    AND ?10 BETWEEN aperture_min AND aperture_max"
+           "                    AND ?11 BETWEEN focal_length_min AND focal_length_max"
+           "                    AND (%s))))"
+           " ORDER BY writeprotect DESC, LENGTH(model), LENGTH(maker), LENGTH(lens)",
+           auto_module
+             ? "COALESCE(NULLIF(multi_name,''), NULLIF(name,''))"
+             : "CASE WHEN multi_name_hand_edited"
+               "  THEN multi_name"
+               "  ELSE (ROW_NUMBER() OVER (PARTITION BY operation ORDER BY operation) - 1)"
+               " END",
+           format_filter,
+           is_display_referred ? "" : "basecurve",
+           format_filter);
+
+  sqlite3_stmt *stmt;
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db), query, -1, &stmt, NULL);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, snap_id);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 3, image->exif_model, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 4, image->exif_maker, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 5, image->camera_alias, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 6, image->camera_maker, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_TEXT(stmt, 7, image->exif_lens, -1, SQLITE_TRANSIENT);
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 8, fmaxf(0.0f, fminf(FLT_MAX, image->exif_iso)));
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 9, fmaxf(0.0f, fminf(1000000, image->exif_exposure)));
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 10, fmaxf(0.0f, fminf(1000000, image->exif_aperture)));
+  DT_DEBUG_SQLITE3_BIND_DOUBLE(stmt, 11, fmaxf(0.0f, fminf(1000000, image->exif_focal_length)));
+
+  const gboolean ok = (sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+  g_free(format_filter);
+  return ok;
+}
+
+static int _dev_snapshot_history_count(const int snap_id,
+                                       const dt_imgid_t imgid)
+{
+  sqlite3_stmt *stmt;
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                              "SELECT COUNT(*) FROM memory.snapshot_history WHERE id=?1 AND imgid=?2",
+                              -1, &stmt, NULL);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, snap_id);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
+  sqlite3_step(stmt);
+  const int count = sqlite3_column_int(stmt, 0);
+  sqlite3_finalize(stmt);
+  return count;
+}
+
+static gboolean _dev_snapshot_history_renumber(const int snap_id,
+                                               const dt_imgid_t imgid)
+{
+  sqlite3_stmt *stmt;
+  GList *rowids = NULL;
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                              "SELECT rowid FROM memory.snapshot_history"
+                              " WHERE id=?1 AND imgid=?2 ORDER BY rowid",
+                              -1, &stmt, NULL);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, snap_id);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
+  while(sqlite3_step(stmt) == SQLITE_ROW)
+    rowids = g_list_append(rowids, GINT_TO_POINTER(sqlite3_column_int(stmt, 0)));
+  sqlite3_finalize(stmt);
+
+  gboolean ok = TRUE;
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                              "UPDATE memory.snapshot_history SET num=?1 WHERE rowid=?2",
+                              -1, &stmt, NULL);
+  int num = 0;
+  for(GList *r = rowids; r; r = g_list_next(r), num++)
+  {
+    DT_DEBUG_SQLITE3_CLEAR_BINDINGS(stmt);
+    DT_DEBUG_SQLITE3_RESET(stmt);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, num);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, GPOINTER_TO_INT(r->data));
+    ok &= (sqlite3_step(stmt) == SQLITE_DONE);
+  }
+
+  sqlite3_finalize(stmt);
+  g_list_free(rowids);
+  return ok;
+}
+
+gboolean dt_dev_write_baseline_snapshot(dt_develop_t *dev,
+                                        const int snap_id,
+                                        int *history_end)
+{
+  if(history_end) *history_end = 0;
+  if(!dev) return FALSE;
+
+  const dt_imgid_t imgid = dev->image_storage.id;
+  if(!dt_is_valid_imgid(imgid)) return FALSE;
+
+  dt_image_t *image = dt_image_cache_get(imgid, 'r');
+  gboolean ok = TRUE;
+  dt_lock_image(imgid);
+  dt_database_start_transaction(darktable.db);
+  dt_history_snapshot_clear(imgid, snap_id);
+
+  for(GList *modules = dev->iop; modules; modules = g_list_next(modules))
+  {
+    dt_iop_module_t *module = modules->data;
+    if(module->default_enabled
+       && module->hide_enable_button
+       && !(module->flags() & IOP_FLAGS_NO_HISTORY_STACK))
+    {
+      ok &= _dev_insert_snapshot_default_module(snap_id, imgid, module);
+    }
+  }
+
+  for(GList *modules = dev->iop; modules; modules = g_list_next(modules))
+  {
+    dt_iop_module_t *module = modules->data;
+    if(module->default_enabled
+       && !module->hide_enable_button
+       && !(module->flags() & IOP_FLAGS_NO_HISTORY_STACK))
+    {
+      ok &= _dev_insert_snapshot_default_module(snap_id, imgid, module);
+    }
+  }
+
+  if(image->flags & DT_IMAGE_AUTO_PRESETS_APPLIED)
+    ok &= _dev_insert_snapshot_auto_preset_rows(dev, snap_id, imgid, image);
+
+  ok &= _dev_snapshot_history_renumber(snap_id, imgid);
+
+  if(_dev_snapshot_history_count(snap_id, imgid) == 0)
+  {
+    sqlite3_stmt *stmt;
+    DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                                "INSERT INTO memory.snapshot_history"
+                                " VALUES (?1, ?2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0)",
+                                -1, &stmt, NULL);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, snap_id);
+    DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
+    ok &= (sqlite3_step(stmt) == SQLITE_DONE);
+    sqlite3_finalize(stmt);
+  }
+
+  sqlite3_stmt *stmt;
+  DT_DEBUG_SQLITE3_PREPARE_V2(dt_database_get(darktable.db),
+                              "INSERT INTO memory.snapshot_module_order"
+                              " SELECT ?1, imgid, version, iop_list"
+                              " FROM main.module_order WHERE imgid=?2",
+                              -1, &stmt, NULL);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 1, snap_id);
+  DT_DEBUG_SQLITE3_BIND_INT(stmt, 2, imgid);
+  ok &= (sqlite3_step(stmt) == SQLITE_DONE);
+  sqlite3_finalize(stmt);
+
+  const int count = _dev_snapshot_history_count(snap_id, imgid);
+  if(history_end) *history_end = MAX(0, count);
+
+  if(ok)
+    dt_database_release_transaction(darktable.db);
+  else
+    dt_database_rollback_transaction(darktable.db);
+
+  dt_unlock_image(imgid);
+  dt_image_cache_read_release(image);
+  return ok;
+}
+
 static void _dev_insert_module(dt_develop_t *dev,
                                dt_iop_module_t *module,
                                const dt_imgid_t imgid)
@@ -1936,6 +2311,8 @@ void dt_dev_read_history_ext(dt_develop_t *dev,
   gboolean first_run = FALSE;
   gboolean legacy_params = FALSE;
 
+  dev->baseline_history_end = 0;
+
   dt_ioppr_set_default_iop_order(dev, imgid);
 
   if(!no_image)
@@ -1960,7 +2337,6 @@ void dt_dev_read_history_ext(dt_develop_t *dev,
     // Maybe add auto-presets to memory.history
     first_run = _dev_auto_apply_presets(dev);
     auto_apply_modules_count = _dev_get_module_nb_records() - default_modules_count;
-
     dt_print(DT_DEBUG_PARAMS,
              "[dt_dev_read_history_ext] temporary history initialised with"
              " default params and presets");
@@ -2327,6 +2703,9 @@ void dt_dev_read_history_ext(dt_develop_t *dev,
       if(sqlite3_column_type(stmt, 0) != SQLITE_NULL)
         dev->history_end = sqlite3_column_int(stmt, 0);
     sqlite3_finalize(stmt);
+
+    dev->baseline_history_end = MIN(_dev_compute_baseline_history_end(dev),
+                                    dev->history_end);
   }
 
   dt_ioppr_check_iop_order(dev, imgid, "dt_dev_read_history_no_image end");

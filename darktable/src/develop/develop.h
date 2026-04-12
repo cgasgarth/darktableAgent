@@ -197,6 +197,7 @@ typedef struct dt_develop_t
   // history stack
   dt_pthread_mutex_t history_mutex;
   int32_t history_end;
+  int32_t baseline_history_end;
   GList *history;
   // some modules don't want to add new history items while active
   gboolean history_postpone_invalidate;
@@ -440,6 +441,9 @@ void dt_dev_pop_history_items_ext(dt_develop_t *dev, const int32_t cnt);
 void dt_dev_pop_history_items(dt_develop_t *dev, const int32_t cnt);
 void dt_dev_write_history_ext(dt_develop_t *dev, const dt_imgid_t imgid);
 void dt_dev_write_history(dt_develop_t *dev);
+gboolean dt_dev_write_baseline_snapshot(dt_develop_t *dev,
+                                        const int snap_id,
+                                        int *history_end);
 void dt_dev_read_history_ext(dt_develop_t *dev,
                              const dt_imgid_t imgid,
                              const gboolean no_image);
