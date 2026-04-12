@@ -142,6 +142,7 @@ static struct dt_agent_chat_session_t *_agent_chat_lookup_session(dt_develop_t *
                                                                   dt_imgid_t image_id);
 static void _agent_chat_session_set_status(dt_agent_chat_session_t *session,
                                            const char *status);
+static void _agent_chat_scroll_to_end(dt_develop_t *dev);
 static void _agent_chat_update_sensitivity(dt_develop_t *dev);
 static void _agent_chat_set_status(dt_develop_t *dev, const char *status);
 static void _agent_chat_set_error(dt_develop_t *dev, const char *error);
@@ -2008,6 +2009,8 @@ static void _agent_chat_replace_transcript(dt_develop_t *dev, const char *text)
 
   GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(dev->agent_chat.conversation_view));
   gtk_text_buffer_set_text(buffer, text ? text : "", -1);
+
+  _agent_chat_scroll_to_end(dev);
 }
 
 static void _agent_chat_sync_current_session(dt_develop_t *dev)
@@ -2409,15 +2412,36 @@ static void _agent_chat_session_append_message(dt_agent_chat_session_t *session,
   }
 }
 
+static gboolean _agent_chat_scroll_to_end_idle(gpointer user_data)
+{
+  dt_develop_t *dev = user_data;
+  if(!dev || !GTK_IS_TEXT_VIEW(dev->agent_chat.conversation_view))
+    return G_SOURCE_REMOVE;
+
+  GtkTextView *view = GTK_TEXT_VIEW(dev->agent_chat.conversation_view);
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
+  GtkTextIter end;
+  gtk_text_buffer_get_end_iter(buffer, &end);
+  gtk_text_view_scroll_to_iter(view, &end, 0.0, FALSE, 0.0, 1.0);
+
+  GtkWidget *scroll = gtk_widget_get_ancestor(dev->agent_chat.conversation_view,
+                                              GTK_TYPE_SCROLLED_WINDOW);
+  if(GTK_IS_SCROLLED_WINDOW(scroll))
+  {
+    GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
+    const gdouble bottom = MAX(0.0, gtk_adjustment_get_upper(adj) - gtk_adjustment_get_page_size(adj));
+    gtk_adjustment_set_value(adj, bottom);
+  }
+
+  return G_SOURCE_REMOVE;
+}
+
 static void _agent_chat_scroll_to_end(dt_develop_t *dev)
 {
-  GtkWidget *scroll
-    = gtk_widget_get_ancestor(dev->agent_chat.conversation_view, GTK_TYPE_SCROLLED_WINDOW);
-  if(!GTK_IS_SCROLLED_WINDOW(scroll))
+  if(!dev || !GTK_IS_TEXT_VIEW(dev->agent_chat.conversation_view))
     return;
 
-  GtkAdjustment *adj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroll));
-  gtk_adjustment_set_value(adj, gtk_adjustment_get_upper(adj));
+  g_idle_add(_agent_chat_scroll_to_end_idle, dev);
 }
 
 static void _agent_chat_append_message(dt_develop_t *dev,
