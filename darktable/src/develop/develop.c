@@ -69,6 +69,7 @@ void dt_dev_init(dt_develop_t *dev,
 
   dev->snapshot_id = -1;
   dev->history_end = 0;
+  dev->baseline_history_end = 0;
   dev->history = NULL; // empty list
   dev->history_postpone_invalidate = FALSE;
   dev->module_filter_out = NULL;
@@ -1936,6 +1937,8 @@ void dt_dev_read_history_ext(dt_develop_t *dev,
   gboolean first_run = FALSE;
   gboolean legacy_params = FALSE;
 
+  dev->baseline_history_end = 0;
+
   dt_ioppr_set_default_iop_order(dev, imgid);
 
   if(!no_image)
@@ -1960,6 +1963,7 @@ void dt_dev_read_history_ext(dt_develop_t *dev,
     // Maybe add auto-presets to memory.history
     first_run = _dev_auto_apply_presets(dev);
     auto_apply_modules_count = _dev_get_module_nb_records() - default_modules_count;
+    dev->baseline_history_end = _dev_get_module_nb_records();
 
     dt_print(DT_DEBUG_PARAMS,
              "[dt_dev_read_history_ext] temporary history initialised with"

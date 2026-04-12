@@ -197,6 +197,7 @@ typedef struct dt_develop_t
   // history stack
   dt_pthread_mutex_t history_mutex;
   int32_t history_end;
+  int32_t baseline_history_end;
   GList *history;
   // some modules don't want to add new history items while active
   gboolean history_postpone_invalidate;
