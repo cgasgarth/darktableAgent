@@ -38,6 +38,13 @@ endif()
 include(DefineOptions.cmake)
 include(CTest)
 
+if(CMAKE_EXPORT_COMPILE_COMMANDS)
+  set(DARKTABLE_COMPILE_COMMANDS_LINK "${CMAKE_SOURCE_DIR}/compile_commands.json")
+  file(REMOVE "${DARKTABLE_COMPILE_COMMANDS_LINK}")
+  file(CREATE_LINK "${CMAKE_BINARY_DIR}/compile_commands.json"
+       "${DARKTABLE_COMPILE_COMMANDS_LINK}" SYMBOLIC COPY_ON_ERROR)
+endif()
+
 # Include GNUInstallDirs, which sets sensible defaults for install directories.
 # See https://cmake.org/cmake/help/v3.0/module/GNUInstallDirs.html for further information.
 # These values can be easily overridden if required.
