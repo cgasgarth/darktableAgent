@@ -210,6 +210,17 @@ def editable_settings() -> list[dict[str, object]]:
         float_setting(
             module_id="clipping",
             module_label="crop and rotate",
+            setting_id="setting.clipping.angle",
+            capability_id="clipping.angle",
+            label="angle",
+            action_path="iop/clipping/angle",
+            current=0.0,
+            minimum=-180.0,
+            maximum=180.0,
+        ),
+        float_setting(
+            module_id="clipping",
+            module_label="crop and rotate",
             setting_id="setting.clipping.cx",
             capability_id="clipping.cx",
             label="cx",
