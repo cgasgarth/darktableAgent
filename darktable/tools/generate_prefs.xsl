@@ -84,15 +84,19 @@ static void set_widget_label_default(GtkWidget *widget,
   }
   else if(GTK_IS_ENTRY(widget))
   {
-    const gchar *c_default = dt_confgen_get(confstr, DT_DEFAULT);
     const gchar *c_state = gtk_entry_get_text(GTK_ENTRY(widget));
-    is_default = (g_strcmp0(c_state, c_default) == 0);
-  }
-  else if(GTK_IS_FILE_CHOOSER(widget))
-  {
-    const gchar *c_default = dt_confgen_get(confstr, DT_DEFAULT);
-    const gchar *c_state = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(widget));
-    is_default = (g_strcmp0(c_state, c_default) == 0);
+    if(dt_confgen_type(confstr) == DT_PATH)
+    {
+      const gchar *c_default = dt_confgen_get(confstr, DT_DEFAULT);
+      gchar *p_default = dt_conf_expand_default_dir(c_default);
+      is_default = (g_strcmp0(c_state, p_default) == 0);
+      g_free(p_default);
+    }
+    else
+    {
+      const gchar *c_default = dt_confgen_get(confstr, DT_DEFAULT);
+      is_default = (g_strcmp0(c_state, c_default) == 0);
+    }
   }
   else
   {
@@ -142,8 +146,21 @@ static GtkWidget *setup_pref(GtkWidget **label,
                              const gchar *shortdes)
 {
   const gboolean is_default = dt_conf_is_default(pref);
+  gboolean show_default = is_default;
+  if(!show_default && dt_confgen_type(pref) == DT_PATH)
+  {
+    const gchar *c_default = dt_confgen_get(pref, DT_DEFAULT);
+    const gchar *c_state = dt_conf_get_string_const(pref);
+    gchar *p_default = dt_conf_expand_default_dir(c_default);
+    gchar *p_state = dt_conf_expand_default_dir(c_state ? c_state : c_default);
+    show_default = (g_strcmp0(p_state, p_default) == 0);
+    if(show_default)
+      dt_conf_set_string(pref, c_default);
+    g_free(p_state);
+    g_free(p_default);
+  }
   GtkWidget *labdef = NULL;
-  if(is_default)
+  if(show_default)
   {
     labdef = gtk_label_new("");
   }
@@ -488,12 +505,7 @@ static void init_tab_generated(GtkWidget *dialog, GtkWidget *stack)
 
   <xsl:template match="dtconfig[type='dir']" mode="reset">
     <xsl:text>
-    gchar *path = dt_conf_expand_default_dir("</xsl:text><xsl:value-of select="default"/><xsl:text>");
-    dt_conf_set_string("</xsl:text><xsl:value-of select="name"/><xsl:text>", path);
-    g_free(path);
-    path = dt_conf_get_string("</xsl:text><xsl:value-of select="name"/><xsl:text>");
-    gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(widget), path);
-    g_free(path);</xsl:text>
+    dt_gui_preferences_dir_reset(widget);</xsl:text>
   </xsl:template>
 
 <!-- CHANGE -->
@@ -544,9 +556,7 @@ static void init_tab_generated(GtkWidget *dialog, GtkWidget *stack)
 
   <xsl:template match="dtconfig[type='dir']" mode="change">
   <xsl:text>
-    gchar *folder = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(widget));
-    dt_conf_set_string("</xsl:text><xsl:value-of select="name"/><xsl:text>", folder);
-    g_free(folder);</xsl:text>
+    dt_gui_preferences_dir_write(widget);</xsl:text>
   </xsl:template>
 
 <!-- TAB -->
@@ -583,14 +593,8 @@ static void init_tab_generated(GtkWidget *dialog, GtkWidget *stack)
 
   <xsl:template match="dtconfig[type='dir']" mode="tab">
     <xsl:text>
-    widget = gtk_file_chooser_button_new(_("select directory"), GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER);
-    gtk_file_chooser_button_set_width_chars(GTK_FILE_CHOOSER_BUTTON(widget), 20);
-    gtk_widget_set_halign(widget, GTK_ALIGN_FILL);
-    gtk_widget_set_hexpand(widget, TRUE);
-    gchar *setting = dt_conf_get_string("</xsl:text><xsl:value-of select="name"/><xsl:text>");
-    gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(widget), setting);
-    g_free(setting);
-    g_signal_connect(G_OBJECT(widget), "selection-changed", G_CALLBACK(preferences_changed_callback_</xsl:text><xsl:value-of select="generate-id(.)"/><xsl:text>), labdef);
+    widget = dt_gui_preferences_dir(dialog, "</xsl:text><xsl:value-of select="name"/><xsl:text>", "</xsl:text><xsl:value-of select="default"/><xsl:text>");
+    g_signal_connect(G_OBJECT(widget), "changed", G_CALLBACK(preferences_changed_callback_</xsl:text><xsl:value-of select="generate-id(.)"/><xsl:text>), labdef);
     g_signal_connect(G_OBJECT(dialog), "response", G_CALLBACK(preferences_response_callback_</xsl:text><xsl:value-of select="generate-id(.)"/><xsl:text>), widget);
     gchar *default_path = dt_conf_expand_default_dir("</xsl:text><xsl:value-of select="default"/><xsl:text>");
     snprintf(tooltip, 1024, _("double click to reset to `%s'"), default_path);

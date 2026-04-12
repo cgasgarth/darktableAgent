@@ -29,14 +29,7 @@ def bind_canonical_plan(request: RequestEnvelope, plan: AgentPlan) -> AgentPlan:
         operation.model_dump(mode="json") for operation in plan.operations
     ] + bound_operations
 
-    normalized_operations: list[dict[str, object]] = []
-    for index, operation in enumerate(combined_operations, start=1):
-        operation_copy = dict(operation)
-        operation_copy["operationId"] = str(
-            operation_copy.get("operationId") or f"canonical-op-{index}"
-        )
-        operation_copy["sequence"] = index
-        normalized_operations.append(operation_copy)
+    normalized_operations = _normalize_operations_with_unique_ids(combined_operations)
 
     assistant_text = plan.assistantText
     if failures:
@@ -78,16 +71,33 @@ def bind_canonical_actions(
         bound_operations.extend(result.operations)
         failures.extend(result.failures)
 
+    return _BindingResult(
+        _normalize_operations_with_unique_ids(bound_operations), failures
+    )
+
+
+def _normalize_operations_with_unique_ids(
+    operations: list[dict[str, object]],
+) -> list[dict[str, object]]:
     normalized_operations: list[dict[str, object]] = []
-    for index, operation in enumerate(bound_operations, start=1):
+    seen_operation_ids: set[str] = set()
+
+    for index, operation in enumerate(operations, start=1):
         operation_copy = dict(operation)
-        operation_copy["operationId"] = str(
+        candidate_operation_id = str(
             operation_copy.get("operationId") or f"canonical-op-{index}"
         )
+        operation_id = candidate_operation_id
+        duplicate_index = 2
+        while operation_id in seen_operation_ids:
+            operation_id = f"{candidate_operation_id}-{duplicate_index}"
+            duplicate_index += 1
+        seen_operation_ids.add(operation_id)
+        operation_copy["operationId"] = operation_id
         operation_copy["sequence"] = index
         normalized_operations.append(operation_copy)
 
-    return _BindingResult(normalized_operations, failures)
+    return normalized_operations
 
 
 def _bind_action(
