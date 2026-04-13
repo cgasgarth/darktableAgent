@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import TypedDict
 
-from shared.protocol import AgentPlan, RequestEnvelope
+from shared.protocol import AgentPlan, JsonObject, RequestEnvelope
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,19 +60,19 @@ class TurnContext:
     current_preview_bytes: bytes
     preview_mime_type: str
     base_image_revision_id: str
-    state_payload: dict[str, Any]
-    setting_by_id: dict[str, dict[str, Any]]
+    state_payload: JsonObject
+    setting_by_id: dict[str, JsonObject]
     base_float_setting_numbers: dict[str, float]
     live_run_enabled: bool
     max_tool_calls: int
     tool_calls_used: int = 0
     consecutive_read_only_tool_calls: int = 0
-    applied_operations: list[dict[str, Any]] = field(default_factory=list)
+    applied_operations: list[JsonObject] = field(default_factory=list)
     next_operation_sequence: int = 1
     render_event: threading.Event = field(default_factory=threading.Event)
     rendered_preview_bytes: bytes | None = None
     requires_render_callback: bool = False
-    last_applied_batch: list[dict[str, Any]] = field(default_factory=list)
+    last_applied_batch: list[JsonObject] = field(default_factory=list)
     last_applied_summary: str | None = None
     last_verifier_status: str | None = None
     last_verifier_summary: str | None = None
@@ -85,7 +85,7 @@ class TurnRunState(TypedDict):
     final_message: str | None
     turn_error: str | None
     completed: bool
-    token_usage_last: dict[str, Any] | None
-    token_usage_total: dict[str, Any] | None
+    token_usage_last: JsonObject | None
+    token_usage_total: JsonObject | None
     last_activity_at: float
     last_activity_method: str | None

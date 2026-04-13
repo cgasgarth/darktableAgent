@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Protocol, TypedDict
+from typing import Protocol, TypedDict
 
-from shared.protocol import AgentPlan, RequestEnvelope
+from shared.protocol import AgentPlan, JsonObject, RequestEnvelope
 
 
 class RequestProgressPayload(TypedDict):
@@ -11,7 +11,7 @@ class RequestProgressPayload(TypedDict):
     toolCallsUsed: int
     maxToolCalls: int
     appliedOperationCount: int
-    operations: list[dict[str, Any]]
+    operations: list[JsonObject]
     message: str
     lastToolName: str | None
     progressVersion: int

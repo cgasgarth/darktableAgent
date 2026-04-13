@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
-
+from typing import cast
 from shared.canonical_plan import CanonicalEditAction
+from shared.protocol import JsonObject
 
 from .canonical_binder import bind_canonical_actions
 from .models import TurnContext
@@ -12,17 +12,15 @@ from .models import TurnContext
 
 @dataclass(frozen=True, slots=True)
 class PreparedApplyBatch:
-    normalized_batch: list[dict[str, Any]]
+    normalized_batch: list[JsonObject]
     render_warnings: list[str]
 
 
 def prepare_apply_batch(
     context: TurnContext,
-    arguments: dict[str, Any],
+    arguments: JsonObject,
     *,
-    normalize_operation: Callable[
-        [dict[str, Any], int], tuple[dict[str, Any], str | None]
-    ],
+    normalize_operation: Callable[[JsonObject, int], tuple[JsonObject, str | None]],
 ) -> tuple[PreparedApplyBatch | None, str | None]:
     raw_operations = arguments.get("operations")
     raw_canonical_actions = arguments.get("canonicalActions")
@@ -48,7 +46,7 @@ def prepare_apply_batch(
 
 
 def _prepare_canonical_batch(
-    context: TurnContext, raw_canonical_actions: list[Any]
+    context: TurnContext, raw_canonical_actions: Sequence[object]
 ) -> tuple[PreparedApplyBatch | None, str | None]:
     canonical_actions: list[CanonicalEditAction] = []
     for raw_action in raw_canonical_actions:
@@ -76,17 +74,15 @@ def _prepare_canonical_batch(
 
 def _prepare_raw_batch(
     context: TurnContext,
-    raw_operations: list[Any],
-    normalize_operation: Callable[
-        [dict[str, Any], int], tuple[dict[str, Any], str | None]
-    ],
+    raw_operations: Sequence[object],
+    normalize_operation: Callable[[JsonObject, int], tuple[JsonObject, str | None]],
 ) -> tuple[PreparedApplyBatch | None, str | None]:
-    normalized_batch: list[dict[str, Any]] = []
+    normalized_batch: list[JsonObject] = []
     for index, raw_operation in enumerate(raw_operations):
         if not isinstance(raw_operation, dict):
             return None, "Every apply_operations entry must be an object."
         normalized_operation, error = normalize_operation(
-            raw_operation,
+            cast(JsonObject, raw_operation),
             context.next_operation_sequence + index,
         )
         if error:

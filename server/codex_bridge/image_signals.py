@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import binascii
 import io
-from typing import Any, Literal
+from typing import Literal, TypedDict
 
 from shared.analysis_signals import (
     ActiveModuleSignal,
@@ -12,7 +12,25 @@ from shared.analysis_signals import (
     RegionSignalSummary,
     TonalSignalSummary,
 )
-from shared.protocol import RequestEnvelope
+from shared.protocol import JsonObject, RequestEnvelope
+
+
+class PreviewPixel(TypedDict):
+    red: float
+    green: float
+    blue: float
+    luma: float
+    saturation: float
+
+
+class PreviewSamples(TypedDict):
+    width: int
+    height: int
+    samples: list[PreviewPixel]
+    lumas: list[float]
+    saturations: list[float]
+    grayscale: list[float]
+
 
 try:
     from PIL import Image
@@ -41,7 +59,7 @@ def _decode_preview_bytes(request: RequestEnvelope) -> bytes | None:
         return None
 
 
-def _preview_samples(image_bytes: bytes) -> dict[str, Any] | None:
+def _preview_samples(image_bytes: bytes) -> PreviewSamples | None:
     if Image is None or not image_bytes:
         return None
 
@@ -60,7 +78,7 @@ def _preview_samples(image_bytes: bytes) -> dict[str, Any] | None:
     grayscale: list[float] = []
     lumas: list[float] = []
     saturations: list[float] = []
-    samples: list[dict[str, float]] = []
+    samples: list[PreviewPixel] = []
     for red, green, blue in pixels:
         luma = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255.0
         saturation = (max(red, green, blue) - min(red, green, blue)) / 255.0
@@ -87,7 +105,7 @@ def _preview_samples(image_bytes: bytes) -> dict[str, Any] | None:
     }
 
 
-def _tonal_from_preview(preview_samples: dict[str, Any]) -> TonalSignalSummary:
+def _tonal_from_preview(preview_samples: PreviewSamples) -> TonalSignalSummary:
     lumas = sorted(float(value) for value in preview_samples["lumas"])
     samples = preview_samples["samples"]
     total = max(1, len(samples))
@@ -146,7 +164,7 @@ def _tonal_from_histogram(request: RequestEnvelope) -> TonalSignalSummary | None
 
 
 def _sharpness_estimate(
-    preview_samples: dict[str, Any] | None,
+    preview_samples: PreviewSamples | None,
 ) -> Literal["unknown", "soft", "normal", "crisp"]:
     if preview_samples is None:
         return "unknown"
@@ -190,13 +208,13 @@ def _noise_risk(
 
 
 def _region_slice(
-    preview_samples: dict[str, Any],
+    preview_samples: PreviewSamples,
     *,
     x_start: float,
     x_end: float,
     y_start: float,
     y_end: float,
-) -> list[dict[str, float]]:
+) -> list[PreviewPixel]:
     width = int(preview_samples["width"])
     height = int(preview_samples["height"])
     samples = preview_samples["samples"]
@@ -204,7 +222,7 @@ def _region_slice(
     right = max(left + 1, min(width, int(width * x_end)))
     top = max(0, min(height - 1, int(height * y_start)))
     bottom = max(top + 1, min(height, int(height * y_end)))
-    region: list[dict[str, float]] = []
+    region: list[PreviewPixel] = []
     for y in range(top, bottom):
         start = y * width + left
         end = y * width + right
@@ -212,7 +230,7 @@ def _region_slice(
     return region
 
 
-def _region_stats(region: list[dict[str, float]]) -> tuple[float, float]:
+def _region_stats(region: list[PreviewPixel]) -> tuple[float, float]:
     if not region:
         return 0.0, 0.0
     mean_luma = sum(sample["luma"] for sample in region) / len(region)
@@ -221,7 +239,7 @@ def _region_stats(region: list[dict[str, float]]) -> tuple[float, float]:
 
 
 def _region_summaries(
-    preview_samples: dict[str, Any] | None,
+    preview_samples: PreviewSamples | None,
 ) -> list[RegionSignalSummary]:
     if preview_samples is None:
         return []
@@ -303,7 +321,7 @@ def _active_modules(request: RequestEnvelope) -> tuple[int, list[ActiveModuleSig
     return len(active_history), signals
 
 
-def build_image_analysis_signals(request: RequestEnvelope) -> dict[str, Any]:
+def build_image_analysis_signals(request: RequestEnvelope) -> JsonObject:
     preview_samples = _preview_samples(_decode_preview_bytes(request) or b"")
     tonal = _tonal_from_preview(preview_samples) if preview_samples else None
     if tonal is None:

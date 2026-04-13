@@ -5,7 +5,6 @@ from collections.abc import Mapping
 import json
 import logging
 import os
-from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -24,6 +23,7 @@ from shared.protocol import (
     ResponseEnvelope,
     ResponseSession,
     AssistantMessage,
+    JsonObject,
     build_response_from_plan,
     parse_request_ids,
 )
@@ -34,7 +34,7 @@ codex_logger = logging.getLogger("darktable_agent.codex")
 
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, Any] = {
+        payload: JsonObject = {
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -122,7 +122,7 @@ def build_error_payload(
     refinement: RefinementStatus | None,
     code: str,
     message: str,
-) -> dict[str, Any]:
+) -> JsonObject:
     payload = ResponseEnvelope(
         requestId=request_id,
         session=ResponseSession.model_validate(session),
@@ -197,7 +197,7 @@ def _log_fulfilled_request(
     )
 
 
-def _encode_sse(event: str, payload: Mapping[str, Any]) -> str:
+def _encode_sse(event: str, payload: Mapping[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
 
 

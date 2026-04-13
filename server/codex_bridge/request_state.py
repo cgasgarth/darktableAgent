@@ -2,9 +2,11 @@ from __future__ import annotations
 
 # pyright: reportAttributeAccessIssue=false
 
-from typing import Any
+from typing import cast
 
-from shared.protocol import AgentPlan
+from pydantic import BaseModel
+
+from shared.protocol import AgentPlan, JsonObject
 from server.bridge_types import RequestProgressPayload
 
 from .config import logger
@@ -12,27 +14,29 @@ from .errors import CodexAppServerError
 from .models import ActiveRequestState, CancelRequestKey, TurnContext
 
 
-def build_output_schema(agent_plan_type: Any) -> dict[str, Any]:
+def build_output_schema(agent_plan_type: type[BaseModel]) -> JsonObject:
     schema = agent_plan_type.model_json_schema()
 
-    def _rewrite(node: Any) -> None:
+    def _rewrite(node: object) -> None:
         if isinstance(node, dict):
-            properties = node.get("properties")
+            node_dict = cast(JsonObject, node)
+            properties = node_dict.get("properties")
             if isinstance(properties, dict):
-                node["required"] = list(properties.keys())
-                node.setdefault("additionalProperties", False)
+                node_dict["required"] = list(properties.keys())
+                if "additionalProperties" not in node_dict:
+                    node_dict["additionalProperties"] = False
                 for child in properties.values():
                     _rewrite(child)
 
             for key in ("items", "anyOf", "allOf", "oneOf", "prefixItems"):
-                child = node.get(key)
+                child = node_dict.get(key)
                 if isinstance(child, list):
                     for item in child:
                         _rewrite(item)
                 elif isinstance(child, dict):
                     _rewrite(child)
 
-            defs = node.get("$defs")
+            defs = node_dict.get("$defs")
             if isinstance(defs, dict):
                 for child in defs.values():
                     _rewrite(child)
@@ -46,7 +50,7 @@ def build_output_schema(agent_plan_type: Any) -> dict[str, Any]:
 
 class RequestStateMixin:
     @staticmethod
-    def _build_output_schema() -> dict[str, Any]:
+    def _build_output_schema() -> JsonObject:
         return build_output_schema(AgentPlan)
 
     def _register_request(self, request) -> ActiveRequestState:  # type: ignore[no-untyped-def]
@@ -165,7 +169,9 @@ class RequestStateMixin:
                 "message": active_request.message,
                 "lastToolName": active_request.last_tool_name,
                 "progressVersion": active_request.progress_version,
-                "requiresRenderCallback": context.requires_render_callback if context else False,
+                "requiresRenderCallback": context.requires_render_callback
+                if context
+                else False,
             }
 
     def _is_cancelled(self, active_request: ActiveRequestState) -> bool:

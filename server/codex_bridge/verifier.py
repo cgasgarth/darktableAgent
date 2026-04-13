@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import io
 import json
-from typing import Any
+
+from typing import cast
+
+from shared.protocol import JsonObject
 
 from .config import logger
 from .models import TurnContext
@@ -76,7 +79,7 @@ class VerifierMixin:
 
     @staticmethod
     def _summed_deltas(
-        operations: list[dict[str, Any]],
+        operations: list[JsonObject],
         *,
         action_terms: tuple[str, ...],
     ) -> float:
@@ -86,15 +89,17 @@ class VerifierMixin:
             value = operation.get("value")
             if not isinstance(target, dict) or not isinstance(value, dict):
                 continue
-            action_path = str(target.get("actionPath") or "").lower()
+            target_dict = cast(JsonObject, target)
+            value_dict = cast(JsonObject, value)
+            action_path = str(target_dict.get("actionPath") or "").lower()
             if not any(term in action_path for term in action_terms):
                 continue
-            number = value.get("number")
+            number = value_dict.get("number")
             if isinstance(number, (int, float)):
                 total += float(number)
         return total
 
-    def _build_live_verifier_feedback(self, context: TurnContext) -> dict[str, Any]:
+    def _build_live_verifier_feedback(self, context: TurnContext) -> JsonObject:
         base_metrics = self._preview_metrics(context.base_preview_bytes)
         current_metrics = self._preview_metrics(context.current_preview_bytes)
         profile = self._editing_profile(context)
@@ -114,7 +119,7 @@ class VerifierMixin:
             context.last_verifier_summary = summary
             return result
 
-        checks: list[dict[str, Any]] = []
+        checks: list[JsonObject] = []
         exposure_delta = self._summed_deltas(
             context.last_applied_batch, action_terms=("exposure", "filmic", "toneeq")
         )
@@ -182,11 +187,12 @@ class VerifierMixin:
                 "detected after the latest live edits."
             )
         else:
-            summary = "Verifier fail: " + " ".join(
-                check["detail"]
+            details = [
+                detail
                 for check in checks
-                if isinstance(check.get("detail"), str)
-            )
+                if isinstance((detail := check.get("detail")), str)
+            ]
+            summary = "Verifier fail: " + " ".join(details)
 
         result = {
             "status": status,
@@ -215,5 +221,5 @@ class VerifierMixin:
         return result
 
     @staticmethod
-    def _verifier_feedback_text(result: dict[str, Any]) -> str:
+    def _verifier_feedback_text(result: JsonObject) -> str:
         return "Verifier summary JSON:\n" + json.dumps(result, separators=(",", ":"))

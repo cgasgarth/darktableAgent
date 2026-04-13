@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
-from typing import Any
+from collections.abc import Sequence
+from typing import cast
 
-from shared.protocol import AgentPlan
+from shared.protocol import AgentPlan, JsonObject
 
 from .apply_batch import prepare_apply_batch
 from .config import _TOOL_APPLY_OPERATIONS, _WHITE_BALANCE_ACTION_PATH_PREFIXES, logger
@@ -17,11 +18,11 @@ class OperationsMixin:
     def _apply_operations_tool_call(
         self,
         context: TurnContext,
-        arguments: dict[str, Any],
+        arguments: JsonObject,
         *,
         thread_id: str | None = None,
         turn_id: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         if not context.live_run_enabled:
             return self._tool_error_response(
                 "apply_operations is only available when live run mode is enabled."
@@ -70,10 +71,10 @@ class OperationsMixin:
                     error=apply_error,
                 )
                 return self._tool_error_response(apply_error)
-        applied_batch: list[dict[str, Any]] = []
+        applied_batch: list[JsonObject] = []
         step_summaries: list[str] = []
         latest_preview_url: str | None = None
-        latest_verifier_result: dict[str, Any] | None = None
+        latest_verifier_result: JsonObject | None = None
 
         for step_index, operation in enumerate(ordered_batch, start=1):
             apply_error = self._apply_live_operation_step(context, operation)
@@ -118,7 +119,7 @@ class OperationsMixin:
             success=True,
         )
 
-        content_items: list[dict[str, Any]] = [
+        content_items: list[JsonObject] = [
             {
                 "type": "inputText",
                 "text": (
@@ -150,7 +151,7 @@ class OperationsMixin:
     def _apply_live_operation_step(
         self,
         context: TurnContext,
-        operation: dict[str, Any],
+        operation: JsonObject,
     ) -> str | None:
         apply_error, _ = self._apply_operation_to_settings(
             context.setting_by_id, operation
@@ -174,7 +175,7 @@ class OperationsMixin:
 
     def _wait_for_live_render(
         self, context: TurnContext
-    ) -> tuple[str | None, dict[str, Any] | None, str | None]:
+    ) -> tuple[str | None, JsonObject | None, str | None]:
         logger.info(
             "waiting_for_mid_turn_render",
             extra={
@@ -215,13 +216,15 @@ class OperationsMixin:
     def _summarize_live_operation(
         self,
         context: TurnContext,
-        operation: dict[str, Any],
+        operation: JsonObject,
     ) -> str:
         target = operation.get("target")
-        target_dict = target if isinstance(target, dict) else {}
+        target_dict: JsonObject = (
+            cast(JsonObject, target) if isinstance(target, dict) else {}
+        )
         action_path = str(target_dict.get("actionPath") or "unknown")
         setting_id = str(target_dict.get("settingId") or "")
-        setting = context.setting_by_id.get(setting_id, {})
+        setting = context.setting_by_id.get(setting_id) or {}
         module_label = str(setting.get("moduleLabel") or "")
         control_label = str(setting.get("label") or action_path.rsplit("/", 1)[-1])
         label = " / ".join(part for part in (module_label, control_label) if part)
@@ -231,24 +234,25 @@ class OperationsMixin:
         value = operation.get("value")
         if not isinstance(value, dict):
             return label
+        value_dict = cast(JsonObject, value)
 
         kind = operation.get("kind")
         if kind == "set-float":
-            number = value.get("number")
-            mode = value.get("mode")
+            number = value_dict.get("number")
+            mode = value_dict.get("mode")
             if isinstance(number, (int, float)):
                 if mode == "delta":
                     return f"{label} {float(number):+0.3f}"
                 return f"{label} = {float(number):0.3f}"
         if kind == "set-choice":
-            choice_id = value.get("choiceId")
-            choice_value = value.get("choiceValue")
+            choice_id = value_dict.get("choiceId")
+            choice_value = value_dict.get("choiceValue")
             if isinstance(choice_id, str) and choice_id:
                 return f"{label} -> {choice_id}"
             if isinstance(choice_value, int):
                 return f"{label} -> choice {choice_value}"
         if kind == "set-bool":
-            bool_value = value.get("boolValue")
+            bool_value = value_dict.get("boolValue")
             if isinstance(bool_value, bool):
                 return f"{label} -> {'on' if bool_value else 'off'}"
         return label
@@ -263,10 +267,10 @@ class OperationsMixin:
     def _normalize_tool_operation(
         self,
         context: TurnContext,
-        raw_operation: dict[str, Any],
+        raw_operation: JsonObject,
         *,
         sequence_number: int,
-    ) -> tuple[dict[str, Any], str | None]:
+    ) -> tuple[JsonObject, str | None]:
         for key in ("kind", "target", "value"):
             if key not in raw_operation:
                 return {}, f"operation is missing required member '{key}'"
@@ -321,7 +325,7 @@ class OperationsMixin:
 
     @staticmethod
     def _setting_ids_for_action_path(
-        setting_by_id: dict[str, dict[str, Any]],
+        setting_by_id: dict[str, JsonObject],
         action_path: str,
     ) -> list[str]:
         return [
@@ -331,7 +335,7 @@ class OperationsMixin:
         ]
 
     @staticmethod
-    def _choice_mapping(setting: dict[str, Any]) -> dict[int, str]:
+    def _choice_mapping(setting: JsonObject) -> dict[int, str]:
         choices = setting.get("choices")
         mapping: dict[int, str] = {}
         if not isinstance(choices, list):
@@ -339,8 +343,9 @@ class OperationsMixin:
         for choice in choices:
             if not isinstance(choice, dict):
                 continue
-            value = choice.get("choiceValue")
-            choice_id = choice.get("choiceId")
+            choice_dict = cast(JsonObject, choice)
+            value = choice_dict.get("choiceValue")
+            choice_id = choice_dict.get("choiceId")
             if isinstance(value, int) and isinstance(choice_id, str) and choice_id:
                 mapping[value] = choice_id
         return mapping
@@ -353,11 +358,13 @@ class OperationsMixin:
         )
 
     @classmethod
-    def _white_balance_operation_rank(
-        cls, operation: dict[str, Any]
-    ) -> tuple[int, str]:
+    def _white_balance_operation_rank(cls, operation: JsonObject) -> tuple[int, str]:
         target = operation.get("target")
-        action_path = target.get("actionPath") if isinstance(target, dict) else None
+        action_path = (
+            cast(JsonObject, target).get("actionPath")
+            if isinstance(target, dict)
+            else None
+        )
         if not isinstance(action_path, str):
             return (99, "")
         leaf = action_path.rsplit("/", 1)[-1].lower()
@@ -383,8 +390,8 @@ class OperationsMixin:
         return (channel_order.get(leaf, 99), leaf)
 
     def _order_operations_for_apply(
-        self, operations: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+        self, operations: list[JsonObject]
+    ) -> list[JsonObject]:
         ordered = list(operations)
         wb_indexes = [
             index
@@ -404,21 +411,22 @@ class OperationsMixin:
     def _log_white_balance_tool_call(
         self,
         context: TurnContext,
-        attempted_operations: list[Any],
-        applied_operations: list[Any],
+        attempted_operations: Sequence[object],
+        applied_operations: Sequence[object],
         *,
         success: bool,
         error: str | None = None,
     ) -> None:
-        def _extract_paths(operations: list[Any]) -> list[str]:
+        def _extract_paths(operations: Sequence[object]) -> list[str]:
             paths: list[str] = []
             for operation in operations:
                 if not isinstance(operation, dict):
                     continue
-                target = operation.get("target")
+                operation_dict = cast(JsonObject, operation)
+                target = operation_dict.get("target")
                 if not isinstance(target, dict):
                     continue
-                action_path = target.get("actionPath")
+                action_path = cast(JsonObject, target).get("actionPath")
                 if isinstance(action_path, str) and self._is_white_balance_action_path(
                     action_path
                 ):
@@ -447,15 +455,16 @@ class OperationsMixin:
 
     def _apply_operation_to_settings(
         self,
-        setting_by_id: dict[str, dict[str, Any]],
-        operation: dict[str, Any],
-    ) -> tuple[str | None, dict[str, Any] | None]:
+        setting_by_id: dict[str, JsonObject],
+        operation: JsonObject,
+    ) -> tuple[str | None, JsonObject | None]:
         target = operation.get("target")
         if not isinstance(target, dict):
             return "operation target must be an object", None
+        target_dict = cast(JsonObject, target)
 
-        setting_id = target.get("settingId")
-        action_path = target.get("actionPath")
+        setting_id = target_dict.get("settingId")
+        action_path = target_dict.get("actionPath")
         if not isinstance(setting_id, str) or not isinstance(action_path, str):
             return "operation target requires settingId and actionPath", None
 
@@ -475,8 +484,9 @@ class OperationsMixin:
         value = operation.get("value")
         if not isinstance(value, dict):
             return "operation value must be an object", None
+        value_dict = cast(JsonObject, value)
 
-        mode = value.get("mode")
+        mode = value_dict.get("mode")
         supported_modes = setting.get("supportedModes")
         if not isinstance(mode, str):
             return "operation value requires mode", None
@@ -484,7 +494,7 @@ class OperationsMixin:
             return f"mode '{mode}' is not supported by settingId '{setting_id}'", None
 
         if kind == "set-float":
-            number_value = value.get("number")
+            number_value = value_dict.get("number")
             if not isinstance(number_value, (int, float)):
                 return (
                     f"set-float operation requires numeric value.number for '{setting_id}'",
@@ -521,7 +531,7 @@ class OperationsMixin:
             }
 
         if kind == "set-choice":
-            choice_value = value.get("choiceValue")
+            choice_value = value_dict.get("choiceValue")
             if not isinstance(choice_value, int):
                 return (
                     f"set-choice operation requires integer value.choiceValue for '{setting_id}'",
@@ -533,7 +543,7 @@ class OperationsMixin:
                     f"choiceValue {choice_value} is not valid for '{setting_id}'",
                     None,
                 )
-            choice_id = value.get("choiceId")
+            choice_id = value_dict.get("choiceId")
             if isinstance(choice_id, str) and choice_mapping.get(choice_value) not in {
                 None,
                 choice_id,
@@ -557,7 +567,7 @@ class OperationsMixin:
             }
 
         if kind == "set-bool":
-            bool_value = value.get("boolValue")
+            bool_value = value_dict.get("boolValue")
             if not isinstance(bool_value, bool):
                 return (
                     f"set-bool operation requires boolean value.boolValue for '{setting_id}'",
