@@ -78,7 +78,7 @@ uv run pytest server/tests
 Run Python type checking:
 
 ```bash
-uvx pyright server shared
+uv run ty check
 ```
 
 Run local pre-commit checks:

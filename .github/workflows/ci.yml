@@ -57,7 +57,7 @@ jobs:
         run: uv run pytest server/tests
 
       - name: Run Python type checks
-        run: uvx pyright server shared
+        run: uv run ty check
 
   darktable-build:
     runs-on: ubuntu-latest

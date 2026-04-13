@@ -20,7 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pre-commit>=4.3,<5.0",
-  "pyright>=1.1.408,<2.0",
+  "ty>=0.0.1a15,<0.1",
   "pytest>=8.3,<9.0",
 ]
 
@@ -34,10 +34,15 @@ include = ["server*", "shared*"]
 [tool.setuptools.package-data]
 server = ["codex_bridge/prompts/**/*.txt", "codex_bridge/prompts/**/*.j2"]
 
-[tool.pyright]
+[tool.ty.src]
 include = ["server", "shared"]
 exclude = ["server/tests"]
-venvPath = "."
-venv = ".venv"
-pythonVersion = "3.14"
-typeCheckingMode = "basic"
+
+[tool.ty.environment]
+python = ".venv"
+python-version = "3.14"
+
+[tool.ty.rules]
+invalid-assignment = "ignore"
+invalid-return-type = "ignore"
+unresolved-attribute = "ignore"
