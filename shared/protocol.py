@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -9,6 +9,9 @@ from .analysis_signals import ImageAnalysisSignals
 
 SCHEMA_VERSION = "3.0"
 DEFAULT_REFINEMENT_MAX_PASSES = 15
+
+type JsonObject = dict[str, object]
+type JsonArray = list[object]
 
 OperationKind = Literal["set-float", "set-choice", "set-bool"]
 OperationMode = Literal["delta", "set"]
@@ -544,7 +547,7 @@ def _build_refinement_status(
     )
 
 
-def parse_request_ids(payload: Any) -> tuple[str, dict[str, str]]:
+def parse_request_ids(payload: object) -> tuple[str, dict[str, str]]:
     if not isinstance(payload, dict):
         return "", {
             "appSessionId": "",

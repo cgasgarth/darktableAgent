@@ -7,9 +7,9 @@ import io
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import cast
 
-from shared.protocol import AgentPlan, EditableSetting
+from shared.protocol import AgentPlan, EditableSetting, JsonObject
 
 from server.codex_bridge.canonical_binder import bind_canonical_actions
 from server.codex_bridge.verifier import VerifierMixin
@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
 def _evaluate_expectations(
     case: EvaluationCase,
     submission: EvaluationSubmission,
-    resolved_operations: list[dict[str, Any]],
+    resolved_operations: list[JsonObject],
 ) -> list[str]:
     failures: list[str] = []
     expectation = case.expectations
@@ -332,7 +332,7 @@ def _check_metric_threshold(
 
 
 def _validate_operations(
-    settings: list[EditableSetting], operations: list[dict[str, Any]]
+    settings: list[EditableSetting], operations: list[JsonObject]
 ) -> dict[str, int]:
     setting_by_id = {setting.settingId: setting for setting in settings}
     unknown_targets = 0
@@ -343,8 +343,10 @@ def _validate_operations(
         if not isinstance(target, dict) or not isinstance(value, dict):
             validation_failures += 1
             continue
-        setting_id = target.get("settingId")
-        action_path = target.get("actionPath")
+        target_dict = cast(JsonObject, target)
+        value_dict = cast(JsonObject, value)
+        setting_id = target_dict.get("settingId")
+        action_path = target_dict.get("actionPath")
         if not isinstance(setting_id, str) or not isinstance(action_path, str):
             validation_failures += 1
             continue
@@ -352,16 +354,14 @@ def _validate_operations(
         if setting is None or setting.actionPath != action_path:
             unknown_targets += 1
             continue
-        validation_failures += _operation_validation_failures(setting, value)
+        validation_failures += _operation_validation_failures(setting, value_dict)
     return {
         "unknown_targets": unknown_targets,
         "validation_failures": validation_failures,
     }
 
 
-def _operation_validation_failures(
-    setting: EditableSetting, value: dict[str, Any]
-) -> int:
+def _operation_validation_failures(setting: EditableSetting, value: JsonObject) -> int:
     kind = setting.kind
     if kind == "set-float":
         return _float_validation_failures(setting, value)
@@ -370,7 +370,7 @@ def _operation_validation_failures(
     return 0
 
 
-def _float_validation_failures(setting: EditableSetting, value: dict[str, Any]) -> int:
+def _float_validation_failures(setting: EditableSetting, value: JsonObject) -> int:
     mode = value.get("mode")
     number = value.get("number")
     if mode not in {"set", "delta"} or not isinstance(number, (int, float)):
@@ -385,7 +385,7 @@ def _float_validation_failures(setting: EditableSetting, value: dict[str, Any]) 
     return 0 if minimum <= candidate <= maximum else 1
 
 
-def _choice_validation_failures(setting: EditableSetting, value: dict[str, Any]) -> int:
+def _choice_validation_failures(setting: EditableSetting, value: JsonObject) -> int:
     if value.get("mode") != "set":
         return 1
     choice_id = value.get("choiceId")

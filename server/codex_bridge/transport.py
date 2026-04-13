@@ -6,7 +6,9 @@ import json
 import select
 import subprocess
 import time
-from typing import Any, cast
+from typing import cast
+
+from shared.protocol import JsonObject
 
 from .config import _CLIENT_INFO, logger
 from .errors import CodexAppServerError
@@ -87,10 +89,10 @@ class TransportMixin:
     def _send_request_locked(
         self,
         method: str,
-        params: Any,
+        params: object,
         deadline: float,
         active_request: ActiveRequestState | None,
-    ) -> dict[str, Any]:
+    ) -> JsonObject:
         request_id = self._next_request_id
         self._next_request_id += 1
         self._send_json_locked(
@@ -106,7 +108,9 @@ class TransportMixin:
                 if "error" in message:
                     error = message["error"]
                     error_message = (
-                        error.get("message") if isinstance(error, dict) else None
+                        cast(JsonObject, error).get("message")
+                        if isinstance(error, dict)
+                        else None
                     )
                     raise CodexAppServerError(
                         "codex_jsonrpc_error",
@@ -117,13 +121,15 @@ class TransportMixin:
                 return message
             self._handle_message_locked(message, None)
 
-    def _send_notification_locked(self, method: str, params: Any | None = None) -> None:
-        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    def _send_notification_locked(
+        self, method: str, params: object | None = None
+    ) -> None:
+        payload: JsonObject = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             payload["params"] = params
         self._send_json_locked(payload)
 
-    def _send_json_locked(self, payload: dict[str, Any]) -> None:
+    def _send_json_locked(self, payload: JsonObject) -> None:
         if not self._process or not self._process.stdin:
             raise CodexAppServerError(
                 "codex_process_unavailable", "Codex app server is not running"
@@ -143,7 +149,7 @@ class TransportMixin:
         active_request: ActiveRequestState | None = None,
         *,
         max_wait_seconds: float | None = None,
-    ) -> dict[str, Any] | None:
+    ) -> JsonObject | None:
         if not self._process or not self._process.stdout or not self._process.stderr:
             raise CodexAppServerError(
                 "codex_process_unavailable", "Codex app server is not running"
@@ -199,4 +205,4 @@ class TransportMixin:
                         "codex_invalid_json",
                         f"Codex emitted non-object JSON: {line.rstrip()}",
                     )
-                return cast(dict[str, Any], payload)
+                return cast(JsonObject, payload)

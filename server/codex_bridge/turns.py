@@ -3,9 +3,9 @@ from __future__ import annotations
 # pyright: reportAttributeAccessIssue=false
 
 import time
-from typing import Any
+from typing import cast
 
-from shared.protocol import AgentPlan, RequestEnvelope
+from shared.protocol import AgentPlan, JsonObject, RequestEnvelope
 
 from .config import (
     _DEFAULT_APPROVAL_POLICY,
@@ -58,7 +58,7 @@ class TurnsMixin:
             )
             return existing
 
-        params: dict[str, Any] = {
+        params: JsonObject = {
             "cwd": self._cwd,
             "approvalPolicy": _DEFAULT_APPROVAL_POLICY,
             "sandbox": _DEFAULT_SANDBOX,
@@ -277,7 +277,7 @@ class TurnsMixin:
                 active_request.codex_turn_id = None
 
     def _handle_message_locked(
-        self, message: dict[str, Any], turn_state: TurnRunState | None
+        self, message: JsonObject, turn_state: TurnRunState | None
     ) -> None:
         if "method" in message and "id" in message:
             self._handle_server_request_locked(message)
@@ -287,7 +287,9 @@ class TurnsMixin:
 
         method = message["method"]
         raw_params = message.get("params", {})
-        params = raw_params if isinstance(raw_params, dict) else {}
+        params: JsonObject = (
+            cast(JsonObject, raw_params) if isinstance(raw_params, dict) else {}
+        )
 
         if method == "error":
             if (
@@ -296,7 +298,9 @@ class TurnsMixin:
                 and params.get("turnId") == turn_state["turn_id"]
             ):
                 raw_error = params.get("error", {})
-                error = raw_error if isinstance(raw_error, dict) else {}
+                error = (
+                    cast(JsonObject, raw_error) if isinstance(raw_error, dict) else {}
+                )
                 turn_state["turn_error"] = self._extract_error_message(
                     error.get("message") or "Codex app server reported an error"
                 )
@@ -321,12 +325,13 @@ class TurnsMixin:
                 return
             usage = params.get("tokenUsage", {})
             if isinstance(usage, dict):
-                last_usage = usage.get("last")
-                total_usage = usage.get("total")
+                usage_dict = cast(JsonObject, usage)
+                last_usage = usage_dict.get("last")
+                total_usage = usage_dict.get("total")
                 if isinstance(last_usage, dict):
-                    turn_state["token_usage_last"] = last_usage
+                    turn_state["token_usage_last"] = cast(JsonObject, last_usage)
                 if isinstance(total_usage, dict):
-                    turn_state["token_usage_total"] = total_usage
+                    turn_state["token_usage_total"] = cast(JsonObject, total_usage)
             return
 
         if method == "item/completed":
@@ -336,7 +341,7 @@ class TurnsMixin:
             ):
                 return
             raw_item = params.get("item", {})
-            item = raw_item if isinstance(raw_item, dict) else {}
+            item = cast(JsonObject, raw_item) if isinstance(raw_item, dict) else {}
             if item.get("type") == "agentMessage":
                 text = item.get("text")
                 turn_state["final_message"] = text if isinstance(text, str) else None
@@ -348,7 +353,7 @@ class TurnsMixin:
             if params.get("id") != turn_state["turn_id"]:
                 return
             raw_msg = params.get("msg", {})
-            msg = raw_msg if isinstance(raw_msg, dict) else {}
+            msg = cast(JsonObject, raw_msg) if isinstance(raw_msg, dict) else {}
             last_agent_message = msg.get("last_agent_message")
             if isinstance(last_agent_message, str) and last_agent_message:
                 turn_state["final_message"] = last_agent_message
@@ -359,12 +364,13 @@ class TurnsMixin:
             if params.get("threadId") != turn_state["thread_id"]:
                 return
             raw_turn = params.get("turn", {})
-            turn = raw_turn if isinstance(raw_turn, dict) else {}
+            turn = cast(JsonObject, raw_turn) if isinstance(raw_turn, dict) else {}
             if turn.get("id") != turn_state["turn_id"]:
                 return
             raw_error = turn.get("error")
             if isinstance(raw_error, dict):
+                error_dict = cast(JsonObject, raw_error)
                 turn_state["turn_error"] = self._extract_error_message(
-                    raw_error.get("message") or "Codex turn failed"
+                    error_dict.get("message") or "Codex turn failed"
                 )
             turn_state["completed"] = True

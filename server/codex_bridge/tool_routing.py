@@ -3,7 +3,9 @@ from __future__ import annotations
 # pyright: reportAttributeAccessIssue=false
 
 import json
-from typing import Any
+from typing import cast
+
+from shared.protocol import JsonObject
 
 from .config import (
     _DEFAULT_MAX_CONSECUTIVE_READ_ONLY_TOOL_CALLS,
@@ -19,7 +21,7 @@ from .intent_router import list_playbooks, load_playbook
 
 class ToolRoutingMixin:
     @staticmethod
-    def _dynamic_tools() -> list[dict[str, Any]]:
+    def _dynamic_tools() -> list[JsonObject]:
         empty_object_schema = {
             "type": "object",
             "properties": {},
@@ -75,7 +77,7 @@ class ToolRoutingMixin:
             },
         ]
 
-    def _handle_server_request_locked(self, message: dict[str, Any]) -> None:
+    def _handle_server_request_locked(self, message: JsonObject) -> None:
         method = message.get("method")
         request_id = message.get("id")
         if request_id is None:
@@ -117,9 +119,7 @@ class ToolRoutingMixin:
             }
         )
 
-    def _handle_dynamic_tool_call_locked(
-        self, message: dict[str, Any]
-    ) -> dict[str, Any]:
+    def _handle_dynamic_tool_call_locked(self, message: JsonObject) -> JsonObject:
         params = message.get("params", {})
         thread_id = params.get("threadId")
         turn_id = params.get("turnId")
@@ -226,7 +226,7 @@ class ToolRoutingMixin:
                     for content_item in content_items:
                         if not isinstance(content_item, dict):
                             continue
-                        text = content_item.get("text")
+                        text = cast(JsonObject, content_item).get("text")
                         if isinstance(text, str) and text:
                             tool_error = text
                             break
@@ -372,7 +372,7 @@ class ToolRoutingMixin:
         return None
 
     @staticmethod
-    def _tool_error_response(message: str) -> dict[str, Any]:
+    def _tool_error_response(message: str) -> JsonObject:
         return {
             "success": False,
             "contentItems": [{"type": "inputText", "text": message}],

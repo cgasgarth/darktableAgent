@@ -5,9 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from typing import Any
+from typing import cast
 
-from shared.protocol import AgentPlan, RequestEnvelope
+from shared.protocol import AgentPlan, JsonObject, RequestEnvelope
 
 from .config import _DEFAULT_HISTOGRAM_BINS, _DEFAULT_MAX_TOOL_CALLS_WITHOUT_APPLY
 from .errors import CodexAppServerError
@@ -72,10 +72,12 @@ class PromptingMixin:
         preview_data_url: str,
     ) -> None:
         preview_mime_type, preview_bytes = self._decode_preview_image(request)
-        state_payload = json.loads(json.dumps(self._build_prompt_payload(request)))
+        state_payload = cast(
+            JsonObject, json.loads(json.dumps(self._build_prompt_payload(request)))
+        )
         image_snapshot = state_payload.get("imageSnapshot", {})
         editable_settings = image_snapshot.get("editableSettings", [])
-        setting_by_id: dict[str, dict[str, Any]] = {}
+        setting_by_id: dict[str, JsonObject] = {}
         base_float_setting_numbers: dict[str, float] = {}
         if isinstance(editable_settings, list):
             for setting in editable_settings:
@@ -145,7 +147,7 @@ class PromptingMixin:
                 }
             )
 
-        normalized_operations: list[dict[str, Any]] = []
+        normalized_operations: list[JsonObject] = []
         seen_operation_ids: set[str] = set()
         for index, operation in enumerate(merged_operations, start=1):
             operation_copy = dict(operation)
@@ -187,7 +189,7 @@ class PromptingMixin:
         return rebinned
 
     @classmethod
-    def _trim_histogram_payload(cls, request: RequestEnvelope) -> dict[str, Any] | None:
+    def _trim_histogram_payload(cls, request: RequestEnvelope) -> JsonObject | None:
         histogram = request.imageSnapshot.histogram
         if histogram is None:
             return None
@@ -211,10 +213,10 @@ class PromptingMixin:
             "channels": trimmed_channels,
         }
 
-    def _build_prompt_payload(self, request: RequestEnvelope) -> dict[str, Any]:
-        compact_settings: list[dict[str, Any]] = []
+    def _build_prompt_payload(self, request: RequestEnvelope) -> JsonObject:
+        compact_settings: list[JsonObject] = []
         for setting in request.imageSnapshot.editableSettings:
-            compact_setting: dict[str, Any] = {
+            compact_setting: JsonObject = {
                 "moduleId": setting.moduleId,
                 "moduleLabel": setting.moduleLabel,
                 "settingId": setting.settingId,
@@ -243,7 +245,7 @@ class PromptingMixin:
             compact_settings.append(compact_setting)
 
         metadata = request.imageSnapshot.metadata
-        metadata_payload: dict[str, Any] = {
+        metadata_payload: JsonObject = {
             "width": metadata.width,
             "height": metadata.height,
         }
@@ -288,8 +290,8 @@ class PromptingMixin:
         request: RequestEnvelope,
         *,
         preview_data_url: str | None = None,
-    ) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
+    ) -> list[JsonObject]:
+        items: list[JsonObject] = []
 
         conv_id = request.session.conversationId
         history = getattr(self, "_conversation_histories", {}).get(conv_id)
